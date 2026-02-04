@@ -7,10 +7,18 @@ import {
   ScrollView,
   SafeAreaView,
   Image,
+  ImageBackground,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 
 const HomeScreen = () => {
+  const heroImage = {
+    uri: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80',
+  };
+  const weatherImage = {
+    uri: 'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=600&q=80',
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView>
@@ -20,77 +28,75 @@ const HomeScreen = () => {
             <Icon name="fitness" size={24} color="#FF9500" />
             <Text style={styles.logoText}>Healthsoft</Text>
           </View>
-          <Icon name="notifications-outline" size={24} color="#333" />
+          <View style={styles.headerRight}>
+            <View style={styles.dots}>
+              <View style={styles.dot} />
+              <View style={[styles.dot, styles.dotActive]} />
+              <View style={styles.dot} />
+              <View style={styles.dot} />
+            </View>
+            <Image
+              source={{
+                uri: 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?auto=format&fit=crop&w=200&q=80',
+              }}
+              style={styles.avatar}
+            />
+          </View>
         </View>
 
         {/* Greeting Card */}
-        <View style={styles.greetingCard}>
-          <View style={styles.greetingContent}>
+        <ImageBackground
+          source={heroImage}
+          style={styles.greetingCard}
+          imageStyle={styles.greetingImage}
+        >
+          <View style={styles.greetingOverlay}>
             <Text style={styles.greetingTitle}>Good Morning</Text>
             <Text style={styles.greetingName}>Mrs. Rao!</Text>
             <Text style={styles.greetingSubtitle}>
               Have a wonderful Thursday!
             </Text>
             <Text style={styles.greetingMessage}>
-              Make today a great one and remember,{'\n'}you're loved and
+              Make today a great one and remember,{'\n'}you&apos;re loved and
               cherished.
             </Text>
           </View>
           <View style={styles.sunIcon}>
-            <Icon name="sunny" size={40} color="#FFD700" />
+            <Icon name="sunny" size={42} color="#F4C24D" />
           </View>
-        </View>
+        </ImageBackground>
 
         {/* Weather Card */}
         <View style={styles.weatherCard}>
-          <View style={styles.weatherHeader}>
-            <Icon name="sunny" size={20} color="#FF9500" />
-            <Text style={styles.weatherLocation}>Today in Chennai</Text>
+          <View style={styles.weatherLeft}>
+            <View style={styles.weatherHeader}>
+              <Icon name="sunny" size={18} color="#FF9500" />
+              <Text style={styles.weatherLocation}>Today in Chennai</Text>
+            </View>
+            <View style={styles.weatherContent}>
+              <Text style={styles.temperature}>31°</Text>
+              <Text style={styles.weatherDesc}>Mostly Sunny</Text>
+            </View>
+            <Text style={styles.weatherRange}>High: 34° | Low: 26°</Text>
           </View>
-          <View style={styles.weatherContent}>
-            <Text style={styles.temperature}>31°</Text>
-            <Text style={styles.weatherDesc}>Mostly Sunny</Text>
-          </View>
-          <Text style={styles.weatherRange}>High: 34° | Low: 26°</Text>
+          <Image source={weatherImage} style={styles.weatherImage} />
         </View>
 
-        {/* Health Stats */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Health Activity</Text>
-          
-          <View style={styles.statsGrid}>
-            {/* Steps */}
-            <View style={styles.statCard}>
-              <Icon name="footsteps" size={32} color="#FF9500" />
-              <Text style={styles.statValue}>8,512</Text>
-              <Text style={styles.statLabel}>Steps Walked</Text>
-              <View style={styles.goalBadge}>
-                <Text style={styles.goalText}>Goal: 10,000</Text>
-              </View>
+        {/* Rahukalam + Yamagandam */}
+        <View style={styles.badgesRow}>
+          <View style={[styles.badgeCard, styles.badgeWarm]}>
+            <View style={styles.badgeHeader}>
+              <Icon name="warning" size={16} color="#D18B2E" />
+              <Text style={styles.badgeTitle}>Rahukalam</Text>
             </View>
-
-            {/* Blood Pressure */}
-            <View style={styles.statCard}>
-              <Icon name="heart" size={32} color="#FF9500" />
-              <Text style={styles.statValue}>118/78</Text>
-              <Text style={styles.statUnit}>mmHg</Text>
-              <Text style={styles.statLabel}>Blood Pressure</Text>
+            <Text style={styles.badgeTime}>Today, 1:30 PM - 3:00 PM</Text>
+          </View>
+          <View style={[styles.badgeCard, styles.badgeCool]}>
+            <View style={styles.badgeHeader}>
+              <Icon name="remove-circle" size={16} color="#D7643C" />
+              <Text style={styles.badgeTitle}>Yamagandam</Text>
             </View>
-
-            {/* Blood Oxygen */}
-            <View style={styles.statCard}>
-              <Icon name="water" size={32} color="#FF9500" />
-              <Text style={styles.statValue}>98%</Text>
-              <Text style={styles.statLabel}>Blood Oxygen</Text>
-            </View>
-
-            {/* Heart Rate */}
-            <View style={styles.statCard}>
-              <Icon name="pulse" size={32} color="#FF9500" />
-              <Text style={styles.statValue}>75</Text>
-              <Text style={styles.statUnit}>BPM</Text>
-              <Text style={styles.statLabel}>Heart Rate</Text>
-            </View>
+            <Text style={styles.badgeTime}>Today, 6:00 AM - 7:30 AM</Text>
           </View>
         </View>
 
@@ -98,20 +104,28 @@ const HomeScreen = () => {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Best Times for the Day</Text>
           <View style={styles.timeCard}>
-            <Text style={styles.timeTitle}>Thursday, Apr 18 2024</Text>
-            <Text style={styles.timeSubtitle}>Chaitra 10, Jaya Samvatsara</Text>
-            
-            <View style={styles.timingRow}>
-              <View style={styles.timing}>
-                <Icon name="alert-circle" size={20} color="#FF9500" />
-                <Text style={styles.timingLabel}>Rahukalam</Text>
-                <Text style={styles.timingValue}>1:30 PM - 3:00 PM</Text>
+            <View style={styles.timeHeaderRow}>
+              <View>
+                <Text style={styles.timeTitle}>Thursday, Apr 18 2024</Text>
+                <Text style={styles.timeSubtitle}>
+                  Chaitra 10, Jaya Samvatsara
+                </Text>
               </View>
-              
-              <View style={styles.timing}>
-                <Icon name="close-circle" size={20} color="#FF3B30" />
-                <Text style={styles.timingLabel}>Yamagandam</Text>
-                <Text style={styles.timingValue}>6:00 AM - 7:30 AM</Text>
+              <Icon name="chevron-forward" size={18} color="#C7C1BA" />
+            </View>
+
+            <View style={styles.timeRow}>
+              <View style={[styles.timeSlot, styles.timeSlotGreen]}>
+                <Text style={styles.timeSlotTitle}>Abhijit Muhurta</Text>
+                <Text style={styles.timeSlotValue}>
+                  Today, 11:55 AM - 12:45 PM
+                </Text>
+              </View>
+              <View style={[styles.timeSlot, styles.timeSlotPeach]}>
+                <Text style={styles.timeSlotTitle}>Amrit Kalam</Text>
+                <Text style={styles.timeSlotValue}>
+                  Today, 9:46 PM - 11:28 PM
+                </Text>
               </View>
             </View>
           </View>
@@ -124,7 +138,7 @@ const HomeScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F5F5F5',
+    backgroundColor: '#F6F2EE',
   },
   header: {
     flexDirection: 'row',
@@ -132,7 +146,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 20,
     paddingVertical: 16,
-    backgroundColor: '#FFFFFF',
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  dots: {
+    flexDirection: 'row',
+    marginRight: 12,
+  },
+  dot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#DCD6CF',
+    marginHorizontal: 3,
+  },
+  dotActive: {
+    backgroundColor: '#C9B9A7',
+  },
+  avatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
   },
   logoContainer: {
     flexDirection: 'row',
@@ -145,12 +181,23 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   greetingCard: {
-    backgroundColor: '#FFF8E7',
-    margin: 16,
-    padding: 20,
+    marginHorizontal: 16,
+    marginBottom: 16,
+    minHeight: 220,
     borderRadius: 16,
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    padding: 18,
+    overflow: 'hidden',
+  },
+  greetingImage: {
+    borderRadius: 16,
+  },
+  greetingOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(255, 250, 242, 0.85)',
+    padding: 16,
+    borderRadius: 14,
   },
   greetingContent: {
     flex: 1,
@@ -178,6 +225,7 @@ const styles = StyleSheet.create({
   },
   sunIcon: {
     justifyContent: 'center',
+    marginLeft: 12,
   },
   weatherCard: {
     backgroundColor: '#FFFFFF',
@@ -185,6 +233,12 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     padding: 16,
     borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  weatherLeft: {
+    flex: 1,
   },
   weatherHeader: {
     flexDirection: 'row',
@@ -215,6 +269,44 @@ const styles = StyleSheet.create({
     color: '#666',
     marginTop: 4,
   },
+  weatherImage: {
+    width: 90,
+    height: 60,
+    borderRadius: 12,
+    marginLeft: 12,
+  },
+  badgesRow: {
+    flexDirection: 'row',
+    marginHorizontal: 16,
+    marginBottom: 12,
+  },
+  badgeCard: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 12,
+    marginHorizontal: 4,
+  },
+  badgeWarm: {
+    backgroundColor: '#F8EEDB',
+  },
+  badgeCool: {
+    backgroundColor: '#F6E6DE',
+  },
+  badgeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  badgeTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#7D5A2E',
+    marginLeft: 6,
+  },
+  badgeTime: {
+    fontSize: 12,
+    color: '#7A6B60',
+  },
   section: {
     marginTop: 8,
   },
@@ -224,47 +316,6 @@ const styles = StyleSheet.create({
     color: '#333',
     marginHorizontal: 16,
     marginBottom: 12,
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    paddingHorizontal: 8,
-  },
-  statCard: {
-    backgroundColor: '#FFFFFF',
-    width: '46%',
-    margin: 8,
-    padding: 16,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  statValue: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#333',
-    marginTop: 8,
-  },
-  statUnit: {
-    fontSize: 14,
-    color: '#666',
-  },
-  statLabel: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 4,
-    textAlign: 'center',
-  },
-  goalBadge: {
-    backgroundColor: '#FF9500',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
-    marginTop: 8,
-  },
-  goalText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '600',
   },
   timeCard: {
     backgroundColor: '#FFFFFF',
@@ -284,24 +335,36 @@ const styles = StyleSheet.create({
     color: '#666',
     marginBottom: 16,
   },
-  timingRow: {
+  timeHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-  },
-  timing: {
-    flex: 1,
     alignItems: 'center',
   },
-  timingLabel: {
+  timeRow: {
+    flexDirection: 'row',
+    marginTop: 12,
+  },
+  timeSlot: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 12,
+    marginHorizontal: 4,
+  },
+  timeSlotGreen: {
+    backgroundColor: '#E9F3E5',
+  },
+  timeSlotPeach: {
+    backgroundColor: '#F9EEE1',
+  },
+  timeSlotTitle: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#333',
-    marginTop: 8,
+    color: '#4E4A44',
+    marginBottom: 6,
   },
-  timingValue: {
+  timeSlotValue: {
     fontSize: 12,
-    color: '#666',
-    marginTop: 4,
+    color: '#6E655D',
   },
 });
 
