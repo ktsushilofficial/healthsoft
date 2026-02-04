@@ -1,13 +1,24 @@
 
 import React from 'react';
-import {View, Text, StyleSheet, ScrollView, SafeAreaView} from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  SafeAreaView,
+  TouchableOpacity,
+} from 'react-native';
+import {useNavigation} from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
  const AccountScreen = () => {
+  const navigation = useNavigation();
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView>
         <View style={styles.header}>
-          <Icon name="arrow-back" size={24} color="#333" />
+          <TouchableOpacity onPress={() => navigation.navigate('Home' as never)}>
+            <Icon name="arrow-back" size={24} color="#333" />
+          </TouchableOpacity>
           <Text style={styles.headerTitle}>Personal Info</Text>
           <View style={{width: 24}} />
         </View>

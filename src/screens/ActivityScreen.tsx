@@ -2,214 +2,244 @@
 // src/screens/ActivityScreen.tsx
 // ============================================
 import React from 'react';
-import {View, Text, StyleSheet, ScrollView, SafeAreaView} from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  SafeAreaView,
+  TouchableOpacity,
+} from 'react-native';
+import {useNavigation} from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 
 const ActivityScreen = () => {
+  const navigation = useNavigation();
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView>
+      <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.header}>
-          <Icon name="arrow-back" size={24} color="#333" />
-          <Text style={styles.headerTitle}>Health Activity</Text>
-          <Icon name="notifications-outline" size={24} color="#333" />
-        </View>
-
-        <View style={styles.statCard}>
-          <Icon name="footsteps" size={40} color="#FF9500" />
-          <Text style={styles.statValue}>8,512</Text>
-          <Text style={styles.statLabel}>Steps Walked</Text>
-          <View style={styles.goalBadge}>
-            <Text style={styles.goalText}>Goal: 10,000</Text>
+          <View style={styles.brandRow}>
+            <Icon name="fitness" size={20} color="#F28C28" />
+            <Text style={styles.brandText}>Healthsoft</Text>
           </View>
+          <TouchableOpacity
+            style={styles.bellWrap}
+            onPress={() => navigation.navigate('Notifications' as never)}
+          >
+            <Icon name="notifications-outline" size={22} color="#4C4A48" />
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>1</Text>
+            </View>
+          </TouchableOpacity>
         </View>
 
-        <View style={styles.statCard}>
-          <Icon name="heart" size={40} color="#FF9500" />
-          <Text style={styles.statValue}>118/78</Text>
-          <Text style={styles.statUnit}>mmHg</Text>
-          <Text style={styles.statLabel}>Blood Pressure</Text>
-        </View>
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Health Activity</Text>
 
-        <View style={styles.statCard}>
-          <Icon name="water" size={40} color="#FF9500" />
-          <Text style={styles.statValue}>98%</Text>
-          <Text style={styles.statLabel}>Blood Oxygen</Text>
-        </View>
+          <View style={[styles.metricCard, styles.metricSteps]}>
+            <View style={styles.metricIconWrap}>
+              <Icon name="footsteps" size={26} color="#F28C28" />
+            </View>
+            <View style={styles.metricInfo}>
+              <Text style={styles.metricValue}>8,512</Text>
+              <Text style={styles.metricLabel}>Steps Walked</Text>
+              <View style={styles.progressTrack}>
+                <View style={styles.progressFill} />
+                <View style={styles.goalChip}>
+                  <Text style={styles.goalText}>Goal: 10,000</Text>
+                </View>
+              </View>
+            </View>
+          </View>
 
-        <View style={styles.statCard}>
-          <Icon name="pulse" size={40} color="#FF9500" />
-          <Text style={styles.statValue}>75</Text>
-          <Text style={styles.statUnit}>BPM</Text>
-          <Text style={styles.statLabel}>Heart Rate</Text>
-        </View>
+          <View style={styles.metricCard}>
+            <View style={styles.metricIconWrap}>
+              <Icon name="heart" size={24} color="#F28C28" />
+            </View>
+            <View style={styles.metricInfo}>
+              <View style={styles.inlineRow}>
+                <Text style={styles.metricValue}>118/78</Text>
+                <Text style={styles.metricUnit}>mmHg</Text>
+              </View>
+              <Text style={styles.metricLabel}>Blood Pressure</Text>
+            </View>
+          </View>
 
-        <View style={styles.statCard}>
-          <Icon name="scale" size={40} color="#FF9500" />
-          <Text style={styles.statValue}>168</Text>
-          <Text style={styles.statUnit}>lb</Text>
-          <Text style={styles.statLabel}>Weight</Text>
+          <View style={styles.metricCard}>
+            <View style={styles.metricIconWrap}>
+              <Icon name="water" size={24} color="#F28C28" />
+            </View>
+            <View style={styles.metricInfo}>
+              <Text style={styles.metricValue}>98%</Text>
+              <Text style={styles.metricLabel}>Blood Oxygen</Text>
+            </View>
+          </View>
+
+          <View style={styles.metricCard}>
+            <View style={styles.metricIconWrap}>
+              <Icon name="pulse" size={24} color="#F28C28" />
+            </View>
+            <View style={styles.metricInfo}>
+              <View style={styles.inlineRow}>
+                <Text style={styles.metricValue}>75</Text>
+                <Text style={styles.metricUnit}>BPM</Text>
+              </View>
+              <Text style={styles.metricLabel}>Heart Rate</Text>
+            </View>
+          </View>
+
+          <View style={styles.metricCard}>
+            <View style={styles.metricIconWrap}>
+              <Icon name="scale" size={24} color="#F28C28" />
+            </View>
+            <View style={styles.metricInfo}>
+              <View style={styles.inlineRow}>
+                <Text style={styles.metricValue}>168</Text>
+                <Text style={styles.metricUnit}>lb</Text>
+              </View>
+              <Text style={styles.metricLabel}>Weight</Text>
+            </View>
+          </View>
         </View>
       </ScrollView>
     </SafeAreaView>
   );
 };
+
 export default ActivityScreen;
 
-// ============================================
-// SHARED STYLES
-// ============================================
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F5F5F5',
+    backgroundColor: '#F5F2EE',
+  },
+  content: {
+    paddingBottom: 24,
   },
   header: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 20,
     paddingVertical: 16,
-    backgroundColor: '#FFFFFF',
   },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#333',
-  },
-  unlinkButton: {
-    color: '#FF9500',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  statCard: {
-    backgroundColor: '#FFFFFF',
-    margin: 16,
-    padding: 24,
-    borderRadius: 12,
+  brandRow: {
+    flexDirection: 'row',
     alignItems: 'center',
   },
-  statValue: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#333',
-    marginTop: 12,
+  brandText: {
+    marginLeft: 8,
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#2E2A27',
   },
-  statUnit: {
-    fontSize: 16,
-    color: '#666',
+  bellWrap: {
+    position: 'relative',
   },
-  statLabel: {
-    fontSize: 16,
-    color: '#666',
-    marginTop: 8,
+  badge: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#F28C28',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  goalBadge: {
-    backgroundColor: '#FF9500',
-    paddingHorizontal: 16,
-    paddingVertical: 6,
+  badgeText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  card: {
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 16,
+    borderRadius: 20,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    shadowOffset: {width: 0, height: 4},
+    elevation: 2,
+  },
+  cardTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#2E2A27',
+    marginBottom: 12,
+  },
+  metricCard: {
+    backgroundColor: '#FAF8F5',
     borderRadius: 16,
-    marginTop: 12,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#F0E7DD',
+  },
+  metricSteps: {
+    paddingBottom: 16,
+  },
+  metricIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: '#FFF2E5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  metricInfo: {
+    flex: 1,
+  },
+  metricValue: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#2E2A27',
+  },
+  metricUnit: {
+    fontSize: 14,
+    color: '#7A726A',
+    marginLeft: 6,
+    marginTop: 4,
+  },
+  metricLabel: {
+    fontSize: 14,
+    color: '#7A726A',
+    marginTop: 4,
+  },
+  inlineRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+  },
+  progressTrack: {
+    marginTop: 10,
+    height: 12,
+    backgroundColor: '#F1E7DB',
+    borderRadius: 10,
+    overflow: 'hidden',
+    justifyContent: 'center',
+  },
+  progressFill: {
+    height: 12,
+    width: '70%',
+    backgroundColor: '#F28C28',
+    borderRadius: 10,
+  },
+  goalChip: {
+    position: 'absolute',
+    right: 8,
+    backgroundColor: '#E27D1A',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 2,
   },
   goalText: {
+    fontSize: 11,
     color: '#FFFFFF',
-    fontSize: 14,
     fontWeight: '600',
-  },
-  exploreCard: {
-    backgroundColor: '#FFFFFF',
-    marginHorizontal: 16,
-    marginVertical: 8,
-    padding: 16,
-    borderRadius: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  exploreContent: {
-    flex: 1,
-    marginLeft: 16,
-  },
-  exploreTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 4,
-  },
-  exploreSubtitle: {
-    fontSize: 14,
-    color: '#666',
-  },
-  deviceCard: {
-    backgroundColor: '#FFFFFF',
-    margin: 16,
-    padding: 24,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  deviceImage: {
-    width: 100,
-    height: 100,
-    backgroundColor: '#FFF0E0',
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  deviceName: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#333',
-  },
-  infoRow: {
-    backgroundColor: '#FFFFFF',
-    marginHorizontal: 16,
-    marginVertical: 4,
-    padding: 16,
-    borderRadius: 8,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  infoLabel: {
-    fontSize: 14,
-    color: '#666',
-  },
-  infoValue: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-  },
-  buttonContainer: {
-    padding: 16,
-  },
-  button: {
-    backgroundColor: '#FF9500',
-    padding: 16,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  buttonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  profileSection: {
-    alignItems: 'center',
-    padding: 24,
-  },
-  avatar: {
-    width: 120,
-    height: 120,
-    backgroundColor: '#FFF0E0',
-    borderRadius: 60,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  editButton: {
-    backgroundColor: '#FF9500',
-    paddingHorizontal: 24,
-    paddingVertical: 8,
-    borderRadius: 20,
   },
 });

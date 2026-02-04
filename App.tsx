@@ -21,6 +21,7 @@ import {AuthProvider, useAuth} from './src/context/AuthContext';
 import BottomTabNavigator from './src/navigation/BottomTabNavigator';
 import LoginScreen from './src/screens/LoginScreen';
 import SignupScreen from './src/screens/SignupScreen';
+import NotificationsScreen from './src/screens/NotificationsScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -37,7 +38,10 @@ const AppNavigator = () => {
         </>
       ) : (
         // Main App Stack
-        <Stack.Screen name="Main" component={BottomTabNavigator} />
+        <>
+          <Stack.Screen name="Main" component={BottomTabNavigator} />
+          <Stack.Screen name="Notifications" component={NotificationsScreen} />
+        </>
       )}
     </Stack.Navigator>
   );

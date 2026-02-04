@@ -2,19 +2,42 @@
 // src/screens/ExploreScreen.tsx
 // ============================================
 import React from 'react';
-import {View, Text, StyleSheet, ScrollView, SafeAreaView} from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  SafeAreaView,
+  TouchableOpacity,
+  Linking,
+} from 'react-native';
+import {useNavigation} from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 export const ExploreScreen = () => {
+  const navigation = useNavigation();
+
+  const links = {
+    community: 'https://www.reddit.com/r/eldercare/',
+    marketplace: 'https://www.amazon.com/s?k=elderly+care+products',
+    discussion: 'https://www.caring.com/caregivers-forum/',
+    learning: 'https://www.nia.nih.gov/health',
+    religious: 'https://www.faithandcommunityresources.org/',
+  };
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView>
         <View style={styles.header}>
-          <Icon name="arrow-back" size={24} color="#333" />
+          <TouchableOpacity onPress={() => navigation.navigate('Home' as never)}>
+            <Icon name="arrow-back" size={24} color="#333" />
+          </TouchableOpacity>
           <Text style={styles.headerTitle}>Explore</Text>
           <View style={{width: 24}} />
         </View>
 
-        <View style={styles.exploreCard}>
+        <TouchableOpacity
+          style={styles.exploreCard}
+          onPress={() => Linking.openURL(links.community)}
+        >
           <Icon name="people" size={32} color="#FF9500" />
           <View style={styles.exploreContent}>
             <Text style={styles.exploreTitle}>Community</Text>
@@ -23,9 +46,12 @@ export const ExploreScreen = () => {
             </Text>
           </View>
           <Icon name="chevron-forward" size={24} color="#999" />
-        </View>
+        </TouchableOpacity>
 
-        <View style={styles.exploreCard}>
+        <TouchableOpacity
+          style={styles.exploreCard}
+          onPress={() => Linking.openURL(links.marketplace)}
+        >
           <Icon name="cart" size={32} color="#FF9500" />
           <View style={styles.exploreContent}>
             <Text style={styles.exploreTitle}>Marketplace</Text>
@@ -34,9 +60,12 @@ export const ExploreScreen = () => {
             </Text>
           </View>
           <Icon name="chevron-forward" size={24} color="#999" />
-        </View>
+        </TouchableOpacity>
 
-        <View style={styles.exploreCard}>
+        <TouchableOpacity
+          style={styles.exploreCard}
+          onPress={() => Linking.openURL(links.discussion)}
+        >
           <Icon name="chatbubbles" size={32} color="#FF9500" />
           <View style={styles.exploreContent}>
             <Text style={styles.exploreTitle}>Discussion Board</Text>
@@ -45,9 +74,12 @@ export const ExploreScreen = () => {
             </Text>
           </View>
           <Icon name="chevron-forward" size={24} color="#999" />
-        </View>
+        </TouchableOpacity>
 
-        <View style={styles.exploreCard}>
+        <TouchableOpacity
+          style={styles.exploreCard}
+          onPress={() => Linking.openURL(links.learning)}
+        >
           <Icon name="book" size={32} color="#FF9500" />
           <View style={styles.exploreContent}>
             <Text style={styles.exploreTitle}>Learning</Text>
@@ -56,9 +88,12 @@ export const ExploreScreen = () => {
             </Text>
           </View>
           <Icon name="chevron-forward" size={24} color="#999" />
-        </View>
+        </TouchableOpacity>
 
-        <View style={styles.exploreCard}>
+        <TouchableOpacity
+          style={styles.exploreCard}
+          onPress={() => Linking.openURL(links.religious)}
+        >
           <Icon name="add-circle" size={32} color="#FF9500" />
           <View style={styles.exploreContent}>
             <Text style={styles.exploreTitle}>Religious</Text>
@@ -67,7 +102,7 @@ export const ExploreScreen = () => {
             </Text>
           </View>
           <Icon name="chevron-forward" size={24} color="#999" />
-        </View>
+        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );
