@@ -66,10 +66,10 @@ const DeviceScreen = () => {
   const navigation = useNavigation();
   const tabs = useMemo(
     () => [
-      {id: 'contacts', label: 'Contacts'},
+      {id: 'devices', label: 'Devices'},
       {id: 'conditions', label: 'Conditions'},
       {id: 'medicines', label: 'Medicines'},
-      {id: 'devices', label: 'Devices'},
+      {id: 'contacts', label: 'Contacts'},
     ],
     [],
   );

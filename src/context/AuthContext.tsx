@@ -1,13 +1,19 @@
 // src/context/AuthContext.tsx
-import React, {
-  createContext,
-  useState,
-  useContext,
-  ReactNode,
-} from 'react';
+import React, {createContext, useEffect, useRef, useState, useContext} from 'react';
 import axios, {Method} from 'axios';
+import * as Keychain from 'react-native-keychain';
 
 const API_BASE_URL = 'http://seniorcare.healthsoftcare.in';
+const TOKEN_STORAGE_SERVICE = 'healthsoft.auth.tokens';
+const TOKEN_STORAGE_USERNAME = 'healthsoft-auth';
+const CARETAKER_ROLE = 'CARE_TAKER';
+
+interface AuthTokens {
+  accessToken: string;
+  refreshToken: string;
+  tokenType: string;
+  expiresIn: number;
+}
 
 interface UserData {
   email: string;
@@ -31,16 +37,26 @@ interface UserData {
 interface AuthContextType {
   user: UserData | null;
   isAuthenticated: boolean;
+  isInitializing: boolean;
   login: (email: string, password: string) => Promise<UserData>;
   loginWithGoogle: () => Promise<UserData>;
   signup: (data: SignupData) => Promise<UserData>;
-  verifyEmail: (userId?: string) => Promise<void>;
+  verifyEmail: (userId?: string) => Promise<UserData>;
+  refreshUserProfile: () => Promise<UserData>;
+  updateProfile: (data: UpdateProfileData) => Promise<UserData>;
   logout: () => Promise<void>;
 }
 
 interface SignupData {
   email: string;
   password: string;
+  first_name: string;
+  last_name: string;
+  country_code: string;
+  phone_number: string;
+}
+
+interface UpdateProfileData {
   first_name: string;
   last_name: string;
   country_code: string;
@@ -61,6 +77,9 @@ const apiClient = axios.create({
     Accept: 'application/json',
   },
 });
+
+const isUnauthorizedError = (error: unknown): boolean =>
+  axios.isAxiosError(error) && error.response?.status === 401;
 
 const getErrorMessage = (error: unknown): string => {
   if (axios.isAxiosError(error)) {
@@ -85,100 +104,424 @@ const getErrorMessage = (error: unknown): string => {
     }
   }
 
-  if (error instanceof Error) {
+  if (error instanceof Error && error.message.trim().length > 0) {
     return error.message;
   }
 
   return 'Unexpected request error.';
 };
 
-const request = async <T,>(
-  path: string,
-  method: Method,
-  data?: unknown,
-  accessToken?: string,
-): Promise<T> => {
+const extractTokens = (
+  raw: Partial<UserData>,
+  fallback?: AuthTokens | null,
+): AuthTokens => ({
+  accessToken: raw.access_token ?? fallback?.accessToken ?? '',
+  refreshToken: raw.refresh_token ?? fallback?.refreshToken ?? '',
+  tokenType: raw.token_type ?? fallback?.tokenType ?? 'Bearer',
+  expiresIn: raw.expires_in ?? fallback?.expiresIn ?? 0,
+});
+
+const normalizeUser = (
+  raw: Partial<UserData>,
+  fallbackTokens?: AuthTokens | null,
+): UserData => {
+  const tokens = extractTokens(raw, fallbackTokens);
+
+  return {
+    email: raw.email ?? '',
+    role: raw.role ?? '',
+    status: raw.status ?? '',
+    user_id: raw.user_id ?? '',
+    access_token: tokens.accessToken,
+    refresh_token: tokens.refreshToken,
+    token_type: tokens.tokenType,
+    expires_in: tokens.expiresIn,
+    first_name: raw.first_name ?? '',
+    last_name: raw.last_name ?? '',
+    profile_image_url: raw.profile_image_url ?? null,
+    is_new_user: raw.is_new_user ?? false,
+    email_verified: raw.email_verified ?? false,
+    last_login_at: raw.last_login_at ?? null,
+    country_code: raw.country_code ?? '',
+    phone_number: raw.phone_number ?? '',
+  };
+};
+
+const loadStoredTokens = async (): Promise<AuthTokens | null> => {
+  const credentials = await Keychain.getGenericPassword({
+    service: TOKEN_STORAGE_SERVICE,
+  });
+
+  if (!credentials) {
+    return null;
+  }
+
   try {
+    const parsed = JSON.parse(credentials.password) as AuthTokens;
+    if (!parsed.accessToken || !parsed.refreshToken) {
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const saveTokens = async (tokens: AuthTokens): Promise<void> => {
+  await Keychain.setGenericPassword(
+    TOKEN_STORAGE_USERNAME,
+    JSON.stringify(tokens),
+    {
+      service: TOKEN_STORAGE_SERVICE,
+      accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+    },
+  );
+};
+
+const clearStoredTokens = async (): Promise<void> => {
+  await Keychain.resetGenericPassword({service: TOKEN_STORAGE_SERVICE});
+};
+
+export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
+  children,
+}) => {
+  const [user, setUser] = useState<UserData | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [_tokens, setTokens] = useState<AuthTokens | null>(null);
+
+  const tokensRef = useRef<AuthTokens | null>(null);
+  const refreshPromiseRef = useRef<Promise<AuthTokens | null> | null>(null);
+  const profileOverrideRef = useRef<{
+    first_name: string;
+    last_name: string;
+    country_code: string;
+    phone_number: string;
+  } | null>(null);
+
+  const withProfileOverride = (profile: Partial<UserData>): Partial<UserData> => {
+    const override = profileOverrideRef.current;
+    if (!override) {
+      return profile;
+    }
+
+    const backendMatchesOverride =
+      (profile.first_name ?? '') === override.first_name &&
+      (profile.last_name ?? '') === override.last_name &&
+      (profile.country_code ?? '') === override.country_code &&
+      (profile.phone_number ?? '') === override.phone_number;
+
+    if (backendMatchesOverride) {
+      profileOverrideRef.current = null;
+      return profile;
+    }
+
+    return {
+      ...profile,
+      first_name: override.first_name,
+      last_name: override.last_name,
+      country_code: override.country_code,
+      phone_number: override.phone_number,
+    };
+  };
+
+  const performRequest = async <T,>(
+    path: string,
+    method: Method,
+    data?: unknown,
+    overrideTokens?: AuthTokens | null,
+  ): Promise<T> => {
+    const authTokens = overrideTokens ?? tokensRef.current;
+    const headers =
+      authTokens?.accessToken && authTokens?.tokenType
+        ? {Authorization: `${authTokens.tokenType} ${authTokens.accessToken}`}
+        : undefined;
+
     const response = await apiClient.request<T>({
       url: path,
       method,
       data,
-      headers: accessToken
-        ? {
-            Authorization: `Bearer ${accessToken}`,
-          }
-        : undefined,
+      headers,
     });
 
     return response.data;
-  } catch (error) {
-    throw new Error(getErrorMessage(error));
-  }
-};
+  };
 
-const normalizeUser = (raw: Partial<UserData>): UserData => ({
-  email: raw.email ?? '',
-  role: raw.role ?? '',
-  status: raw.status ?? '',
-  user_id: raw.user_id ?? '',
-  access_token: raw.access_token ?? '',
-  refresh_token: raw.refresh_token ?? '',
-  token_type: raw.token_type ?? 'Bearer',
-  expires_in: raw.expires_in ?? 0,
-  first_name: raw.first_name ?? '',
-  last_name: raw.last_name ?? '',
-  profile_image_url: raw.profile_image_url ?? null,
-  is_new_user: raw.is_new_user ?? false,
-  email_verified: raw.email_verified ?? false,
-  last_login_at: raw.last_login_at ?? null,
-  country_code: raw.country_code ?? '',
-  phone_number: raw.phone_number ?? '',
-});
+  const clearSession = async (): Promise<void> => {
+    tokensRef.current = null;
+    refreshPromiseRef.current = null;
+    profileOverrideRef.current = null;
+    setTokens(null);
+    setUser(null);
+    setIsAuthenticated(false);
+    try {
+      await clearStoredTokens();
+    } catch {
+      // Local state is already cleared; ignore secure storage cleanup failure.
+    }
+  };
 
-export const AuthProvider: React.FC<{children: ReactNode}> = ({children}) => {
-  const [user, setUser] = useState<UserData | null>(null);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const applySession = async (sessionUser: UserData): Promise<UserData> => {
+    const sessionTokens = extractTokens(sessionUser);
+
+    if (!sessionTokens.accessToken || !sessionTokens.refreshToken) {
+      throw new Error('Authentication tokens were not returned by the server.');
+    }
+
+    tokensRef.current = sessionTokens;
+    setTokens(sessionTokens);
+    await saveTokens(sessionTokens);
+
+    const normalized = normalizeUser(sessionUser, sessionTokens);
+    setUser(normalized);
+    setIsAuthenticated(true);
+    return normalized;
+  };
+
+  const refreshTokens = async (): Promise<AuthTokens | null> => {
+    if (refreshPromiseRef.current) {
+      return refreshPromiseRef.current;
+    }
+
+    refreshPromiseRef.current = (async () => {
+      const currentTokens = tokensRef.current;
+      if (!currentTokens?.refreshToken) {
+        return null;
+      }
+
+      try {
+        const refreshResponse = await apiClient.request<Partial<UserData>>({
+          url: '/api/v1/auth/refresh',
+          method: 'POST',
+          data: {refreshToken: currentTokens.refreshToken},
+          headers: {
+            Authorization: `${currentTokens.tokenType} ${currentTokens.accessToken}`,
+          },
+        });
+
+        const nextTokens = extractTokens(refreshResponse.data, currentTokens);
+        if (!nextTokens.accessToken || !nextTokens.refreshToken) {
+          return null;
+        }
+
+        tokensRef.current = nextTokens;
+        setTokens(nextTokens);
+        await saveTokens(nextTokens);
+
+        setUser(prev =>
+          prev
+            ? normalizeUser(
+                {
+                  ...prev,
+                  access_token: nextTokens.accessToken,
+                  refresh_token: nextTokens.refreshToken,
+                  token_type: nextTokens.tokenType,
+                  expires_in: nextTokens.expiresIn,
+                },
+                nextTokens,
+              )
+            : prev,
+        );
+
+        return nextTokens;
+      } catch {
+        return null;
+      }
+    })();
+
+    try {
+      return await refreshPromiseRef.current;
+    } finally {
+      refreshPromiseRef.current = null;
+    }
+  };
+
+  const authorizedRequest = async <T,>(
+    path: string,
+    method: Method,
+    data?: unknown,
+  ): Promise<T> => {
+    if (!tokensRef.current?.accessToken) {
+      throw new Error('Session expired. Please sign in again.');
+    }
+
+    try {
+      return await performRequest<T>(path, method, data);
+    } catch (error) {
+      if (!isUnauthorizedError(error)) {
+        throw new Error(getErrorMessage(error));
+      }
+
+      const refreshedTokens = await refreshTokens();
+      if (!refreshedTokens) {
+        await clearSession();
+        throw new Error('Session expired. Please sign in again.');
+      }
+
+      try {
+        return await performRequest<T>(path, method, data, refreshedTokens);
+      } catch (retryError) {
+        throw new Error(getErrorMessage(retryError));
+      }
+    }
+  };
+
+  const refreshUserProfile = async (): Promise<UserData> => {
+    const profile = await authorizedRequest<Partial<UserData>>(
+      '/api/v1/auth/me',
+      'GET',
+    );
+    const normalized = normalizeUser(
+      withProfileOverride(profile),
+      tokensRef.current,
+    );
+    setUser(normalized);
+    setIsAuthenticated(true);
+    return normalized;
+  };
+
+  const updateProfile = async (data: UpdateProfileData): Promise<UserData> => {
+    const currentUser = user;
+    if (!currentUser) {
+      throw new Error('No active session found.');
+    }
+
+    const firstName = data.first_name.trim();
+    const lastName = data.last_name.trim();
+    const countryCode = data.country_code.replace(/[^\d]/g, '').trim();
+    const normalizedCountryCode = countryCode ? `+${countryCode.slice(0, 4)}` : '';
+    const normalizedPhoneNumber = data.phone_number.replace(/[^\d]/g, '').trim();
+
+    if (!firstName || !lastName) {
+      throw new Error('First name and last name are required.');
+    }
+
+    if (
+      normalizedPhoneNumber &&
+      (normalizedPhoneNumber.length < 7 || normalizedPhoneNumber.length > 15)
+    ) {
+      throw new Error('Phone number must be between 7 and 15 digits.');
+    }
+
+    const payload: {
+      userId: string;
+      firstName: string;
+      lastName: string;
+      countryCode?: string;
+      phoneNumber?: number;
+    } = {
+      userId: currentUser.user_id,
+      firstName,
+      lastName,
+    };
+
+    if (normalizedCountryCode) {
+      payload.countryCode = normalizedCountryCode;
+    }
+
+    if (normalizedPhoneNumber) {
+      payload.phoneNumber = Number(normalizedPhoneNumber);
+    }
+
+    await authorizedRequest<string>('/api/v1/users/update-profile', 'POST', payload);
+
+    profileOverrideRef.current = {
+      first_name: firstName,
+      last_name: lastName,
+      country_code: normalizedCountryCode,
+      phone_number: normalizedPhoneNumber,
+    };
+
+    const localPatchedUser = normalizeUser(
+      {
+        ...currentUser,
+        first_name: firstName,
+        last_name: lastName,
+        country_code: normalizedCountryCode,
+        phone_number: normalizedPhoneNumber,
+      },
+      tokensRef.current,
+    );
+    setUser(localPatchedUser);
+
+    try {
+      const profile = await authorizedRequest<Partial<UserData>>('/api/v1/auth/me', 'GET');
+      const normalized = normalizeUser(
+        withProfileOverride(profile),
+        tokensRef.current,
+      );
+      setUser(normalized);
+      return normalized;
+    } catch {
+      return localPatchedUser;
+    }
+  };
+
+  useEffect(() => {
+    const bootstrapSession = async () => {
+      try {
+        const storedTokens = await loadStoredTokens();
+        if (!storedTokens) {
+          return;
+        }
+
+        tokensRef.current = storedTokens;
+        setTokens(storedTokens);
+
+        const profile = await authorizedRequest<Partial<UserData>>(
+          '/api/v1/auth/me',
+          'GET',
+        );
+        const normalized = normalizeUser(
+          withProfileOverride(profile),
+          tokensRef.current,
+        );
+        setUser(normalized);
+        setIsAuthenticated(true);
+      } catch {
+        await clearSession();
+      } finally {
+        setIsInitializing(false);
+      }
+    };
+
+    bootstrapSession().catch(() => {
+      setIsInitializing(false);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const login = async (email: string, password: string): Promise<UserData> => {
-    const authResponse = await request<UserData>(
-      '/api/v1/auth/signin/email',
-      'POST',
-      {email: email.trim().toLowerCase(), password},
-    );
+    try {
+      const authResponse = await performRequest<UserData>(
+        '/api/v1/auth/signin/email',
+        'POST',
+        {email: email.trim().toLowerCase(), password},
+        null,
+      );
 
-    const normalizedUser = normalizeUser(authResponse);
-    setUser(normalizedUser);
-    setIsAuthenticated(true);
-    return normalizedUser;
+      return await applySession(authResponse);
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
   };
 
   const loginWithGoogle = async (): Promise<UserData> => {
     throw new Error('Google sign-in is temporarily disabled.');
   };
 
-  const verifyEmail = async (userId?: string): Promise<void> => {
-    const currentUser = user;
-    const targetUserId = userId || currentUser?.user_id;
-
-    if (!currentUser?.access_token || !targetUserId) {
-      throw new Error('Missing auth data required for email verification.');
+  const verifyEmail = async (userId?: string): Promise<UserData> => {
+    const targetUserId = userId || user?.user_id;
+    if (!targetUserId) {
+      throw new Error('Missing user ID required for email verification.');
     }
 
-    await request<void>(
+    await authorizedRequest<void>(
       `/api/v1/auth/verify-email/${targetUserId}`,
       'POST',
-      undefined,
-      currentUser.access_token,
     );
-
-    const profile = await request<Partial<UserData>>(
-      '/api/v1/auth/me',
-      'GET',
-      undefined,
-      currentUser.access_token,
-    );
-
-    setUser(normalizeUser({...currentUser, ...profile, email_verified: true}));
+    return await refreshUserProfile();
   };
 
   const signup = async (data: SignupData): Promise<UserData> => {
@@ -187,6 +530,7 @@ export const AuthProvider: React.FC<{children: ReactNode}> = ({children}) => {
       password: string;
       firstName: string;
       lastName: string;
+      role: string;
       countryCode?: string;
       phoneNumber?: number;
     } = {
@@ -194,6 +538,7 @@ export const AuthProvider: React.FC<{children: ReactNode}> = ({children}) => {
       password: data.password,
       firstName: data.first_name.trim(),
       lastName: data.last_name.trim(),
+      role: CARETAKER_ROLE,
     };
 
     if (data.country_code?.trim()) {
@@ -204,52 +549,38 @@ export const AuthProvider: React.FC<{children: ReactNode}> = ({children}) => {
       signupPayload.phoneNumber = Number(data.phone_number.trim());
     }
 
-    const authResponse = await request<UserData>(
-      '/api/v1/auth/signup/email',
-      'POST',
-      signupPayload,
-    );
+    try {
+      const authResponse = await performRequest<UserData>(
+        '/api/v1/auth/signup/email',
+        'POST',
+        signupPayload,
+        null,
+      );
 
-    await request<void>(
-      `/api/v1/auth/verify-email/${authResponse.user_id}`,
-      'POST',
-      undefined,
-      authResponse.access_token,
-    );
-
-    const profile = await request<Partial<UserData>>(
-      '/api/v1/auth/me',
-      'GET',
-      undefined,
-      authResponse.access_token,
-    );
-
-    const normalizedUser = normalizeUser({
-      ...authResponse,
-      ...profile,
-      email_verified: true,
-    });
-    setUser(normalizedUser);
-    setIsAuthenticated(true);
-    return normalizedUser;
+      await applySession(authResponse);
+      return await verifyEmail(authResponse.user_id);
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
   };
 
   const logout = async (): Promise<void> => {
-    if (user?.access_token) {
-      try {
-        await request<void>(
-          '/api/v1/auth/logout',
-          'POST',
-          undefined,
-          user.access_token,
-        );
-      } catch {
-        // Logout should always clear local session even if remote call fails.
-      }
-    }
+    const snapshotTokens = tokensRef.current;
+    await clearSession();
 
-    setUser(null);
-    setIsAuthenticated(false);
+    if (snapshotTokens?.accessToken && snapshotTokens.tokenType) {
+      apiClient
+        .request<void>({
+          url: '/api/v1/auth/logout',
+          method: 'POST',
+          headers: {
+            Authorization: `${snapshotTokens.tokenType} ${snapshotTokens.accessToken}`,
+          },
+        })
+        .catch(() => {
+          // Best-effort remote logout after local session is already cleared.
+        });
+    }
   };
 
   return (
@@ -257,10 +588,13 @@ export const AuthProvider: React.FC<{children: ReactNode}> = ({children}) => {
       value={{
         user,
         isAuthenticated,
+        isInitializing,
         login,
         loginWithGoogle,
         signup,
         verifyEmail,
+        refreshUserProfile,
+        updateProfile,
         logout,
       }}>
       {children}
