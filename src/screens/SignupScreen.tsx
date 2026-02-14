@@ -36,6 +36,13 @@ const SignupScreen: React.FC<SignupScreenProps> = ({navigation}) => {
   const [isLoading, setIsLoading] = useState(false);
   const [agreedToTerms, setAgreedToTerms] = useState(false);
 
+  const getErrorMessage = (error: unknown, fallback: string): string => {
+    if (error instanceof Error && error.message.trim().length > 0) {
+      return error.message;
+    }
+    return fallback;
+  };
+
   const updateFormData = (field: string, value: string) => {
     setFormData(prev => ({...prev, [field]: value}));
   };
@@ -104,9 +111,10 @@ const SignupScreen: React.FC<SignupScreenProps> = ({navigation}) => {
         country_code: formData.countryCode,
         phone_number: formData.phoneNumber,
       });
+      Alert.alert('Success', 'Account created and email verified.');
       // Navigation will be handled by App.tsx based on auth state
     } catch (error) {
-      Alert.alert('Error', 'Signup failed. Please try again.');
+      Alert.alert('Error', getErrorMessage(error, 'Signup failed.'));
     } finally {
       setIsLoading(false);
     }

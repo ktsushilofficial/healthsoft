@@ -21,12 +21,18 @@ interface LoginScreenProps {
 }
 
 const LoginScreen: React.FC<LoginScreenProps> = ({navigation}) => {
-  const {login, loginWithGoogle} = useAuth();
+  const {login} = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+
+  const getErrorMessage = (error: unknown, fallback: string): string => {
+    if (error instanceof Error && error.message.trim().length > 0) {
+      return error.message;
+    }
+    return fallback;
+  };
 
   const handleLogin = async () => {
     if (!email || !password) {
@@ -46,22 +52,14 @@ const LoginScreen: React.FC<LoginScreenProps> = ({navigation}) => {
       await login(email, password);
       // Navigation will be handled by App.tsx based on auth state
     } catch (error) {
-      Alert.alert('Error', 'Login failed. Please try again.');
+      Alert.alert('Error', getErrorMessage(error, 'Login failed.'));
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleGoogleLogin = async () => {
-    setIsGoogleLoading(true);
-    try {
-      await loginWithGoogle();
-      // Navigation will be handled by App.tsx based on auth state
-    } catch (error) {
-      Alert.alert('Error', 'Google login failed. Please try again.');
-    } finally {
-      setIsGoogleLoading(false);
-    }
+  const handleGoogleLogin = () => {
+    Alert.alert('Info', 'Google sign-in is temporarily disabled.');
   };
 
   return (
@@ -145,7 +143,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({navigation}) => {
             <TouchableOpacity
               style={[styles.loginButton, isLoading && styles.buttonDisabled]}
               onPress={handleLogin}
-              disabled={isLoading || isGoogleLoading}>
+              disabled={isLoading}>
               {isLoading ? (
                 <ActivityIndicator color="#FFFFFF" />
               ) : (
@@ -153,31 +151,18 @@ const LoginScreen: React.FC<LoginScreenProps> = ({navigation}) => {
               )}
             </TouchableOpacity>
 
-            {/* Divider */}
             <View style={styles.divider}>
               <View style={styles.dividerLine} />
               <Text style={styles.dividerText}>OR</Text>
               <View style={styles.dividerLine} />
             </View>
 
-            {/* Google Login Button */}
             <TouchableOpacity
-              style={[
-                styles.googleButton,
-                isGoogleLoading && styles.buttonDisabled,
-              ]}
+              style={styles.googleButton}
               onPress={handleGoogleLogin}
-              disabled={isLoading || isGoogleLoading}>
-              {isGoogleLoading ? (
-                <ActivityIndicator color="#FF9500" />
-              ) : (
-                <>
-                  <Icon name="logo-google" size={20} color="#FF9500" />
-                  <Text style={styles.googleButtonText}>
-                    Continue with Google
-                  </Text>
-                </>
-              )}
+              disabled={isLoading}>
+              <Icon name="logo-google" size={20} color="#FF9500" />
+              <Text style={styles.googleButtonText}>Continue with Google</Text>
             </TouchableOpacity>
 
             {/* Sign Up Link */}

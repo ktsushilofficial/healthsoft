@@ -13,7 +13,7 @@ import {
 import {useNavigation} from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 export const ExploreScreen = () => {
-  const navigation = useNavigation();
+  const navigation = useNavigation<any>();
 
   const links = {
     community: 'https://www.reddit.com/r/eldercare/',
@@ -26,20 +26,20 @@ export const ExploreScreen = () => {
     <SafeAreaView style={styles.container}>
       <ScrollView>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => navigation.navigate('Home' as never)}>
+          <TouchableOpacity onPress={() => navigation.navigate('Home')}>
             <Icon name="arrow-back" size={24} color="#333" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Explore</Text>
-          <View style={{width: 24}} />
+          <View style={styles.headerSpacer} />
         </View>
 
         <TouchableOpacity
           style={styles.exploreCard}
           onPress={() =>
-            navigation.navigate('WebView' as never, {
+            navigation.navigate('WebView', {
               url: links.community,
               title: 'Community',
-            } as never)
+            })
           }
         >
           <Icon name="people" size={32} color="#FF9500" />
@@ -55,10 +55,10 @@ export const ExploreScreen = () => {
         <TouchableOpacity
           style={styles.exploreCard}
           onPress={() =>
-            navigation.navigate('WebView' as never, {
+            navigation.navigate('WebView', {
               url: links.marketplace,
               title: 'Marketplace',
-            } as never)
+            })
           }
         >
           <Icon name="cart" size={32} color="#FF9500" />
@@ -74,10 +74,10 @@ export const ExploreScreen = () => {
         <TouchableOpacity
           style={styles.exploreCard}
           onPress={() =>
-            navigation.navigate('WebView' as never, {
+            navigation.navigate('WebView', {
               url: links.discussion,
               title: 'Discussion Board',
-            } as never)
+            })
           }
         >
           <Icon name="chatbubbles" size={32} color="#FF9500" />
@@ -93,10 +93,10 @@ export const ExploreScreen = () => {
         <TouchableOpacity
           style={styles.exploreCard}
           onPress={() =>
-            navigation.navigate('WebView' as never, {
+            navigation.navigate('WebView', {
               url: links.learning,
               title: 'Learning',
-            } as never)
+            })
           }
         >
           <Icon name="book" size={32} color="#FF9500" />
@@ -112,10 +112,10 @@ export const ExploreScreen = () => {
         <TouchableOpacity
           style={styles.exploreCard}
           onPress={() =>
-            navigation.navigate('WebView' as never, {
+            navigation.navigate('WebView', {
               url: links.religious,
               title: 'Religious',
-            } as never)
+            })
           }
         >
           <Icon name="add-circle" size={32} color="#FF9500" />
@@ -149,6 +149,9 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
     color: '#333',
+  },
+  headerSpacer: {
+    width: 24,
   },
   unlinkButton: {
     color: '#FF9500',
