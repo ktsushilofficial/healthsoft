@@ -13,6 +13,14 @@ import {
 import {useNavigation} from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 
+type Criticality = 'critical' | 'warning' | 'normal';
+
+const CRITICALITY_COLORS: Record<Criticality, string> = {
+  critical: '#FFC0C0',
+  warning: '#FFD2A3',
+  normal: '#BFE8D0',
+};
+
 const notifications = [
   {
     id: '1',
@@ -21,6 +29,7 @@ const notifications = [
     time: 'Just now',
     type: 'pill',
     unread: true,
+    criticality: 'warning' as Criticality,
   },
   {
     id: '2',
@@ -29,6 +38,7 @@ const notifications = [
     time: '15 min ago',
     type: 'device',
     unread: true,
+    criticality: 'critical' as Criticality,
   },
   {
     id: '3',
@@ -37,6 +47,7 @@ const notifications = [
     time: 'Today, 9:10 AM',
     type: 'heart',
     unread: false,
+    criticality: 'normal' as Criticality,
   },
   {
     id: '4',
@@ -45,6 +56,7 @@ const notifications = [
     time: 'Yesterday',
     type: 'note',
     unread: false,
+    criticality: 'normal' as Criticality,
   },
 ];
 
@@ -79,7 +91,12 @@ const NotificationsScreen = () => {
         {notifications
           .filter(item => item.unread)
           .map(item => (
-            <View key={item.id} style={styles.notificationCard}>
+            <View
+              key={item.id}
+              style={[
+                styles.notificationCard,
+                {backgroundColor: CRITICALITY_COLORS[item.criticality]},
+              ]}>
               <View style={styles.iconWrap}>
                 <Icon
                   name={
@@ -113,7 +130,12 @@ const NotificationsScreen = () => {
         {notifications
           .filter(item => !item.unread)
           .map(item => (
-            <View key={item.id} style={styles.notificationCardMuted}>
+            <View
+              key={item.id}
+              style={[
+                styles.notificationCardMuted,
+                {backgroundColor: CRITICALITY_COLORS[item.criticality]},
+              ]}>
               <View style={styles.iconWrapMuted}>
                 <Icon
                   name={
@@ -212,7 +234,6 @@ const styles = StyleSheet.create({
     color: '#7A726A',
   },
   notificationCard: {
-    backgroundColor: '#FFFFFF',
     marginHorizontal: 16,
     marginBottom: 12,
     borderRadius: 16,
@@ -223,7 +244,6 @@ const styles = StyleSheet.create({
     borderColor: '#F1E8DE',
   },
   notificationCardMuted: {
-    backgroundColor: '#FAF7F2',
     marginHorizontal: 16,
     marginBottom: 12,
     borderRadius: 16,

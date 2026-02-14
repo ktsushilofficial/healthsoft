@@ -22,6 +22,7 @@ import BottomTabNavigator from './src/navigation/BottomTabNavigator';
 import LoginScreen from './src/screens/LoginScreen';
 import SignupScreen from './src/screens/SignupScreen';
 import NotificationsScreen from './src/screens/NotificationsScreen';
+import WebViewScreen from './src/screens/WebViewScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -41,6 +42,7 @@ const AppNavigator = () => {
         <>
           <Stack.Screen name="Main" component={BottomTabNavigator} />
           <Stack.Screen name="Notifications" component={NotificationsScreen} />
+          <Stack.Screen name="WebView" component={WebViewScreen} />
         </>
       )}
     </Stack.Navigator>

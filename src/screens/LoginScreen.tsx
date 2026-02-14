@@ -75,7 +75,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({navigation}) => {
           {/* Header */}
           <View style={styles.header}>
             <Icon name="medical" size={60} color="#FF9500" />
-            <Text style={styles.title}>CareTaker</Text>
+            <Text style={styles.title}>Healthsoft</Text>
             <Text style={styles.subtitle}>
               Care for your loved ones, anytime, anywhere
             </Text>
