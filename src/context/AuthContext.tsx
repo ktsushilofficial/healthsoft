@@ -39,6 +39,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isInitializing: boolean;
   login: (email: string, password: string) => Promise<UserData>;
+  loginWithPhone: (phoneNumber: string, countryCode: string, password: string) => Promise<UserData>;
   loginWithGoogle: () => Promise<UserData>;
   signup: (data: SignupData) => Promise<UserData>;
   verifyEmail: (userId?: string) => Promise<UserData>;
@@ -54,6 +55,7 @@ interface SignupData {
   last_name: string;
   country_code: string;
   phone_number: string;
+  role: string;
 }
 
 interface UpdateProfileData {
@@ -404,6 +406,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
       throw new Error('Phone number must be between 7 and 15 digits.');
     }
 
+    // Use the correct API endpoint and payload structure
     const payload: {
       userId: string;
       firstName: string;
@@ -424,8 +427,10 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
       payload.phoneNumber = Number(normalizedPhoneNumber);
     }
 
-    await authorizedRequest<string>('/api/v1/users/update-profile', 'POST', payload);
+    // First update the profile on the server
+    await authorizedRequest<Partial<UserData>>('/api/v1/users/update-profile', 'POST', payload);
 
+    // Update local state with the new profile data
     profileOverrideRef.current = {
       first_name: firstName,
       last_name: lastName,
@@ -445,6 +450,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
     );
     setUser(localPatchedUser);
 
+    // Fetch the updated profile from server to ensure consistency
     try {
       const profile = await authorizedRequest<Partial<UserData>>('/api/v1/auth/me', 'GET');
       const normalized = normalizeUser(
@@ -454,6 +460,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
       setUser(normalized);
       return normalized;
     } catch {
+      // If server fetch fails, return the locally patched user
       return localPatchedUser;
     }
   };
@@ -498,6 +505,25 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
         '/api/v1/auth/signin/email',
         'POST',
         {email: email.trim().toLowerCase(), password},
+        null,
+      );
+
+      return await applySession(authResponse);
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  };
+
+  const loginWithPhone = async (phoneNumber: string, countryCode: string, password: string): Promise<UserData> => {
+    try {
+      const authResponse = await performRequest<UserData>(
+        '/api/v1/auth/signin/phone',
+        'POST',
+        {
+          phoneNumber: phoneNumber.replace(/[^\d]/g, ''),
+          countryCode: countryCode.replace(/[^\d]/g, ''),
+          password
+        },
         null,
       );
 
@@ -590,6 +616,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
         isAuthenticated,
         isInitializing,
         login,
+        loginWithPhone,
         loginWithGoogle,
         signup,
         verifyEmail,

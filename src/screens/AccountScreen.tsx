@@ -128,6 +128,19 @@ const AccountScreen = () => {
       return;
     }
 
+    // Check if any changes were made
+    const hasChanges = 
+      firstName !== (user?.first_name ?? '') ||
+      lastName !== (user?.last_name ?? '') ||
+      countryCode !== (user?.country_code ?? '') ||
+      phoneNumber !== (user?.phone_number ?? '');
+
+    if (!hasChanges) {
+      Alert.alert('No Changes', 'No changes were made to your profile.');
+      setIsEditing(false);
+      return;
+    }
+
     setIsSaving(true);
     try {
       await updateProfile({
@@ -154,7 +167,7 @@ const AccountScreen = () => {
     } finally {
       setIsSaving(false);
     }
-  }, [form, updateProfile]);
+  }, [form, updateProfile, user]);
 
   const handleCancelEdit = useCallback(() => {
     setForm({

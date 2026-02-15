@@ -30,6 +30,7 @@ const SignupScreen: React.FC<SignupScreenProps> = ({navigation}) => {
     confirmPassword: '',
     countryCode: '+91',
     phoneNumber: '',
+    role: 'CARE_TAKER', // Default to caretaker
   });
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -80,10 +81,10 @@ const SignupScreen: React.FC<SignupScreenProps> = ({navigation}) => {
       return false;
     }
 
-    // Validate phone number (basic check for digits)
-    const phoneRegex = /^\d{10}$/;
+    // Validate phone number (improved validation for international numbers)
+    const phoneRegex = /^\d{7,15}$/;
     if (!phoneRegex.test(formData.phoneNumber)) {
-      Alert.alert('Error', 'Please enter a valid 10-digit phone number');
+      Alert.alert('Error', 'Please enter a valid phone number (7-15 digits)');
       return false;
     }
 
@@ -110,6 +111,7 @@ const SignupScreen: React.FC<SignupScreenProps> = ({navigation}) => {
         last_name: formData.lastName,
         country_code: formData.countryCode,
         phone_number: formData.phoneNumber,
+        role: formData.role,
       });
       Alert.alert('Success', 'Account created and email verified.');
       // Navigation will be handled by App.tsx based on auth state
@@ -119,6 +121,7 @@ const SignupScreen: React.FC<SignupScreenProps> = ({navigation}) => {
       setIsLoading(false);
     }
   };
+
 
   return (
     <SafeAreaView style={styles.container}>
@@ -144,6 +147,41 @@ const SignupScreen: React.FC<SignupScreenProps> = ({navigation}) => {
 
           {/* Signup Form */}
           <View style={styles.formContainer}>
+            {/* Role Selection */}
+            <View style={styles.roleContainer}>
+              <Text style={styles.roleLabel}>I am a:</Text>
+              <View style={styles.roleSelector}>
+                <TouchableOpacity
+                  style={[
+                    styles.roleOption,
+                    styles.leftOption,
+                    formData.role === 'CARE_TAKER' && styles.activeRole
+                  ]}
+                  onPress={() => setFormData(prev => ({...prev, role: 'CARE_TAKER'}))}>
+                  <Text style={[
+                    styles.roleText,
+                    formData.role === 'CARE_TAKER' && styles.activeRoleText
+                  ]}>
+                    Caretaker
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.roleOption,
+                    styles.rightOption,
+                    formData.role === 'SENIOR' && styles.activeRole
+                  ]}
+                  onPress={() => setFormData(prev => ({...prev, role: 'SENIOR'}))}>
+                  <Text style={[
+                    styles.roleText,
+                    formData.role === 'SENIOR' && styles.activeRoleText
+                  ]}>
+                    Senior
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
             {/* First Name */}
             <View style={styles.inputContainer}>
               <Icon
@@ -224,7 +262,7 @@ const SignupScreen: React.FC<SignupScreenProps> = ({navigation}) => {
                   value={formData.phoneNumber}
                   onChangeText={value => updateFormData('phoneNumber', value)}
                   keyboardType="phone-pad"
-                  maxLength={10}
+                  maxLength={15}
                 />
               </View>
             </View>
@@ -376,6 +414,43 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingTop: 24,
     paddingBottom: 32,
+  },
+  roleContainer: {
+    marginBottom: 16,
+  },
+  roleLabel: {
+    fontSize: 14,
+    color: '#666666',
+    marginBottom: 8,
+  },
+  roleSelector: {
+    flexDirection: 'row',
+    backgroundColor: '#F8F8F8',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E5E5',
+    overflow: 'hidden',
+  },
+  roleOption: {
+    flex: 1,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  leftOption: {
+    borderRightWidth: 1,
+    borderRightColor: '#E5E5E5',
+  },
+  rightOption: {},
+  activeRole: {
+    backgroundColor: '#FF9500',
+  },
+  roleText: {
+    fontSize: 16,
+    color: '#000000',
+    fontWeight: '600',
+  },
+  activeRoleText: {
+    color: '#FFFFFF',
   },
   inputContainer: {
     flexDirection: 'row',
