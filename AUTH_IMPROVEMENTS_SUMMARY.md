@@ -88,6 +88,9 @@ logout: '/api/v1/auth/logout'
 verifyEmail: '/api/v1/auth/verify-email'
 me: '/api/v1/auth/me'
 updateProfile: '/api/v1/users/update-profile'
+changePassword: '/api/v1/auth/change-password'
+googleAuth: '/api/v1/auth/google'
+initiateGoogleLogin: '/api/v1/auth/login/google'
 ```
 
 ### Validation Enhancements

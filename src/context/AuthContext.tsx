@@ -46,6 +46,10 @@ interface AuthContextType {
   refreshUserProfile: () => Promise<UserData>;
   updateProfile: (data: UpdateProfileData) => Promise<UserData>;
   logout: () => Promise<void>;
+  changePassword: (oldPassword: string, newPassword: string) => Promise<void>;
+  refreshToken: () => Promise<UserData>;
+  googleAuth: (idToken: string, role?: string) => Promise<UserData>;
+  initiateGoogleLogin: () => Promise<void>;
 }
 
 interface SignupData {
@@ -609,6 +613,61 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
     }
   };
 
+  // Additional API endpoints for complete authentication system
+  const changePassword = async (oldPassword: string, newPassword: string): Promise<void> => {
+    const userId = user?.user_id;
+    if (!userId) {
+      throw new Error('No active session found.');
+    }
+
+    try {
+      await authorizedRequest<void>(
+        `/api/v1/auth/change-password?userId=${userId}&oldPassword=${encodeURIComponent(oldPassword)}&newPassword=${encodeURIComponent(newPassword)}`,
+        'POST',
+      );
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  };
+
+  const refreshToken = async (): Promise<UserData> => {
+    const refreshedTokens = await refreshTokens();
+    if (!refreshedTokens) {
+      throw new Error('Unable to refresh tokens. Please sign in again.');
+    }
+
+    // Refresh user profile with new tokens
+    return await refreshUserProfile();
+  };
+
+  const googleAuth = async (idToken: string, role: string = CARETAKER_ROLE): Promise<UserData> => {
+    try {
+      const authResponse = await performRequest<UserData>(
+        '/api/v1/auth/google',
+        'POST',
+        {idToken, role},
+        null,
+      );
+
+      return await applySession(authResponse);
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  };
+
+  const initiateGoogleLogin = async (): Promise<void> => {
+    try {
+      await performRequest<void>(
+        '/api/v1/auth/login/google',
+        'GET',
+        null,
+        null,
+      );
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -623,6 +682,10 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
         refreshUserProfile,
         updateProfile,
         logout,
+        changePassword,
+        refreshToken,
+        googleAuth,
+        initiateGoogleLogin,
       }}>
       {children}
     </AuthContext.Provider>
