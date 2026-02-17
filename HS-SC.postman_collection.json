@@ -1,0 +1,277 @@
+{
+  "info": {
+    "_postman_id": "72aff931-dc27-474b-8796-b283c57adf01",
+    "name": "HS-SC",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "45152760",
+    "_collection_link": "https://go.postman.co/collection/45152760-72aff931-dc27-474b-8796-b283c57adf01?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "V1 - Auth",
+      "item": [
+        {
+          "name": "Signup via Email",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\r\n    \"firstName\": \"Ratnender\",\r\n    \"lastName\": \"Girri\",\r\n    \"email\": \"ratnenddr@gmail.com\",\r\n    \"password\": \"password\",\r\n    \"phoneNumber\": 9317251526\r\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{HSC}}/api/v1/auth/signup/email",
+              "host": [
+                "{{HSC}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "signup",
+                "email"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Logi via Email",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\r\n    \"email\": \"ratnenddr@gmail.com\",\r\n    \"password\": \"password\"\r\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{HSC}}/api/v1/auth/signin",
+              "host": [
+                "{{HSC}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "signin"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Profile",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "accept",
+                "value": "*/*"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiR1VBUkRJQU4iLCJlbWFpbF92ZXJpZmllZCI6ZmFsc2UsIm1vYmlsZSI6OTMxNzI1MTUyNiwibmFtZSI6IlJhdG5lbmRlciBHaXJyaSIsImFjdGl2ZSI6dHJ1ZSwidHZlciI6MSwidHlwZSI6ImFjY2VzcyIsInByaW1hcnlFbWFpbCI6InJhdG5lbmRkckBnbWFpbC5jb20iLCJ1c2VybmFtZSI6ImI4ZDk0ZmI2LWVmMDMtNGM0MS1hMzI4LTBlYmFlMzFlOTQ2OSIsInN1YiI6ImI4ZDk0ZmI2LWVmMDMtNGM0MS1hMzI4LTBlYmFlMzFlOTQ2OSIsImlzcyI6ImhlYWx0aHNvZnQtYXV0aC1zZXJ2aWNlIiwiYXVkIjoiaGVhbHRoc29mdC1tb2JpbGUtYXBwIiwiaWF0IjoxNzcxMjEwNTE5LCJleHAiOjE3NzM4MDI1MTl9.d4-TfhmcRHNVBuEpqw6qC5VB5i0gK8MsSE9bMZaJ2_g",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{HSC}}/api/v1/auth/me",
+              "host": [
+                "{{HSC}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "accept",
+                "value": "*/*"
+              },
+              {
+                "key": "refreshToken",
+                "value": "e7f19456-890b-4b3f-8d6c-e05c36fa65a9d74817b3-cf74-4372-89de-8768ad1d738a",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{HSC}}/api/v1/auth/logout",
+              "host": [
+                "{{HSC}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "logout"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Senior",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "accept",
+                "value": "*/*"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiR1VBUkRJQU4iLCJlbWFpbF92ZXJpZmllZCI6ZmFsc2UsIm1vYmlsZSI6OTMxNzI1MTUyNiwibmFtZSI6IlJhdG5lbmRlciBHaXJyaSIsImFjdGl2ZSI6dHJ1ZSwidHZlciI6MSwidHlwZSI6ImFjY2VzcyIsInByaW1hcnlFbWFpbCI6InJhdG5lbmRkckBnbWFpbC5jb20iLCJ1c2VybmFtZSI6ImI4ZDk0ZmI2LWVmMDMtNGM0MS1hMzI4LTBlYmFlMzFlOTQ2OSIsInN1YiI6ImI4ZDk0ZmI2LWVmMDMtNGM0MS1hMzI4LTBlYmFlMzFlOTQ2OSIsImlzcyI6ImhlYWx0aHNvZnQtYXV0aC1zZXJ2aWNlIiwiYXVkIjoiaGVhbHRoc29mdC1tb2JpbGUtYXBwIiwiaWF0IjoxNzcxMjEwNTE5LCJleHAiOjE3NzM4MDI1MTl9.d4-TfhmcRHNVBuEpqw6qC5VB5i0gK8MsSE9bMZaJ2_g",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\r\n    \"firstName\":\"Sita\",\r\n    \"lastName\":\"Devi\",\r\n    \"phoneNumber\": 9317251535,\r\n    \"height\":5.5,\r\n    \"weight\":65,\r\n    \"gender\":\"FEMALE\",\r\n    \"dateOfBirth\": 153779704000\r\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{HSC}}/api/v1/seniors/create",
+              "host": [
+                "{{HSC}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "seniors",
+                "create"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "accept",
+                "value": "*/*"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiR1VBUkRJQU4iLCJlbWFpbF92ZXJpZmllZCI6ZmFsc2UsIm1vYmlsZSI6OTMxNzI1MTUyNiwibmFtZSI6IlJhdG5lbmRlciBHaXJyaSIsImFjdGl2ZSI6dHJ1ZSwidHZlciI6MSwidHlwZSI6ImFjY2VzcyIsInByaW1hcnlFbWFpbCI6InJhdG5lbmRkckBnbWFpbC5jb20iLCJ1c2VybmFtZSI6ImI4ZDk0ZmI2LWVmMDMtNGM0MS1hMzI4LTBlYmFlMzFlOTQ2OSIsInN1YiI6ImI4ZDk0ZmI2LWVmMDMtNGM0MS1hMzI4LTBlYmFlMzFlOTQ2OSIsImlzcyI6ImhlYWx0aHNvZnQtYXV0aC1zZXJ2aWNlIiwiYXVkIjoiaGVhbHRoc29mdC1tb2JpbGUtYXBwIiwiaWF0IjoxNzcxMjEwNTE5LCJleHAiOjE3NzM4MDI1MTl9.d4-TfhmcRHNVBuEpqw6qC5VB5i0gK8MsSE9bMZaJ2_g",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\r\n  \"firstName\": \"Ratnender\",\r\n  \"lastName\": \"Girri\",\r\n  \"userName\": \"ratnenddr\",\r\n  \"phoneNumber\": 9317251526,\r\n  \"secondaryEmail\": \"ratnenddr.girri@gmail.com\"\r\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{HSC}}/api/v1/auth/me",
+              "host": [
+                "{{HSC}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Actuator",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{devsc}}/actuator/health",
+              "host": [
+                "{{devsc}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://seniorcare.healthsoftcare.in/health-check",
+          "protocol": "http",
+          "host": [
+            "seniorcare",
+            "healthsoftcare",
+            "in"
+          ],
+          "path": [
+            "health-check"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}

@@ -1,11 +1,12 @@
 // src/context/AuthContext.tsx
-import React, {createContext, useEffect, useRef, useState, useContext} from 'react';
-import axios, {Method} from 'axios';
+import React, { createContext, useEffect, useRef, useState, useContext } from 'react';
+import axios, { Method } from 'axios';
 import * as Keychain from 'react-native-keychain';
 
 const API_BASE_URL = 'http://seniorcare.healthsoftcare.in';
 const TOKEN_STORAGE_SERVICE = 'healthsoft.auth.tokens';
 const TOKEN_STORAGE_USERNAME = 'healthsoft-auth';
+// Profile storage removed as per requirement
 const CARETAKER_ROLE = 'CARE_TAKER';
 
 interface AuthTokens {
@@ -32,6 +33,7 @@ interface UserData {
   last_login_at: number | string | null;
   country_code: string;
   phone_number: string;
+  primaryEmail?: string;
 }
 
 interface AuthContextType {
@@ -50,6 +52,7 @@ interface AuthContextType {
   refreshToken: () => Promise<UserData>;
   googleAuth: (idToken: string, role?: string) => Promise<UserData>;
   initiateGoogleLogin: () => Promise<void>;
+  forgotPassword: (email: string) => Promise<void>;
 }
 
 interface SignupData {
@@ -128,13 +131,13 @@ const extractTokens = (
 });
 
 const normalizeUser = (
-  raw: Partial<UserData>,
+  raw: Partial<UserData> & { primaryEmail?: string },
   fallbackTokens?: AuthTokens | null,
 ): UserData => {
   const tokens = extractTokens(raw, fallbackTokens);
 
   return {
-    email: raw.email ?? '',
+    email: raw.email || raw.primaryEmail || '',
     role: raw.role ?? '',
     status: raw.status ?? '',
     user_id: raw.user_id ?? '',
@@ -150,6 +153,7 @@ const normalizeUser = (
     last_login_at: raw.last_login_at ?? null,
     country_code: raw.country_code ?? '',
     phone_number: raw.phone_number ?? '',
+    primaryEmail: raw.primaryEmail,
   };
 };
 
@@ -186,10 +190,13 @@ const saveTokens = async (tokens: AuthTokens): Promise<void> => {
 };
 
 const clearStoredTokens = async (): Promise<void> => {
-  await Keychain.resetGenericPassword({service: TOKEN_STORAGE_SERVICE});
+  await Keychain.resetGenericPassword({ service: TOKEN_STORAGE_SERVICE });
 };
 
-export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
+// Local profile storage functions removed
+
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const [user, setUser] = useState<UserData | null>(null);
@@ -241,7 +248,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
     const authTokens = overrideTokens ?? tokensRef.current;
     const headers =
       authTokens?.accessToken && authTokens?.tokenType
-        ? {Authorization: `${authTokens.tokenType} ${authTokens.accessToken}`}
+        ? { Authorization: `${authTokens.tokenType} ${authTokens.accessToken}` }
         : undefined;
 
     const response = await apiClient.request<T>({
@@ -279,9 +286,14 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
     setTokens(sessionTokens);
     await saveTokens(sessionTokens);
 
+    // Profile persistence removed.
+    // We strictly use the sessionUser provided by the login/signup response
+    // or rely on fetching the profile from the API subsequently.
+
     const normalized = normalizeUser(sessionUser, sessionTokens);
     setUser(normalized);
     setIsAuthenticated(true);
+
     return normalized;
   };
 
@@ -300,7 +312,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
         const refreshResponse = await apiClient.request<Partial<UserData>>({
           url: '/api/v1/auth/refresh',
           method: 'POST',
-          data: {refreshToken: currentTokens.refreshToken},
+          data: { refreshToken: currentTokens.refreshToken },
           headers: {
             Authorization: `${currentTokens.tokenType} ${currentTokens.accessToken}`,
           },
@@ -318,15 +330,15 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
         setUser(prev =>
           prev
             ? normalizeUser(
-                {
-                  ...prev,
-                  access_token: nextTokens.accessToken,
-                  refresh_token: nextTokens.refreshToken,
-                  token_type: nextTokens.tokenType,
-                  expires_in: nextTokens.expiresIn,
-                },
-                nextTokens,
-              )
+              {
+                ...prev,
+                access_token: nextTokens.accessToken,
+                refresh_token: nextTokens.refreshToken,
+                token_type: nextTokens.tokenType,
+                expires_in: nextTokens.expiresIn,
+              },
+              nextTokens,
+            )
             : prev,
         );
 
@@ -410,15 +422,12 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
       throw new Error('Phone number must be between 7 and 15 digits.');
     }
 
-    // Use the correct API endpoint and payload structure
     const payload: {
-      userId: string;
       firstName: string;
       lastName: string;
       countryCode?: string;
       phoneNumber?: number;
     } = {
-      userId: currentUser.user_id,
       firstName,
       lastName,
     };
@@ -431,10 +440,8 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
       payload.phoneNumber = Number(normalizedPhoneNumber);
     }
 
-    // First update the profile on the server
-    await authorizedRequest<Partial<UserData>>('/api/v1/users/update-profile', 'POST', payload);
+    await authorizedRequest<Partial<UserData>>('/api/v1/auth/me', 'PUT', payload);
 
-    // Update local state with the new profile data
     profileOverrideRef.current = {
       first_name: firstName,
       last_name: lastName,
@@ -454,7 +461,6 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
     );
     setUser(localPatchedUser);
 
-    // Fetch the updated profile from server to ensure consistency
     try {
       const profile = await authorizedRequest<Partial<UserData>>('/api/v1/auth/me', 'GET');
       const normalized = normalizeUser(
@@ -462,10 +468,23 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
         tokensRef.current,
       );
       setUser(normalized);
+
       return normalized;
     } catch {
-      // If server fetch fails, return the locally patched user
       return localPatchedUser;
+    }
+  };
+
+  const forgotPassword = async (email: string): Promise<void> => {
+    try {
+      await performRequest<void>(
+        '/api/v1/auth/forgot-password',
+        'POST',
+        { email },
+        null
+      );
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
     }
   };
 
@@ -480,10 +499,16 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
         tokensRef.current = storedTokens;
         setTokens(storedTokens);
 
-        const profile = await authorizedRequest<Partial<UserData>>(
-          '/api/v1/auth/me',
-          'GET',
-        );
+        let profile: Partial<UserData> = {};
+        try {
+          profile = await authorizedRequest<Partial<UserData>>(
+            '/api/v1/auth/me',
+            'GET',
+          );
+        } catch {
+          // Proceed with empty profile if fetch fails
+        }
+
         const normalized = normalizeUser(
           withProfileOverride(profile),
           tokensRef.current,
@@ -500,15 +525,14 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
     bootstrapSession().catch(() => {
       setIsInitializing(false);
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const login = async (email: string, password: string): Promise<UserData> => {
     try {
       const authResponse = await performRequest<UserData>(
-        '/api/v1/auth/signin/email',
+        '/api/v1/auth/signin',
         'POST',
-        {email: email.trim().toLowerCase(), password},
+        { email: email.trim().toLowerCase(), password },
         null,
       );
 
@@ -568,15 +592,19 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
       password: data.password,
       firstName: data.first_name.trim(),
       lastName: data.last_name.trim(),
-      role: CARETAKER_ROLE,
+      role: data.role,
     };
 
     if (data.country_code?.trim()) {
-      signupPayload.countryCode = data.country_code.trim();
+      const cleanedCountryCode = data.country_code.replace(/[^\d]/g, '').trim();
+      signupPayload.countryCode = cleanedCountryCode ? `+${cleanedCountryCode.slice(0, 4)}` : '';
     }
 
     if (data.phone_number?.trim()) {
-      signupPayload.phoneNumber = Number(data.phone_number.trim());
+      const cleanedPhone = data.phone_number.replace(/[^\d]/g, '').trim();
+      if (cleanedPhone) {
+        signupPayload.phoneNumber = Number(cleanedPhone);
+      }
     }
 
     try {
@@ -608,12 +636,11 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
           },
         })
         .catch(() => {
-          // Best-effort remote logout after local session is already cleared.
+          // Best-effort remote logout
         });
     }
   };
 
-  // Additional API endpoints for complete authentication system
   const changePassword = async (oldPassword: string, newPassword: string): Promise<void> => {
     const userId = user?.user_id;
     if (!userId) {
@@ -636,7 +663,6 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
       throw new Error('Unable to refresh tokens. Please sign in again.');
     }
 
-    // Refresh user profile with new tokens
     return await refreshUserProfile();
   };
 
@@ -645,7 +671,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
       const authResponse = await performRequest<UserData>(
         '/api/v1/auth/google',
         'POST',
-        {idToken, role},
+        { idToken, role },
         null,
       );
 
@@ -686,6 +712,7 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({
         refreshToken,
         googleAuth,
         initiateGoogleLogin,
+        forgotPassword,
       }}>
       {children}
     </AuthContext.Provider>
