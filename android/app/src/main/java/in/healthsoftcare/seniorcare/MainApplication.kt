@@ -1,4 +1,4 @@
-package com.healthsoftapp
+package `in`.healthsoftcare.seniorcare
 
 import android.app.Application
 import com.facebook.react.PackageList

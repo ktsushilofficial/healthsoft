@@ -1,7 +1,9 @@
 // src/context/AuthContext.tsx
 import React, { createContext, useEffect, useRef, useState, useContext } from 'react';
+import { Platform } from 'react-native';
 import axios, { Method } from 'axios';
 import * as Keychain from 'react-native-keychain';
+import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 
 const API_BASE_URL = 'http://seniorcare.healthsoftcare.in';
 const TOKEN_STORAGE_SERVICE = 'healthsoft.auth.tokens';
@@ -9,6 +11,7 @@ const TOKEN_STORAGE_USERNAME = 'healthsoft-auth';
 const SELECTED_SENIOR_STORAGE_SERVICE = 'healthsoft.prefs.selectedSenior';
 // Profile storage removed as per requirement
 const CARETAKER_ROLE = 'CARE_TAKER';
+const WEB_CLIENT_ID = '388740977041-rvg9j86k6ie0etecc24qq9ovfp23lfj3.apps.googleusercontent.com';
 
 export interface Senior {
   userId: string;
@@ -62,7 +65,7 @@ interface AuthContextType {
   logout: () => Promise<void>;
   changePassword: (oldPassword: string, newPassword: string) => Promise<void>;
   refreshToken: () => Promise<UserData>;
-  googleAuth: (idToken: string, role?: string) => Promise<UserData>;
+  googleAuth: (idToken: string) => Promise<UserData>;
   initiateGoogleLogin: () => Promise<void>;
   forgotPassword: (email: string) => Promise<void>;
   seniors: Senior[];
@@ -117,6 +120,16 @@ const getErrorMessage = (error: unknown): string => {
       }
       if (payload.message) {
         return payload.message;
+      }
+      // @ts-ignore - Handle various error payload formats
+      if (payload.errorMessage) {
+        // @ts-ignore
+        return payload.errorMessage;
+      }
+      // @ts-ignore
+      if (payload.error) {
+        // @ts-ignore
+        return payload.error;
       }
     }
 
@@ -222,6 +235,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [seniors, setSeniors] = useState<Senior[]>([]);
   const [selectedSenior, setSelectedSenior] = useState<Senior | null>(null);
 
+  // Configure Google Sign-In
+  useEffect(() => {
+    GoogleSignin.configure({
+      webClientId: WEB_CLIENT_ID,
+      iosClientId: '388740977041-nrihpjmac4145t7iv2gmo1ga8p42ghil.apps.googleusercontent.com',
+      offlineAccess: true,
+    });
+  }, []);
+
   const tokensRef = useRef<AuthTokens | null>(null);
   const refreshPromiseRef = useRef<Promise<AuthTokens | null> | null>(null);
   const profileOverrideRef = useRef<{
@@ -269,14 +291,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         ? { Authorization: `${authTokens.tokenType} ${authTokens.accessToken}` }
         : undefined;
 
-    const response = await apiClient.request<T>({
-      url: path,
-      method,
-      data,
-      headers,
-    });
+    console.log(`[API Request] ${method} ${API_BASE_URL}${path}`, data ? JSON.stringify(data, null, 2) : '');
 
-    return response.data;
+    try {
+      const response = await apiClient.request<T>({
+        url: path,
+        method,
+        data,
+        headers,
+      });
+
+      console.log(`[API Response] ${method} ${path}`, JSON.stringify(response.data, null, 2));
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        console.log(`[API Error] ${method} ${path}`, error.response?.status, JSON.stringify(error.response?.data, null, 2));
+      } else {
+        console.log(`[API Error] ${method} ${path}`, error);
+      }
+      throw error;
+    }
   };
 
   const clearSession = async (): Promise<void> => {
@@ -588,7 +622,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const loginWithGoogle = async (): Promise<UserData> => {
-    throw new Error('Google sign-in is temporarily disabled.');
+    try {
+      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      const response = await GoogleSignin.signIn();
+      const idToken = response.data?.idToken;
+
+      if (!idToken) {
+        throw new Error('Google sign-in failed: no ID token received.');
+      }
+
+      // Send idToken to our backend for authentication
+      return await googleAuth(idToken);
+    } catch (error: any) {
+      if (error.code === statusCodes.SIGN_IN_CANCELLED) {
+        throw new Error('Google sign-in was cancelled.');
+      } else if (error.code === statusCodes.IN_PROGRESS) {
+        throw new Error('Google sign-in is already in progress.');
+      } else if (error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
+        throw new Error('Google Play Services not available.');
+      }
+      throw new Error(error.message || 'Google sign-in failed.');
+    }
   };
 
   const verifyEmail = async (userId?: string): Promise<UserData> => {
@@ -699,12 +753,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     return await refreshUserProfile();
   };
 
-  const googleAuth = async (idToken: string, role: string = CARETAKER_ROLE): Promise<UserData> => {
+  const googleAuth = async (idToken: string): Promise<UserData> => {
     try {
+      console.log('Google ID Token:', idToken);
       const authResponse = await performRequest<UserData>(
         '/api/v1/auth/google',
         'POST',
-        { idToken, role },
+        { idToken, platform: Platform.OS },
         null,
       );
 

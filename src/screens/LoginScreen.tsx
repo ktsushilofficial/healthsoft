@@ -1,5 +1,5 @@
 // src/screens/LoginScreen.tsx
-import React, {useState} from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -14,18 +14,15 @@ import {
   ScrollView,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
-import {useAuth} from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext';
 
 interface LoginScreenProps {
   navigation: any;
 }
 
-const LoginScreen: React.FC<LoginScreenProps> = ({navigation}) => {
-  const {login, loginWithPhone} = useAuth();
-  const [isPhoneLogin, setIsPhoneLogin] = useState(false);
+const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
+  const { login, loginWithGoogle } = useAuth();
   const [email, setEmail] = useState('');
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [countryCode, setCountryCode] = useState('+91');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -38,55 +35,38 @@ const LoginScreen: React.FC<LoginScreenProps> = ({navigation}) => {
   };
 
   const handleLogin = async () => {
-    if (isPhoneLogin) {
-      if (!phoneNumber || !password) {
-        Alert.alert('Error', 'Please enter both phone number and password');
-        return;
-      }
+    if (!email || !password) {
+      Alert.alert('Error', 'Please enter both email and password');
+      return;
+    }
 
-      // Basic phone number validation
-      const phoneRegex = /^\d{7,15}$/;
-      if (!phoneRegex.test(phoneNumber)) {
-        Alert.alert('Error', 'Please enter a valid phone number (7-15 digits)');
-        return;
-      }
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      Alert.alert('Error', 'Please enter a valid email address');
+      return;
+    }
 
-      setIsLoading(true);
-      try {
-        await loginWithPhone(phoneNumber, countryCode, password);
-        // Navigation will be handled by App.tsx based on auth state
-      } catch (error) {
-        Alert.alert('Error', getErrorMessage(error, 'Login failed.'));
-      } finally {
-        setIsLoading(false);
-      }
-    } else {
-      if (!email || !password) {
-        Alert.alert('Error', 'Please enter both email and password');
-        return;
-      }
-
-      // Basic email validation
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(email)) {
-        Alert.alert('Error', 'Please enter a valid email address');
-        return;
-      }
-
-      setIsLoading(true);
-      try {
-        await login(email, password);
-        // Navigation will be handled by App.tsx based on auth state
-      } catch (error) {
-        Alert.alert('Error', getErrorMessage(error, 'Login failed.'));
-      } finally {
-        setIsLoading(false);
-      }
+    setIsLoading(true);
+    try {
+      await login(email, password);
+      // Navigation will be handled by App.tsx based on auth state
+    } catch (error) {
+      Alert.alert('Error', getErrorMessage(error, 'Login failed.'));
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleGoogleLogin = () => {
-    Alert.alert('Info', 'Google sign-in is temporarily disabled.');
+  const handleGoogleLogin = async () => {
+    setIsLoading(true);
+    try {
+      await loginWithGoogle();
+    } catch (error) {
+      Alert.alert('Error', getErrorMessage(error, 'Google sign-in failed.'));
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -113,90 +93,26 @@ const LoginScreen: React.FC<LoginScreenProps> = ({navigation}) => {
               Sign in to continue monitoring your loved ones
             </Text>
 
-            {/* Login Method Toggle */}
-            <View style={styles.loginMethodContainer}>
-              <TouchableOpacity
-                style={[
-                  styles.methodButton,
-                  styles.leftMethod,
-                  !isPhoneLogin && styles.activeMethod
-                ]}
-                onPress={() => setIsPhoneLogin(false)}>
-                <Text style={[
-                  styles.methodText,
-                  !isPhoneLogin && styles.activeMethodText
-                ]}>
-                  Email
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.methodButton,
-                  styles.rightMethod,
-                  isPhoneLogin && styles.activeMethod
-                ]}
-                onPress={() => setIsPhoneLogin(true)}>
-                <Text style={[
-                  styles.methodText,
-                  isPhoneLogin && styles.activeMethodText
-                ]}>
-                  Phone
-                </Text>
-              </TouchableOpacity>
+            {/* Email Input */}
+            <View style={styles.inputContainer}>
+              <Icon
+                name="mail-outline"
+                size={20}
+                color="#8E8E93"
+                style={styles.inputIcon}
+              />
+              <TextInput
+                style={styles.input}
+                placeholder="Email"
+                placeholderTextColor="#8E8E93"
+                value={email}
+                onChangeText={setEmail}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
             </View>
 
-            {/* Email Input */}
-            {!isPhoneLogin && (
-              <View style={styles.inputContainer}>
-                <Icon
-                  name="mail-outline"
-                  size={20}
-                  color="#8E8E93"
-                  style={styles.inputIcon}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Email"
-                  placeholderTextColor="#8E8E93"
-                  value={email}
-                  onChangeText={setEmail}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              </View>
-            )}
-
-            {/* Phone Number Input */}
-            {isPhoneLogin && (
-              <View style={styles.phoneContainer}>
-                <View style={styles.countryCodeContainer}>
-                  <TextInput
-                    style={styles.countryCodeInput}
-                    value={countryCode}
-                    onChangeText={setCountryCode}
-                    keyboardType="phone-pad"
-                  />
-                </View>
-                <View style={[styles.inputContainer, styles.phoneInputContainer]}>
-                  <Icon
-                    name="call-outline"
-                    size={20}
-                    color="#8E8E93"
-                    style={styles.inputIcon}
-                  />
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Phone Number"
-                    placeholderTextColor="#8E8E93"
-                    value={phoneNumber}
-                    onChangeText={setPhoneNumber}
-                    keyboardType="phone-pad"
-                    maxLength={15}
-                  />
-                </View>
-              </View>
-            )}
 
             {/* Password Input */}
             <View style={styles.inputContainer}>
@@ -227,7 +143,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({navigation}) => {
             </View>
 
             {/* Forgot Password */}
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.forgotPassword}
               onPress={() => navigation.navigate('ForgotPassword')}>
               <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
@@ -242,7 +158,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({navigation}) => {
                 <ActivityIndicator color="#FFFFFF" />
               ) : (
                 <Text style={styles.loginButtonText}>
-                  {isPhoneLogin ? 'Sign In with Phone' : 'Sign In'}
+                  Sign In
                 </Text>
               )}
             </TouchableOpacity>
@@ -321,36 +237,6 @@ const styles = StyleSheet.create({
     color: '#8E8E93',
     marginBottom: 32,
   },
-  loginMethodContainer: {
-    flexDirection: 'row',
-    backgroundColor: '#F8F8F8',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E5E5E5',
-    marginBottom: 24,
-    overflow: 'hidden',
-  },
-  methodButton: {
-    flex: 1,
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
-  leftMethod: {
-    borderRightWidth: 1,
-    borderRightColor: '#E5E5E5',
-  },
-  rightMethod: {},
-  activeMethod: {
-    backgroundColor: '#FF9500',
-  },
-  methodText: {
-    fontSize: 16,
-    color: '#000000',
-    fontWeight: '600',
-  },
-  activeMethodText: {
-    color: '#FFFFFF',
-  },
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -372,30 +258,6 @@ const styles = StyleSheet.create({
   },
   eyeIcon: {
     padding: 8,
-  },
-  phoneContainer: {
-    flexDirection: 'row',
-    marginBottom: 16,
-  },
-  countryCodeContainer: {
-    backgroundColor: '#F8F8F8',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    marginRight: 12,
-    borderWidth: 1,
-    borderColor: '#E5E5E5',
-    justifyContent: 'center',
-    width: 80,
-  },
-  countryCodeInput: {
-    height: 52,
-    fontSize: 16,
-    color: '#000000',
-    textAlign: 'center',
-  },
-  phoneInputContainer: {
-    flex: 1,
-    marginBottom: 0,
   },
   forgotPassword: {
     alignSelf: 'flex-end',

@@ -1,4 +1,4 @@
-package com.healthsoftapp
+package `in`.healthsoftcare.seniorcare
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
