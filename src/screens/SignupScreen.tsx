@@ -1,5 +1,5 @@
 // src/screens/SignupScreen.tsx
-import React, {useState} from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -14,14 +14,14 @@ import {
   ScrollView,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
-import {useAuth} from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext';
 
 interface SignupScreenProps {
   navigation: any;
 }
 
-const SignupScreen: React.FC<SignupScreenProps> = ({navigation}) => {
-  const {signup} = useAuth();
+const SignupScreen: React.FC<SignupScreenProps> = ({ navigation }) => {
+  const { signup } = useAuth();
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',
@@ -45,7 +45,7 @@ const SignupScreen: React.FC<SignupScreenProps> = ({navigation}) => {
   };
 
   const updateFormData = (field: string, value: string) => {
-    setFormData(prev => ({...prev, [field]: value}));
+    setFormData(prev => ({ ...prev, [field]: value }));
   };
 
   const validateForm = (): boolean => {
@@ -157,7 +157,7 @@ const SignupScreen: React.FC<SignupScreenProps> = ({navigation}) => {
                     styles.leftOption,
                     formData.role === 'CARE_TAKER' && styles.activeRole
                   ]}
-                  onPress={() => setFormData(prev => ({...prev, role: 'CARE_TAKER'}))}>
+                  onPress={() => setFormData(prev => ({ ...prev, role: 'CARE_TAKER' }))}>
                   <Text style={[
                     styles.roleText,
                     formData.role === 'CARE_TAKER' && styles.activeRoleText
@@ -171,7 +171,7 @@ const SignupScreen: React.FC<SignupScreenProps> = ({navigation}) => {
                     styles.rightOption,
                     formData.role === 'SENIOR' && styles.activeRole
                   ]}
-                  onPress={() => setFormData(prev => ({...prev, role: 'SENIOR'}))}>
+                  onPress={() => setFormData(prev => ({ ...prev, role: 'SENIOR' }))}>
                   <Text style={[
                     styles.roleText,
                     formData.role === 'SENIOR' && styles.activeRoleText
@@ -283,6 +283,8 @@ const SignupScreen: React.FC<SignupScreenProps> = ({navigation}) => {
                 onChangeText={value => updateFormData('password', value)}
                 secureTextEntry={!showPassword}
                 autoCapitalize="none"
+                autoCorrect={false}
+                textContentType="oneTimeCode"
               />
               <TouchableOpacity
                 onPress={() => setShowPassword(!showPassword)}
@@ -311,6 +313,8 @@ const SignupScreen: React.FC<SignupScreenProps> = ({navigation}) => {
                 onChangeText={value => updateFormData('confirmPassword', value)}
                 secureTextEntry={!showConfirmPassword}
                 autoCapitalize="none"
+                autoCorrect={false}
+                textContentType="oneTimeCode"
               />
               <TouchableOpacity
                 onPress={() => setShowConfirmPassword(!showConfirmPassword)}

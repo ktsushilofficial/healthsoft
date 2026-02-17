@@ -15,13 +15,19 @@ import { useAuth } from '../context/AuthContext';
 import SeniorSelectionModal from '../components/SeniorSelectionModal';
 import { useFocusEffect } from '@react-navigation/native';
 
+const HERO_IMAGES = [
+  { uri: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80' },
+  { uri: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1200&q=80' },
+  { uri: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1200&q=80' },
+  { uri: 'https://images.unsplash.com/photo-1501854140801-50d01698950b?auto=format&fit=crop&w=1200&q=80' },
+  { uri: 'https://images.unsplash.com/photo-1447752875215-b2761acb3c5d?auto=format&fit=crop&w=1200&q=80' },
+];
+
 const HomeScreen = () => {
   const { selectedSenior, seniors, getMySeniors } = useAuth();
   const [modalVisible, setModalVisible] = useState(false);
+  const [heroIndex, setHeroIndex] = useState(0);
 
-  const heroImage = {
-    uri: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80',
-  };
   const weatherImage = {
     uri: 'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=600&q=80',
   };
@@ -46,6 +52,13 @@ const HomeScreen = () => {
       setModalVisible(true);
     }
   }, [selectedSenior, seniors.length]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setHeroIndex((prev) => (prev + 1) % HERO_IMAGES.length);
+    }, 6000);
+    return () => clearInterval(timer);
+  }, []);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -90,7 +103,7 @@ const HomeScreen = () => {
 
         {/* Greeting Card */}
         <ImageBackground
-          source={heroImage}
+          source={HERO_IMAGES[heroIndex]}
           style={styles.greetingCard}
           imageStyle={styles.greetingImage}
         >

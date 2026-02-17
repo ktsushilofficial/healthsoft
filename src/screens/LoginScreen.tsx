@@ -130,6 +130,8 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
                 onChangeText={setPassword}
                 secureTextEntry={!showPassword}
                 autoCapitalize="none"
+                autoCorrect={false}
+                textContentType="oneTimeCode"
               />
               <TouchableOpacity
                 onPress={() => setShowPassword(!showPassword)}
