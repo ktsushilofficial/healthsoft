@@ -6,8 +6,20 @@ import * as Keychain from 'react-native-keychain';
 const API_BASE_URL = 'http://seniorcare.healthsoftcare.in';
 const TOKEN_STORAGE_SERVICE = 'healthsoft.auth.tokens';
 const TOKEN_STORAGE_USERNAME = 'healthsoft-auth';
+const SELECTED_SENIOR_STORAGE_SERVICE = 'healthsoft.prefs.selectedSenior';
 // Profile storage removed as per requirement
 const CARETAKER_ROLE = 'CARE_TAKER';
+
+export interface Senior {
+  userId: string;
+  firstName: string;
+  lastName: string;
+  profileImageUrl?: string;
+  gender?: string;
+  dateOfBirth?: number;
+  height?: number;
+  weight?: number;
+}
 
 interface AuthTokens {
   accessToken: string;
@@ -53,6 +65,10 @@ interface AuthContextType {
   googleAuth: (idToken: string, role?: string) => Promise<UserData>;
   initiateGoogleLogin: () => Promise<void>;
   forgotPassword: (email: string) => Promise<void>;
+  seniors: Senior[];
+  selectedSenior: Senior | null;
+  getMySeniors: () => Promise<Senior[]>;
+  selectSenior: (seniorId: string) => Promise<void>;
 }
 
 interface SignupData {
@@ -203,6 +219,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [_tokens, setTokens] = useState<AuthTokens | null>(null);
+  const [seniors, setSeniors] = useState<Senior[]>([]);
+  const [selectedSenior, setSelectedSenior] = useState<Senior | null>(null);
 
   const tokensRef = useRef<AuthTokens | null>(null);
   const refreshPromiseRef = useRef<Promise<AuthTokens | null> | null>(null);
@@ -515,6 +533,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         );
         setUser(normalized);
         setIsAuthenticated(true);
+
+        // Fetch seniors and load selected senior
+        try {
+          const seniorsList = await getMySeniors();
+          await loadSelectedSenior(seniorsList);
+        } catch {
+          // Ignore failures in fetching seniors during bootstrap
+        }
       } catch {
         await clearSession();
       } finally {
@@ -625,6 +651,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const logout = async (): Promise<void> => {
     const snapshotTokens = tokensRef.current;
     await clearSession();
+    setSelectedSenior(null);
+    setSeniors([]);
+    try {
+      await Keychain.resetGenericPassword({ service: SELECTED_SENIOR_STORAGE_SERVICE });
+    } catch {
+      // Ignore
+    }
 
     if (snapshotTokens?.accessToken && snapshotTokens.tokenType) {
       apiClient
@@ -694,6 +727,58 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
+  const getMySeniors = async (): Promise<Senior[]> => {
+    try {
+      const seniorsList = await authorizedRequest<Senior[]>(
+        '/api/v1/seniors/my-seniors',
+        'GET',
+      );
+      setSeniors(seniorsList);
+      return seniorsList;
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  };
+
+  const selectSenior = async (seniorId: string): Promise<void> => {
+    const senior = seniors.find(s => s.userId === seniorId);
+    if (!senior) {
+      throw new Error('Senior not found in your list.');
+    }
+
+    setSelectedSenior(senior);
+    try {
+      await Keychain.setGenericPassword(
+        'selected_senior',
+        seniorId,
+        {
+          service: SELECTED_SENIOR_STORAGE_SERVICE,
+          accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+        }
+      );
+    } catch (error) {
+      console.warn('Failed to persist selected senior', error);
+    }
+  };
+
+  const loadSelectedSenior = async (currentSeniors: Senior[]) => {
+    try {
+      const credentials = await Keychain.getGenericPassword({
+        service: SELECTED_SENIOR_STORAGE_SERVICE,
+      });
+
+      if (credentials && credentials.password) {
+        const savedSeniorId = credentials.password;
+        const matchingSenior = currentSeniors.find(s => s.userId === savedSeniorId);
+        if (matchingSenior) {
+          setSelectedSenior(matchingSenior);
+        }
+      }
+    } catch {
+      // Ignore if loading fails
+    }
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -713,6 +798,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         googleAuth,
         initiateGoogleLogin,
         forgotPassword,
+        seniors,
+        selectedSenior,
+        getMySeniors,
+        selectSenior,
       }}>
       {children}
     </AuthContext.Provider>

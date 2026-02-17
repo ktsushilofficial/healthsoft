@@ -1,5 +1,5 @@
 // src/screens/HomeScreen.tsx
-import React from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,16 +8,44 @@ import {
   SafeAreaView,
   Image,
   ImageBackground,
+  TouchableOpacity,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
+import { useAuth } from '../context/AuthContext';
+import SeniorSelectionModal from '../components/SeniorSelectionModal';
+import { useFocusEffect } from '@react-navigation/native';
 
 const HomeScreen = () => {
+  const { selectedSenior, seniors, getMySeniors } = useAuth();
+  const [modalVisible, setModalVisible] = useState(false);
+
   const heroImage = {
     uri: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80',
   };
   const weatherImage = {
     uri: 'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=600&q=80',
   };
+
+  useFocusEffect(
+    useCallback(() => {
+      const checkSeniorSelection = async () => {
+        // Refresh senior list when screen focuses
+        try {
+          await getMySeniors();
+        } catch (e) {
+          // ignore
+        }
+      };
+      checkSeniorSelection();
+    }, [getMySeniors])
+  );
+
+  useEffect(() => {
+    // Auto-prompt if no senior selected but seniors exist
+    if (!selectedSenior && seniors.length > 0) {
+      setModalVisible(true);
+    }
+  }, [selectedSenior, seniors.length]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -28,21 +56,37 @@ const HomeScreen = () => {
             <Icon name="fitness" size={24} color="#FF9500" />
             <Text style={styles.logoText}>Healthsoft</Text>
           </View>
-          <View style={styles.headerRight}>
-            <View style={styles.dots}>
-              <View style={styles.dot} />
-              <View style={[styles.dot, styles.dotActive]} />
-              <View style={styles.dot} />
-              <View style={styles.dot} />
+          <TouchableOpacity
+            style={styles.headerRight}
+            onPress={() => setModalVisible(true)}
+          >
+            <View style={{ marginRight: 8, alignItems: 'flex-end' }}>
+              <Text style={{ fontSize: 14, fontWeight: '600', color: '#333' }}>
+                {selectedSenior ? `${selectedSenior.firstName}` : 'Select Senior'}
+              </Text>
+              <Text style={{ fontSize: 10, color: '#666' }}>
+                {selectedSenior ? 'Active Profile' : 'Tap to select'}
+              </Text>
             </View>
-            <Image
-              source={{
-                uri: 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?auto=format&fit=crop&w=200&q=80',
-              }}
-              style={styles.avatar}
-            />
-          </View>
+            {selectedSenior?.profileImageUrl ? (
+              <Image
+                source={{ uri: selectedSenior.profileImageUrl }}
+                style={styles.avatar}
+              />
+            ) : (
+              <View style={styles.avatarPlaceholder}>
+                <Text style={styles.avatarInitials}>
+                  {selectedSenior ? `${(selectedSenior.firstName?.[0] || '').toUpperCase()}${(selectedSenior.lastName?.[0] || '').toUpperCase()}` : '?'}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
         </View>
+
+        <SeniorSelectionModal
+          visible={modalVisible}
+          onClose={() => setModalVisible(false)}
+        />
 
         {/* Greeting Card */}
         <ImageBackground
@@ -169,6 +213,19 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
+  },
+  avatarPlaceholder: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FF9500',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarInitials: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: 'bold',
   },
   logoContainer: {
     flexDirection: 'row',
