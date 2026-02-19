@@ -1,13 +1,13 @@
-import React, {useMemo, useState} from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  SafeAreaView,
   TouchableOpacity,
 } from 'react-native';
-import {useNavigation} from '@react-navigation/native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 
 const contacts = [
@@ -29,12 +29,12 @@ const contacts = [
 ];
 
 const conditions = [
-  {id: '1', label: 'Asthma', checked: false},
-  {id: '2', label: 'Diabetes', checked: true},
-  {id: '3', label: 'Hypertension', checked: true},
-  {id: '4', label: 'High Cholesterol', checked: true},
-  {id: '5', label: 'Sleep Apnea', checked: false},
-  {id: '6', label: 'Allergies', checked: false},
+  { id: '1', label: 'Asthma', checked: false },
+  { id: '2', label: 'Diabetes', checked: true },
+  { id: '3', label: 'Hypertension', checked: true },
+  { id: '4', label: 'High Cholesterol', checked: true },
+  { id: '5', label: 'Sleep Apnea', checked: false },
+  { id: '6', label: 'Allergies', checked: false },
 ];
 
 const medicines = [
@@ -57,19 +57,19 @@ const medicines = [
 ];
 
 const bluetoothDevices = [
-  {id: '1', name: 'Smart Pill Dispenser', status: 'Connected'},
-  {id: '2', name: 'Fall Detection Pendant', status: 'Available'},
-  {id: '3', name: 'Blood Pressure Monitor', status: 'Available'},
+  { id: '1', name: 'Smart Pill Dispenser', status: 'Connected' },
+  { id: '2', name: 'Fall Detection Pendant', status: 'Available' },
+  { id: '3', name: 'Blood Pressure Monitor', status: 'Available' },
 ];
 
 const DeviceScreen = () => {
   const navigation = useNavigation();
   const tabs = useMemo(
     () => [
-      {id: 'devices', label: 'Devices'},
-      {id: 'conditions', label: 'Conditions'},
-      {id: 'medicines', label: 'Medicines'},
-      {id: 'contacts', label: 'Contacts'},
+      { id: 'devices', label: 'Devices' },
+      { id: 'conditions', label: 'Conditions' },
+      { id: 'medicines', label: 'Medicines' },
+      { id: 'contacts', label: 'Contacts' },
     ],
     [],
   );
@@ -134,7 +134,7 @@ const DeviceScreen = () => {
                       <View
                         style={[
                           styles.avatar,
-                          {backgroundColor: contact.color || '#F6C7A7'},
+                          { backgroundColor: contact.color || '#F6C7A7' },
                         ]}
                       >
                         <Text style={styles.avatarText}>
@@ -404,7 +404,7 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
     shadowOpacity: 0.06,
     shadowRadius: 6,
-    shadowOffset: {width: 0, height: 2},
+    shadowOffset: { width: 0, height: 2 },
     elevation: 2,
   },
   segmentText: {
@@ -543,7 +543,7 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
     shadowOpacity: 0.04,
     shadowRadius: 8,
-    shadowOffset: {width: 0, height: 3},
+    shadowOffset: { width: 0, height: 3 },
     elevation: 2,
   },
   cardTitle: {

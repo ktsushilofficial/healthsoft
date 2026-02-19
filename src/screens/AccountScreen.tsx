@@ -1,19 +1,19 @@
 // src/screens/AccountScreen.tsx
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  SafeAreaView,
   TouchableOpacity,
   Alert,
   ActivityIndicator,
   TextInput,
 } from 'react-native';
-import {useFocusEffect, useNavigation} from '@react-navigation/native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
-import {useAuth} from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext';
 
 const safeValue = (value?: string | number | null): string => {
   const normalized = String(value ?? '').trim();
@@ -44,8 +44,8 @@ const formatLastLogin = (value: string | number | null | undefined): string => {
     typeof value === 'number'
       ? value
       : Number.isNaN(Number(value))
-      ? null
-      : Number(value);
+        ? null
+        : Number(value);
 
   const date = numeric !== null ? new Date(numeric) : new Date(String(value));
   if (Number.isNaN(date.getTime())) {
@@ -65,7 +65,7 @@ const normalizePhoneNumber = (value: string): string =>
 
 const AccountScreen = () => {
   const navigation = useNavigation<any>();
-  const {user, refreshUserProfile, updateProfile, logout} = useAuth();
+  const { user, refreshUserProfile, updateProfile, logout } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -129,7 +129,7 @@ const AccountScreen = () => {
     }
 
     // Check if any changes were made
-    const hasChanges = 
+    const hasChanges =
       firstName !== (user?.first_name ?? '') ||
       lastName !== (user?.last_name ?? '') ||
       countryCode !== (user?.country_code ?? '') ||
@@ -191,7 +191,7 @@ const AccountScreen = () => {
 
   const handleLogout = useCallback(() => {
     Alert.alert('Logout', 'Are you sure you want to logout?', [
-      {text: 'Cancel', style: 'cancel'},
+      { text: 'Cancel', style: 'cancel' },
       {
         text: 'Logout',
         style: 'destructive',
@@ -259,7 +259,7 @@ const AccountScreen = () => {
             <TextInput
               style={styles.infoInput}
               value={form.firstName}
-              onChangeText={text => setForm(prev => ({...prev, firstName: text}))}
+              onChangeText={text => setForm(prev => ({ ...prev, firstName: text }))}
               autoCapitalize="words"
               placeholder="First Name"
               placeholderTextColor="#9A9A9A"
@@ -275,7 +275,7 @@ const AccountScreen = () => {
             <TextInput
               style={styles.infoInput}
               value={form.lastName}
-              onChangeText={text => setForm(prev => ({...prev, lastName: text}))}
+              onChangeText={text => setForm(prev => ({ ...prev, lastName: text }))}
               autoCapitalize="words"
               placeholder="Last Name"
               placeholderTextColor="#9A9A9A"
@@ -299,7 +299,7 @@ const AccountScreen = () => {
                 value={form.countryCode}
                 onChangeText={text => {
                   const normalized = normalizeCountryCode(text);
-                  setForm(prev => ({...prev, countryCode: normalized}));
+                  setForm(prev => ({ ...prev, countryCode: normalized }));
                 }}
                 placeholder="+1"
                 placeholderTextColor="#9A9A9A"
@@ -310,7 +310,7 @@ const AccountScreen = () => {
                 value={form.phoneNumber}
                 onChangeText={text => {
                   const normalized = normalizePhoneNumber(text);
-                  setForm(prev => ({...prev, phoneNumber: normalized}));
+                  setForm(prev => ({ ...prev, phoneNumber: normalized }));
                 }}
                 placeholder="Phone"
                 placeholderTextColor="#9A9A9A"

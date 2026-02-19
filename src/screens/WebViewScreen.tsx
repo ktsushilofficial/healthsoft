@@ -2,10 +2,11 @@
 // src/screens/WebViewScreen.tsx
 // ============================================
 import React from 'react';
-import {SafeAreaView, StyleSheet, Text, TouchableOpacity, View} from 'react-native';
-import {useNavigation, useRoute} from '@react-navigation/native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
-import {WebView} from 'react-native-webview';
+import { WebView } from 'react-native-webview';
 
 type WebViewParams = {
   url: string;
@@ -30,7 +31,7 @@ const WebViewScreen = () => {
         <View style={styles.headerSpacer} />
       </View>
       <WebView
-        source={{uri: params.url}}
+        source={{ uri: params.url }}
         startInLoadingState
         originWhitelist={['*']}
       />

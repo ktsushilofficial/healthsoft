@@ -15,10 +15,11 @@
 
 // App.tsx
 import React from 'react';
-import {NavigationContainer} from '@react-navigation/native';
-import {createNativeStackNavigator} from '@react-navigation/native-stack';
-import {ActivityIndicator, View, StyleSheet} from 'react-native';
-import {AuthProvider, useAuth} from './src/context/AuthContext';
+import { NavigationContainer } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { ActivityIndicator, View, StyleSheet } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { AuthProvider, useAuth } from './src/context/AuthContext';
 import BottomTabNavigator from './src/navigation/BottomTabNavigator';
 import LoginScreen from './src/screens/LoginScreen';
 import SignupScreen from './src/screens/SignupScreen';
@@ -29,7 +30,7 @@ import WebViewScreen from './src/screens/WebViewScreen';
 const Stack = createNativeStackNavigator();
 
 const AppNavigator = () => {
-  const {isAuthenticated, isInitializing} = useAuth();
+  const { isAuthenticated, isInitializing } = useAuth();
 
   if (isInitializing) {
     return (
@@ -42,7 +43,7 @@ const AppNavigator = () => {
   return (
     <Stack.Navigator
       key={isAuthenticated ? 'app-stack' : 'auth-stack'}
-      screenOptions={{headerShown: false}}>
+      screenOptions={{ headerShown: false }}>
       {!isAuthenticated ? (
         // Auth Stack
         <>
@@ -65,9 +66,11 @@ const AppNavigator = () => {
 function App(): React.JSX.Element {
   return (
     <AuthProvider>
-      <NavigationContainer>
-        <AppNavigator />
-      </NavigationContainer>
+      <SafeAreaProvider>
+        <NavigationContainer>
+          <AppNavigator />
+        </NavigationContainer>
+      </SafeAreaProvider>
     </AuthProvider>
   );
 }
