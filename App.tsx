@@ -1,20 +1,5 @@
-// // App.tsx
-// import React from 'react';
-// import {NavigationContainer} from '@react-navigation/native';
-// import BottomTabNavigator from './src/navigation/BottomTabNavigator';
-
-// function App(): React.JSX.Element {
-//   return (
-//     <NavigationContainer>
-//       <BottomTabNavigator />
-//     </NavigationContainer>
-//   );
-// }
-
-// export default App;
-
 // App.tsx
-import React from 'react';
+import React, { useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { ActivityIndicator, View, StyleSheet } from 'react-native';
@@ -26,6 +11,14 @@ import SignupScreen from './src/screens/SignupScreen';
 import ForgotPasswordScreen from './src/screens/ForgotPasswordScreen';
 import NotificationsScreen from './src/screens/NotificationsScreen';
 import WebViewScreen from './src/screens/WebViewScreen';
+import {
+  requestNotificationPermission,
+  getFCMToken,
+  onForegroundMessage,
+  onNotificationOpenedApp,
+  getInitialNotification,
+  onTokenRefresh,
+} from './src/services/NotificationService';
 
 const Stack = createNativeStackNavigator();
 
@@ -64,6 +57,41 @@ const AppNavigator = () => {
 };
 
 function App(): React.JSX.Element {
+  useEffect(() => {
+    async function initNotifications() {
+      const permissionGranted = await requestNotificationPermission();
+      if (permissionGranted) {
+        const token = await getFCMToken();
+        console.log('[App] FCM Token ready:', token);
+      }
+
+      // Check if app was opened from a notification (quit state)
+      const initialNotification = await getInitialNotification();
+      if (initialNotification) {
+        console.log('[App] Opened from notification:', initialNotification);
+      }
+    }
+
+    initNotifications();
+
+    // Listen for foreground messages
+    const unsubForeground = onForegroundMessage();
+
+    // Listen for notification taps (background state)
+    const unsubOpenedApp = onNotificationOpenedApp();
+
+    // Listen for token refresh
+    const unsubTokenRefresh = onTokenRefresh(newToken => {
+      console.log('[App] Token refreshed, send to backend:', newToken);
+    });
+
+    return () => {
+      unsubForeground();
+      unsubOpenedApp();
+      unsubTokenRefresh();
+    };
+  }, []);
+
   return (
     <AuthProvider>
       <SafeAreaProvider>
