@@ -24,7 +24,7 @@ const HERO_IMAGES = [
 ];
 
 const HomeScreen = () => {
-  const { selectedSenior, seniors, getMySeniors } = useAuth();
+  const { selectedSenior, seniors, getMySeniors, isCaretaker } = useAuth();
   const [modalVisible, setModalVisible] = useState(false);
   const [heroIndex, setHeroIndex] = useState(0);
 
@@ -34,6 +34,7 @@ const HomeScreen = () => {
 
   useFocusEffect(
     useCallback(() => {
+      if (!isCaretaker) return;
       const checkSeniorSelection = async () => {
         // Refresh senior list when screen focuses
         try {
@@ -43,15 +44,15 @@ const HomeScreen = () => {
         }
       };
       checkSeniorSelection();
-    }, [getMySeniors])
+    }, [getMySeniors, isCaretaker])
   );
 
   useEffect(() => {
-    // Auto-prompt if no senior selected but seniors exist
-    if (!selectedSenior && seniors.length > 0) {
+    // Auto-prompt if no senior selected but seniors exist (caretakers only)
+    if (isCaretaker && !selectedSenior && seniors.length > 0) {
       setModalVisible(true);
     }
-  }, [selectedSenior, seniors.length]);
+  }, [selectedSenior, seniors.length, isCaretaker]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -69,37 +70,41 @@ const HomeScreen = () => {
             <Icon name="fitness" size={24} color="#FF9500" />
             <Text style={styles.logoText}>Healthsoft</Text>
           </View>
-          <TouchableOpacity
-            style={styles.headerRight}
-            onPress={() => setModalVisible(true)}
-          >
-            <View style={{ marginRight: 8, alignItems: 'flex-end' }}>
-              <Text style={{ fontSize: 14, fontWeight: '600', color: '#333' }}>
-                {selectedSenior ? `${selectedSenior.firstName}` : 'Select Senior'}
-              </Text>
-              <Text style={{ fontSize: 10, color: '#666' }}>
-                {selectedSenior ? 'Active Profile' : 'Tap to select'}
-              </Text>
-            </View>
-            {selectedSenior?.profileImageUrl ? (
-              <Image
-                source={{ uri: selectedSenior.profileImageUrl }}
-                style={styles.avatar}
-              />
-            ) : (
-              <View style={styles.avatarPlaceholder}>
-                <Text style={styles.avatarInitials}>
-                  {selectedSenior ? `${(selectedSenior.firstName?.[0] || '').toUpperCase()}${(selectedSenior.lastName?.[0] || '').toUpperCase()}` : '?'}
+          {isCaretaker && (
+            <TouchableOpacity
+              style={styles.headerRight}
+              onPress={() => setModalVisible(true)}
+            >
+              <View style={{ marginRight: 8, alignItems: 'flex-end' }}>
+                <Text style={{ fontSize: 14, fontWeight: '600', color: '#333' }}>
+                  {selectedSenior ? `${selectedSenior.firstName}` : 'Select Senior'}
+                </Text>
+                <Text style={{ fontSize: 10, color: '#666' }}>
+                  {selectedSenior ? 'Active Profile' : 'Tap to select'}
                 </Text>
               </View>
-            )}
-          </TouchableOpacity>
+              {selectedSenior?.profileImageUrl ? (
+                <Image
+                  source={{ uri: selectedSenior.profileImageUrl }}
+                  style={styles.avatar}
+                />
+              ) : (
+                <View style={styles.avatarPlaceholder}>
+                  <Text style={styles.avatarInitials}>
+                    {selectedSenior ? `${(selectedSenior.firstName?.[0] || '').toUpperCase()}${(selectedSenior.lastName?.[0] || '').toUpperCase()}` : '?'}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          )}
         </View>
 
-        <SeniorSelectionModal
-          visible={modalVisible}
-          onClose={() => setModalVisible(false)}
-        />
+        {isCaretaker && (
+          <SeniorSelectionModal
+            visible={modalVisible}
+            onClose={() => setModalVisible(false)}
+          />
+        )}
 
         {/* Greeting Card */}
         <ImageBackground
