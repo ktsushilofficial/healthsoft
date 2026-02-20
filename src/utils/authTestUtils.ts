@@ -72,7 +72,7 @@ export const testAuthFlows = {
     refresh: '/api/v1/auth/refresh',
     logout: '/api/v1/auth/logout',
     verifyEmail: '/api/v1/auth/verify-email',
-    me: '/api/v1/auth/me',
+    me: '/profile',
     updateProfile: '/api/v1/users/update-profile',
   },
 
@@ -114,19 +114,19 @@ export const testAuthFlows = {
       try {
         // 1. Test signup
         const signupResult = await authService.signup(testAuthFlows.validUsers.seniorSignup);
-        
+
         // 2. Test email verification
         const verificationResult = await authService.verifyEmail(signupResult.user_id);
-        
+
         // 3. Test login
         const loginResult = await authService.login(
           testAuthFlows.validUsers.seniorSignup.email,
           testAuthFlows.validUsers.seniorSignup.password
         );
-        
+
         // 4. Test profile retrieval
         const profileResult = await authService.refreshUserProfile();
-        
+
         return {
           success: true,
           signup: signupResult,
@@ -151,10 +151,10 @@ export const testAuthFlows = {
           testAuthFlows.validUsers.phoneLogin.countryCode,
           testAuthFlows.validUsers.phoneLogin.password
         );
-        
+
         // Test profile retrieval
         const profileResult = await authService.refreshUserProfile();
-        
+
         return {
           success: true,
           login: loginResult,
@@ -178,10 +178,10 @@ export const testAuthFlows = {
           country_code: '+1',
           phone_number: '1234567890',
         });
-        
+
         // Verify update
         const profileResult = await authService.refreshUserProfile();
-        
+
         return {
           success: true,
           update: updateResult,
@@ -220,25 +220,25 @@ export const testAuthFlows = {
   getValidationMessage: (field: string, value: string): string => {
     switch (field) {
       case 'email':
-        return testAuthFlows.validateEmail(value) 
-          ? 'Valid email' 
+        return testAuthFlows.validateEmail(value)
+          ? 'Valid email'
           : 'Please enter a valid email address';
-      
+
       case 'password':
         return testAuthFlows.validatePassword(value)
           ? 'Valid password'
           : 'Password must be at least 8 characters long';
-      
+
       case 'phoneNumber':
         return testAuthFlows.validatePhoneNumber(value)
           ? 'Valid phone number'
           : 'Please enter a valid phone number (7-15 digits)';
-      
+
       case 'role':
         return testAuthFlows.validateRole(value)
           ? 'Valid role'
           : 'Please select a valid role';
-      
+
       default:
         return 'Field validation';
     }

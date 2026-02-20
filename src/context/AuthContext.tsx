@@ -11,6 +11,7 @@ const TOKEN_STORAGE_USERNAME = 'healthsoft-auth';
 const SELECTED_SENIOR_STORAGE_SERVICE = 'healthsoft.prefs.selectedSenior';
 // Profile storage removed as per requirement
 const CARETAKER_ROLE = 'CARE_TAKER';
+const GUARDIAN_ROLE = 'GUARDIAN';
 const WEB_CLIENT_ID = '388740977041-rvg9j86k6ie0etecc24qq9ovfp23lfj3.apps.googleusercontent.com';
 
 export interface Senior {
@@ -55,6 +56,7 @@ interface AuthContextType {
   user: UserData | null;
   isAuthenticated: boolean;
   isInitializing: boolean;
+  isCaretaker: boolean;
   login: (email: string, password: string) => Promise<UserData>;
   loginWithPhone: (phoneNumber: string, countryCode: string, password: string) => Promise<UserData>;
   loginWithGoogle: () => Promise<UserData>;
@@ -284,12 +286,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     method: Method,
     data?: unknown,
     overrideTokens?: AuthTokens | null,
+    extraHeaders?: Record<string, string>,
   ): Promise<T> => {
     const authTokens = overrideTokens ?? tokensRef.current;
-    const headers =
-      authTokens?.accessToken && authTokens?.tokenType
+    const headers: Record<string, string> = {
+      ...(authTokens?.accessToken && authTokens?.tokenType
         ? { Authorization: `${authTokens.tokenType} ${authTokens.accessToken}` }
-        : undefined;
+        : {}),
+      ...extraHeaders,
+    };
 
     console.log(`[API Request] ${method} ${API_BASE_URL}${path}`, data ? JSON.stringify(data, null, 2) : '');
 
@@ -411,13 +416,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     path: string,
     method: Method,
     data?: unknown,
+    extraHeaders?: Record<string, string>,
   ): Promise<T> => {
     if (!tokensRef.current?.accessToken) {
       throw new Error('Session expired. Please sign in again.');
     }
 
     try {
-      return await performRequest<T>(path, method, data);
+      return await performRequest<T>(path, method, data, undefined, extraHeaders);
     } catch (error) {
       if (!isUnauthorizedError(error)) {
         throw new Error(getErrorMessage(error));
@@ -430,7 +436,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       try {
-        return await performRequest<T>(path, method, data, refreshedTokens);
+        return await performRequest<T>(path, method, data, refreshedTokens, extraHeaders);
       } catch (retryError) {
         throw new Error(getErrorMessage(retryError));
       }
@@ -439,8 +445,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const refreshUserProfile = async (): Promise<UserData> => {
     const profile = await authorizedRequest<Partial<UserData>>(
-      '/api/v1/auth/me',
+      '/profile',
       'GET',
+      undefined,
+      { Accept: '*/*' },
     );
     const normalized = normalizeUser(
       withProfileOverride(profile),
@@ -514,7 +522,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     setUser(localPatchedUser);
 
     try {
-      const profile = await authorizedRequest<Partial<UserData>>('/api/v1/auth/me', 'GET');
+      const profile = await authorizedRequest<Partial<UserData>>('/profile', 'GET', undefined, { Accept: '*/*' });
       const normalized = normalizeUser(
         withProfileOverride(profile),
         tokensRef.current,
@@ -554,8 +562,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         let profile: Partial<UserData> = {};
         try {
           profile = await authorizedRequest<Partial<UserData>>(
-            '/api/v1/auth/me',
+            '/profile',
             'GET',
+            undefined,
+            { Accept: '*/*' },
           );
         } catch {
           // Proceed with empty profile if fetch fails
@@ -568,12 +578,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         setUser(normalized);
         setIsAuthenticated(true);
 
-        // Fetch seniors and load selected senior
-        try {
-          const seniorsList = await getMySeniors();
-          await loadSelectedSenior(seniorsList);
-        } catch {
-          // Ignore failures in fetching seniors during bootstrap
+        // Fetch seniors and load selected senior (only for caretakers/guardians)
+        if (normalized.role === CARETAKER_ROLE || normalized.role === GUARDIAN_ROLE) {
+          try {
+            const seniorsList = await getMySeniors();
+            await loadSelectedSenior(seniorsList);
+          } catch {
+            // Ignore failures in fetching seniors during bootstrap
+          }
         }
       } catch {
         await clearSession();
@@ -592,7 +604,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       const authResponse = await performRequest<UserData>(
         '/api/v1/auth/signin',
         'POST',
-        { email: email.trim().toLowerCase(), password },
+        { email: email.trim().toLowerCase(), password, platform: Platform.OS },
         null,
       );
 
@@ -610,7 +622,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         {
           phoneNumber: phoneNumber.replace(/[^\d]/g, ''),
           countryCode: countryCode.replace(/[^\d]/g, ''),
-          password
+          password,
+          platform: Platform.OS
         },
         null,
       );
@@ -834,12 +847,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
+  const isCaretaker = user?.role === CARETAKER_ROLE || user?.role === GUARDIAN_ROLE;
+
   return (
     <AuthContext.Provider
       value={{
         user,
         isAuthenticated,
         isInitializing,
+        isCaretaker,
         login,
         loginWithPhone,
         loginWithGoogle,

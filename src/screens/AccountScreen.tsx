@@ -102,15 +102,20 @@ const AccountScreen = () => {
     try {
       await refreshProfileRef.current();
     } catch (error) {
-      const message =
-        error instanceof Error && error.message
-          ? error.message
-          : 'Failed to load profile.';
-      Alert.alert('Error', message);
+      // Only show alerts if we have no profile data at all.
+      // If data is already present from the login session, ignore
+      // transient /profile fetch failures silently.
+      if (!user) {
+        const message =
+          error instanceof Error && error.message
+            ? error.message
+            : 'Failed to load profile.';
+        Alert.alert('Error', message);
+      }
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [user]);
 
   const handleSaveProfile = useCallback(async () => {
     const firstName = form.firstName.trim();
