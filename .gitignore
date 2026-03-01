@@ -255,6 +255,7 @@ android/app/build/
 android/build/
 android/captures/
 android/local.properties
+android/key.properties
 android/gradle.properties
 
 # Generated files

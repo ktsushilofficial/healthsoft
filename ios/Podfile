@@ -38,6 +38,3 @@ target 'HealthsoftApp' do
     )
   end
 end
-
-# Add vector icons
-pod 'RNVectorIcons', :path => '../node_modules/react-native-vector-icons'
