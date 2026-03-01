@@ -375,6 +375,17 @@ const AccountScreen = () => {
           </TouchableOpacity>
         )}
 
+        {!isEditing && (
+          <TouchableOpacity
+            style={styles.changePasswordButton}
+            onPress={() => {
+              console.log('Navigating to ChangePassword');
+              navigation.navigate('ChangePassword');
+            }}>
+            <Text style={styles.changePasswordButtonText}>Change Password</Text>
+          </TouchableOpacity>
+        )}
+
         <TouchableOpacity
           style={[styles.logoutButton, isLoggingOut && styles.buttonDisabled]}
           onPress={handleLogout}
@@ -537,6 +548,21 @@ const styles = StyleSheet.create({
   },
   editProfileButtonText: {
     color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  changePasswordButton: {
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 16,
+    marginTop: 12,
+    paddingVertical: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FF9500',
+  },
+  changePasswordButtonText: {
+    color: '#FF9500',
     fontSize: 16,
     fontWeight: '700',
   },

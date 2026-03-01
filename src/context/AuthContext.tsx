@@ -59,6 +59,8 @@ interface AuthContextType {
   isCaretaker: boolean;
   login: (email: string, password: string) => Promise<UserData>;
   loginWithPhone: (phoneNumber: string, countryCode: string, password: string) => Promise<UserData>;
+  loginMobileSendOtp: (phoneNumber: string) => Promise<void>;
+  loginMobileVerifyOtp: (phoneNumber: string, otp: string) => Promise<UserData>;
   loginWithGoogle: () => Promise<UserData>;
   signup: (data: SignupData) => Promise<UserData>;
   verifyEmail: (userId?: string) => Promise<UserData>;
@@ -500,7 +502,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       payload.phoneNumber = Number(normalizedPhoneNumber);
     }
 
-    await authorizedRequest<Partial<UserData>>('/api/v1/auth/me', 'PUT', payload);
+    await authorizedRequest<Partial<UserData>>('/profile', 'PUT', payload);
 
     profileOverrideRef.current = {
       first_name: firstName,
@@ -634,6 +636,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
+  const loginMobileSendOtp = async (phoneNumber: string): Promise<void> => {
+    try {
+      await performRequest<void>(
+        '/api/v1/auth/signin/mobile',
+        'POST',
+        { phoneNumber },
+        null,
+      );
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  };
+
+  const loginMobileVerifyOtp = async (phoneNumber: string, otp: string): Promise<UserData> => {
+    try {
+      const authResponse = await performRequest<UserData>(
+        '/api/v1/auth/signin/mobile/verify',
+        'POST',
+        { phoneNumber, otp, platform: Platform.OS },
+        null,
+      );
+
+      return await applySession(authResponse);
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  };
+
   const loginWithGoogle = async (): Promise<UserData> => {
     try {
       await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
@@ -749,8 +779,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
     try {
       await authorizedRequest<void>(
-        `/api/v1/auth/change-password?userId=${userId}&oldPassword=${encodeURIComponent(oldPassword)}&newPassword=${encodeURIComponent(newPassword)}`,
+        '/api/v1/auth/change-password',
         'POST',
+        { userId, oldPassword, newPassword }
       );
     } catch (error) {
       throw new Error(getErrorMessage(error));
@@ -858,6 +889,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         isCaretaker,
         login,
         loginWithPhone,
+        loginMobileSendOtp,
+        loginMobileVerifyOtp,
         loginWithGoogle,
         signup,
         verifyEmail,

@@ -11,6 +11,7 @@ import SignupScreen from './src/screens/SignupScreen';
 import ForgotPasswordScreen from './src/screens/ForgotPasswordScreen';
 import NotificationsScreen from './src/screens/NotificationsScreen';
 import WebViewScreen from './src/screens/WebViewScreen';
+import ChangePasswordScreen from './src/screens/ChangePasswordScreen';
 import {
   requestNotificationPermission,
   getFCMToken,
@@ -50,6 +51,7 @@ const AppNavigator = () => {
           <Stack.Screen name="Main" component={BottomTabNavigator} />
           <Stack.Screen name="Notifications" component={NotificationsScreen} />
           <Stack.Screen name="WebView" component={WebViewScreen} />
+          <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
         </>
       )}
     </Stack.Navigator>

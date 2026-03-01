@@ -21,11 +21,15 @@ interface LoginScreenProps {
 }
 
 const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
-  const { login, loginWithGoogle } = useAuth();
+  const { login, loginWithGoogle, loginMobileSendOtp, loginMobileVerifyOtp } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [loginMethod, setLoginMethod] = useState<'email' | 'phone'>('email');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [otp, setOtp] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
 
   const getErrorMessage = (error: unknown, fallback: string): string => {
     if (error instanceof Error && error.message.trim().length > 0) {
@@ -51,6 +55,40 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
     try {
       await login(email, password);
       // Navigation will be handled by App.tsx based on auth state
+    } catch (error) {
+      Alert.alert('Error', getErrorMessage(error, 'Login failed.'));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSendOtp = async () => {
+    if (!phoneNumber) {
+      Alert.alert('Error', 'Please enter a valid phone number');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      await loginMobileSendOtp(phoneNumber);
+      setOtpSent(true);
+      Alert.alert('Success', 'OTP sent to your phone number');
+    } catch (error) {
+      Alert.alert('Error', getErrorMessage(error, 'Failed to send OTP.'));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleVerifyOtp = async () => {
+    if (!otp) {
+      Alert.alert('Error', 'Please enter the OTP');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      await loginMobileVerifyOtp(phoneNumber, otp);
     } catch (error) {
       Alert.alert('Error', getErrorMessage(error, 'Login failed.'));
     } finally {
@@ -93,76 +131,137 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
               Sign in to continue monitoring your loved ones
             </Text>
 
-            {/* Email Input */}
-            <View style={styles.inputContainer}>
-              <Icon
-                name="mail-outline"
-                size={20}
-                color="#8E8E93"
-                style={styles.inputIcon}
-              />
-              <TextInput
-                style={styles.input}
-                placeholder="Email"
-                placeholderTextColor="#8E8E93"
-                value={email}
-                onChangeText={setEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-            </View>
+            {loginMethod === 'email' ? (
+              <>
+                {/* Email Input */}
+                <View style={styles.inputContainer}>
+                  <Icon
+                    name="mail-outline"
+                    size={20}
+                    color="#8E8E93"
+                    style={styles.inputIcon}
+                  />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Email"
+                    placeholderTextColor="#8E8E93"
+                    value={email}
+                    onChangeText={setEmail}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
 
+                {/* Password Input */}
+                <View style={styles.inputContainer}>
+                  <Icon
+                    name="lock-closed-outline"
+                    size={20}
+                    color="#8E8E93"
+                    style={styles.inputIcon}
+                  />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Password"
+                    placeholderTextColor="#8E8E93"
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry={!showPassword}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    textContentType="oneTimeCode"
+                  />
+                  <TouchableOpacity
+                    onPress={() => setShowPassword(!showPassword)}
+                    style={styles.eyeIcon}>
+                    <Icon
+                      name={showPassword ? 'eye-outline' : 'eye-off-outline'}
+                      size={20}
+                      color="#8E8E93"
+                    />
+                  </TouchableOpacity>
+                </View>
 
-            {/* Password Input */}
-            <View style={styles.inputContainer}>
-              <Icon
-                name="lock-closed-outline"
-                size={20}
-                color="#8E8E93"
-                style={styles.inputIcon}
-              />
-              <TextInput
-                style={styles.input}
-                placeholder="Password"
-                placeholderTextColor="#8E8E93"
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry={!showPassword}
-                autoCapitalize="none"
-                autoCorrect={false}
-                textContentType="oneTimeCode"
-              />
-              <TouchableOpacity
-                onPress={() => setShowPassword(!showPassword)}
-                style={styles.eyeIcon}>
-                <Icon
-                  name={showPassword ? 'eye-outline' : 'eye-off-outline'}
-                  size={20}
-                  color="#8E8E93"
-                />
-              </TouchableOpacity>
-            </View>
+                {/* Forgot Password */}
+                <TouchableOpacity
+                  style={styles.forgotPassword}
+                  onPress={() => navigation.navigate('ForgotPassword')}>
+                  <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
+                </TouchableOpacity>
 
-            {/* Forgot Password */}
+                {/* Login Button */}
+                <TouchableOpacity
+                  style={[styles.loginButton, isLoading && styles.buttonDisabled]}
+                  onPress={handleLogin}
+                  disabled={isLoading}>
+                  {isLoading ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.loginButtonText}>Sign In</Text>
+                  )}
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                {/* Phone Input */}
+                <View style={styles.inputContainer}>
+                  <Icon name="call-outline" size={20} color="#8E8E93" style={styles.inputIcon} />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Phone Number"
+                    placeholderTextColor="#8E8E93"
+                    value={phoneNumber}
+                    onChangeText={setPhoneNumber}
+                    keyboardType="phone-pad"
+                    autoCapitalize="none"
+                    editable={!otpSent}
+                  />
+                </View>
+
+                {otpSent && (
+                  <View style={styles.inputContainer}>
+                    <Icon name="key-outline" size={20} color="#8E8E93" style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Enter OTP"
+                      placeholderTextColor="#8E8E93"
+                      value={otp}
+                      onChangeText={setOtp}
+                      keyboardType="number-pad"
+                      autoCapitalize="none"
+                    />
+                  </View>
+                )}
+
+                {!otpSent ? (
+                  <TouchableOpacity
+                    style={[styles.loginButton, isLoading && styles.buttonDisabled]}
+                    onPress={handleSendOtp}
+                    disabled={isLoading}>
+                    {isLoading ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.loginButtonText}>Send OTP</Text>}
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    style={[styles.loginButton, isLoading && styles.buttonDisabled]}
+                    onPress={handleVerifyOtp}
+                    disabled={isLoading}>
+                    {isLoading ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.loginButtonText}>Verify & Sign In</Text>}
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+
+            {/* Toggle Login Method */}
             <TouchableOpacity
-              style={styles.forgotPassword}
-              onPress={() => navigation.navigate('ForgotPassword')}>
-              <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
-            </TouchableOpacity>
-
-            {/* Login Button */}
-            <TouchableOpacity
-              style={[styles.loginButton, isLoading && styles.buttonDisabled]}
-              onPress={handleLogin}
-              disabled={isLoading}>
-              {isLoading ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : (
-                <Text style={styles.loginButtonText}>
-                  Sign In
-                </Text>
-              )}
+              style={styles.methodToggle}
+              onPress={() => {
+                setLoginMethod(loginMethod === 'email' ? 'phone' : 'email');
+                setOtpSent(false);
+              }}>
+              <Text style={styles.methodToggleText}>
+                {loginMethod === 'email' ? 'Use Phone Number instead' : 'Use Email instead'}
+              </Text>
             </TouchableOpacity>
 
             <View style={styles.divider}>
@@ -336,6 +435,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   signupLink: {
+    color: '#FF9500',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  methodToggle: {
+    alignSelf: 'center',
+    marginBottom: 24,
+  },
+  methodToggleText: {
     color: '#FF9500',
     fontSize: 14,
     fontWeight: '600',
