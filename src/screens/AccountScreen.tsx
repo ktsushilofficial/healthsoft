@@ -215,10 +215,13 @@ const AccountScreen = () => {
     part => part !== '-',
   );
   const fullName = nameParts.length > 0 ? nameParts.join(' ') : '-';
-  const phoneParts = [safeValue(user?.country_code), safeValue(user?.phone_number)].filter(
-    part => part !== '-',
-  );
-  const phone = phoneParts.length > 0 ? phoneParts.join(' ') : '-';
+  const phoneNumberVal = safeValue(user?.phone_number);
+  const countryCodeVal = safeValue(user?.country_code);
+  let phone = '-';
+  if (phoneNumberVal !== '-') {
+    const displayCc = countryCodeVal !== '-' && countryCodeVal !== '' ? countryCodeVal : '+91';
+    phone = `${displayCc} ${phoneNumberVal}`;
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -306,7 +309,7 @@ const AccountScreen = () => {
                   const normalized = normalizeCountryCode(text);
                   setForm(prev => ({ ...prev, countryCode: normalized }));
                 }}
-                placeholder="+1"
+                placeholder="+91"
                 placeholderTextColor="#9A9A9A"
                 autoCapitalize="none"
               />
