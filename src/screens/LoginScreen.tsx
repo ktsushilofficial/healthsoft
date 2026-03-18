@@ -12,7 +12,9 @@ import {
   Platform,
   ScrollView,
 } from 'react-native';
+import { Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import newLogo from '../assets/images/new_logo.png';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useAuth } from '../context/AuthContext';
 
@@ -117,8 +119,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
           keyboardShouldPersistTaps="handled">
           {/* Header */}
           <View style={styles.header}>
-            <Icon name="medical" size={60} color="#FF9500" />
-            <Text style={styles.title}>Healthsoft</Text>
+            <Image source={newLogo} style={styles.logoImage} />
             <Text style={styles.subtitle}>
               Care for your loved ones, anytime, anywhere
             </Text>
@@ -307,7 +308,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingTop: 60,
     paddingBottom: 40,
-    backgroundColor: '#F8F8F8',
+    backgroundColor: '#FFFFFF',
+  },
+  logoImage: {
+    width: '90%',          // enlarged ~3x and spans most of the header
+    maxWidth: 500,
+    height: undefined,
+    aspectRatio: 2.75,
+    resizeMode: 'contain',
+    marginTop: 12,
   },
   title: {
     fontSize: 32,

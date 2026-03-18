@@ -1,5 +1,6 @@
 // src/screens/HomeScreen.tsx
 import React, { useState, useEffect, useCallback } from 'react';
+
 import {
   View,
   Text,
@@ -68,7 +69,6 @@ const HomeScreen = () => {
         <View style={styles.header}>
           <View style={styles.logoContainer}>
             <Icon name="fitness" size={24} color="#FF9500" />
-            <Text style={styles.logoText}>Healthsoft</Text>
           </View>
           {isCaretaker && (
             <TouchableOpacity

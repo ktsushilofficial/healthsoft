@@ -12,6 +12,7 @@ const SELECTED_SENIOR_STORAGE_SERVICE = 'healthsoft.prefs.selectedSenior';
 // Profile storage removed as per requirement
 const CARETAKER_ROLE = 'CARE_TAKER';
 const GUARDIAN_ROLE = 'GUARDIAN';
+const SENIOR_ROLE = 'SENIOR';
 const WEB_CLIENT_ID = '388740977041-rvg9j86k6ie0etecc24qq9ovfp23lfj3.apps.googleusercontent.com';
 
 export interface Senior {
@@ -57,6 +58,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isInitializing: boolean;
   isCaretaker: boolean;
+  authMethod: AuthMethod;
   login: (email: string, password: string) => Promise<UserData>;
   loginWithPhone: (phoneNumber: string, countryCode: string, password: string) => Promise<UserData>;
   loginMobileSendOtp: (phoneNumber: string) => Promise<void>;
@@ -71,7 +73,8 @@ interface AuthContextType {
   refreshToken: () => Promise<UserData>;
   googleAuth: (idToken: string) => Promise<UserData>;
   initiateGoogleLogin: () => Promise<void>;
-  forgotPassword: (email: string) => Promise<void>;
+  forgotPassword: (email: string) => Promise<string>;
+  resetPassword: (otp: string, newPassword: string, confirmPassword: string, shortLivedToken: string) => Promise<void>;
   seniors: Senior[];
   selectedSenior: Senior | null;
   getMySeniors: () => Promise<Senior[]>;
@@ -95,9 +98,20 @@ interface UpdateProfileData {
   phone_number: string;
 }
 
+type AuthMethod = 'email' | 'phone' | 'otp' | 'google' | 'unknown';
+
 interface ApiErrorResponse {
   message?: string;
   errors?: string[];
+}
+
+interface ForgotPasswordResponse {
+  success: boolean;
+  message: string;
+  shortLivedToken: string;
+  expiresInMinutes?: number;
+  platform?: string;
+  remainingAttempts?: number;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -238,6 +252,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [_tokens, setTokens] = useState<AuthTokens | null>(null);
   const [seniors, setSeniors] = useState<Senior[]>([]);
   const [selectedSenior, setSelectedSenior] = useState<Senior | null>(null);
+  const [authMethod, setAuthMethod] = useState<AuthMethod>('unknown');
 
   // Configure Google Sign-In
   useEffect(() => {
@@ -334,7 +349,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const applySession = async (sessionUser: UserData): Promise<UserData> => {
+  const applySession = async (
+    sessionUser: UserData,
+    method: AuthMethod = authMethod,
+  ): Promise<UserData> => {
     const sessionTokens = extractTokens(sessionUser);
 
     if (!sessionTokens.accessToken || !sessionTokens.refreshToken) {
@@ -352,8 +370,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     const normalized = normalizeUser(sessionUser, sessionTokens);
     setUser(normalized);
     setIsAuthenticated(true);
+    setAuthMethod(method ?? 'unknown');
 
-    return normalized;
+    // Fetch fresh profile immediately after login to ensure role and user data are current
+    try {
+      const refreshed = await refreshUserProfile();
+      return refreshed;
+    } catch (error) {
+      console.warn('Failed to refresh profile post-login; using session payload.', error);
+      return normalized;
+    }
   };
 
   const refreshTokens = async (): Promise<AuthTokens | null> => {
@@ -537,13 +563,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const forgotPassword = async (email: string): Promise<void> => {
+  const forgotPassword = async (email: string): Promise<string> => {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) {
+      throw new Error('Email is required for password reset.');
+    }
     try {
-      await performRequest<void>(
+      const response = await performRequest<ForgotPasswordResponse>(
         '/api/v1/auth/forgot-password',
         'POST',
-        { email },
+        { email: normalizedEmail, platform: Platform.OS },
         null
+      );
+      if (!response || !response.shortLivedToken) {
+        throw new Error('No reset token received from server.');
+      }
+      return response.shortLivedToken;
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  };
+
+  const resetPassword = async (otp: string, newPassword: string, confirmPassword: string, shortLivedToken: string): Promise<void> => {
+    try {
+      await performRequest<void>(
+        '/api/v1/auth/reset-password',
+        'POST',
+        { otp, newPassword, confirmPassword },
+        null,
+        { Authorization: `Bearer ${shortLivedToken}` }
       );
     } catch (error) {
       throw new Error(getErrorMessage(error));
@@ -588,6 +636,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           } catch {
             // Ignore failures in fetching seniors during bootstrap
           }
+        } else {
+          setSeniors([]);
+          setSelectedSenior(null);
         }
       } catch {
         await clearSession();
@@ -610,7 +661,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         null,
       );
 
-      return await applySession(authResponse);
+      return await applySession(authResponse, 'email');
     } catch (error) {
       throw new Error(getErrorMessage(error));
     }
@@ -630,7 +681,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         null,
       );
 
-      return await applySession(authResponse);
+      return await applySession(authResponse, 'phone');
     } catch (error) {
       throw new Error(getErrorMessage(error));
     }
@@ -658,7 +709,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         null,
       );
 
-      return await applySession(authResponse);
+      return await applySession(authResponse, 'otp');
     } catch (error) {
       throw new Error(getErrorMessage(error));
     }
@@ -880,6 +931,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const isCaretaker = user?.role === CARETAKER_ROLE || user?.role === GUARDIAN_ROLE;
 
+  // Clear seniors cache when user is not a caretaker/guardian
+  useEffect(() => {
+    if (user && !(user.role === CARETAKER_ROLE || user.role === GUARDIAN_ROLE)) {
+      setSeniors([]);
+      setSelectedSenior(null);
+    }
+  }, [user?.role]);
+
   return (
     <AuthContext.Provider
       value={{
@@ -887,6 +946,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         isAuthenticated,
         isInitializing,
         isCaretaker,
+        authMethod,
         login,
         loginWithPhone,
         loginMobileSendOtp,
@@ -902,6 +962,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         googleAuth,
         initiateGoogleLogin,
         forgotPassword,
+        resetPassword,
         seniors,
         selectedSenior,
         getMySeniors,

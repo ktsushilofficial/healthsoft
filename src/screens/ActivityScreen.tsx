@@ -8,6 +8,7 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -21,7 +22,6 @@ const ActivityScreen = () => {
         <View style={styles.header}>
           <View style={styles.brandRow}>
             <Icon name="fitness" size={20} color="#F28C28" />
-            <Text style={styles.brandText}>Healthsoft</Text>
           </View>
           <TouchableOpacity
             style={styles.bellWrap}
@@ -127,12 +127,6 @@ const styles = StyleSheet.create({
   brandRow: {
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  brandText: {
-    marginLeft: 8,
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#2E2A27',
   },
   bellWrap: {
     position: 'relative',

@@ -38,11 +38,20 @@ export async function requestNotificationPermission(): Promise<boolean> {
  */
 export async function getFCMToken(): Promise<string | null> {
     try {
+        // iOS requires the device to be explicitly registered for remote messages
+        // before requesting a token. No-op on Android.
+        await messaging().registerDeviceForRemoteMessages();
+
         const token = await messaging().getToken();
         console.log('[Notifications] FCM Token:', token);
         return token;
     } catch (error) {
-        console.error('[Notifications] Failed to get FCM token:', error);
+        const message = (error as Error)?.message ?? '';
+        if (message.includes('aps-environment')) {
+            console.warn('[Notifications] Skipping FCM token; missing aps-environment entitlement in provisioning profile.');
+            return null;
+        }
+        console.warn('[Notifications] Failed to get FCM token:', error);
         return null;
     }
 }

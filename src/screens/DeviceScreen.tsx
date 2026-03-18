@@ -5,6 +5,7 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -83,10 +84,7 @@ const DeviceScreen = () => {
           <TouchableOpacity onPress={() => navigation.navigate('Home' as never)}>
             <Icon name="arrow-back" size={22} color="#F28C28" />
           </TouchableOpacity>
-          <View style={styles.brand}>
-            <Icon name="fitness" size={20} color="#F28C28" />
-            <Text style={styles.brandText}>Healthsoft</Text>
-          </View>
+          <View style={styles.brand} />
           <View style={styles.headerSpacer} />
         </View>
 
@@ -373,14 +371,8 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   brand: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  brandText: {
-    marginLeft: 8,
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#2E2A27',
+    width: 24,
+    height: 24,
   },
   headerSpacer: {
     width: 22,

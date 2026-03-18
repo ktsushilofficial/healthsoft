@@ -1,6 +1,7 @@
-// src/navigation/BottomTabNavigator.tsx
 import React from 'react';
-import {createBottomTabNavigator} from '@react-navigation/bottom-tabs';
+import { Platform } from 'react-native';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 
 // Import screens (we'll create these next)
@@ -13,10 +14,11 @@ import AccountScreen from '../screens/AccountScreen';
 const Tab = createBottomTabNavigator();
 
 const BottomTabNavigator = () => {
+  const insets = useSafeAreaInsets();
   return (
     <Tab.Navigator
-      screenOptions={({route}) => ({
-        tabBarIcon: ({focused, color, size}) => {
+      screenOptions={({ route }) => ({
+        tabBarIcon: ({ focused, color, size }) => {
           let iconName: string = '';
 
           if (route.name === 'Home') {
@@ -39,8 +41,8 @@ const BottomTabNavigator = () => {
           backgroundColor: '#FFFFFF',
           borderTopWidth: 1,
           borderTopColor: '#E5E5E5',
-          height: 88,
-          paddingBottom: 34,
+          height: Platform.OS === 'ios' ? 88 : 60 + insets.bottom,
+          paddingBottom: Platform.OS === 'ios' ? 34 : Math.max(insets.bottom, 8),
           paddingTop: 8,
         },
         tabBarLabelStyle: {

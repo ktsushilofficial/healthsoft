@@ -373,6 +373,10 @@ const SignupScreen: React.FC<SignupScreenProps> = ({ navigation }) => {
                 <Text style={styles.loginLink}>Sign In</Text>
               </TouchableOpacity>
             </View>
+            {/* Forgot Password link added for convenience */}
+            <TouchableOpacity onPress={() => navigation.navigate('ForgotPassword')} style={{ marginTop: 12 }}>
+              <Text style={styles.loginLink}>Forgot Password?</Text>
+            </TouchableOpacity>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

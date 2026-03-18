@@ -11,9 +11,11 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
+import newLogo from '../assets/images/new_logo.png';
 import { useAuth } from '../context/AuthContext';
 
 interface ForgotPasswordScreenProps {
@@ -34,31 +36,33 @@ const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navigation 
   };
 
   const handleSendResetLink = async () => {
-    if (!email) {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) {
       Alert.alert('Error', 'Please enter your email address');
       return;
     }
 
     // Basic email validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
+    if (!emailRegex.test(normalizedEmail)) {
       Alert.alert('Error', 'Please enter a valid email address');
       return;
     }
 
     setIsLoading(true);
     try {
-      await forgotPassword(email);
+      const token = await forgotPassword(normalizedEmail);
       Alert.alert(
         'Success',
-        'If an account exists with this email, you will receive a password reset link shortly.',
+        'If an account exists with this email, you will receive a password reset OTP shortly.',
         [
           {
-            text: 'Back to Login',
-            onPress: () => navigation.goBack(),
+            text: 'Enter OTP',
+            onPress: () => navigation.navigate('ResetPassword', { email: normalizedEmail, shortLivedToken: token }),
           },
         ]
       );
+      setTimeout(() => navigation.navigate('ResetPassword', { email: normalizedEmail, shortLivedToken: token }), 2000);
     } catch (error) {
       Alert.alert('Error', getErrorMessage(error, 'Failed to send reset link.'));
     } finally {
@@ -80,8 +84,7 @@ const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navigation 
           keyboardShouldPersistTaps="handled">
           {/* Header */}
           <View style={styles.header}>
-            <Icon name="medical" size={60} color="#FF9500" />
-            <Text style={styles.title}>Healthsoft</Text>
+            <Image source={newLogo} style={styles.logoImage} />
             <Text style={styles.subtitle}>
               Care for your loved ones, anytime, anywhere
             </Text>
@@ -97,7 +100,7 @@ const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navigation 
             {/* Instructions */}
             <View style={styles.instructionContainer}>
               <Text style={styles.instructionText}>
-                Enter your email address to receive a password reset link.
+                Enter your email address to receive a password reset OTP.
               </Text>
 
             </View>
@@ -122,19 +125,6 @@ const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navigation 
               />
             </View>
 
-            {/* Support Contact Info */}
-            <View style={styles.supportContainer}>
-              <Text style={styles.supportTitle}>Contact Support:</Text>
-              <View style={styles.supportItem}>
-                <Icon name="mail-outline" size={18} color="#FF9500" />
-                <Text style={styles.supportText}>support@healthsoftcare.in</Text>
-              </View>
-              <View style={styles.supportItem}>
-                <Icon name="call-outline" size={18} color="#FF9500" />
-                <Text style={styles.supportText}>+91-XXX-XXX-XXXX</Text>
-              </View>
-            </View>
-
             {/* Action Buttons */}
             <TouchableOpacity
               style={[styles.resetButton, isLoading && styles.buttonDisabled]}
@@ -143,7 +133,7 @@ const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navigation 
               {isLoading ? (
                 <ActivityIndicator color="#FFFFFF" />
               ) : (
-                <Text style={styles.resetButtonText}>Send Reset Link</Text>
+                <Text style={styles.resetButtonText}>Send Reset OTP</Text>
               )}
             </TouchableOpacity>
 
@@ -152,16 +142,6 @@ const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navigation 
               onPress={handleBackToLogin}>
               <Text style={styles.backButtonText}>Back to Login</Text>
             </TouchableOpacity>
-
-            {/* Additional Help */}
-            <View style={styles.helpContainer}>
-              <Text style={styles.helpText}>
-                For security reasons, password reset requires identity verification.
-              </Text>
-              <Text style={styles.helpText}>
-                Our support team is available 24/7 to assist you.
-              </Text>
-            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -184,13 +164,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingTop: 60,
     paddingBottom: 40,
-    backgroundColor: '#F8F8F8',
+    backgroundColor: '#FFFFFF',
   },
-  title: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#000000',
-    marginTop: 16,
+  logoImage: {
+    width: '90%',
+    maxWidth: 500,
+    height: undefined,
+    aspectRatio: 2.75,
+    resizeMode: 'contain',
   },
   subtitle: {
     fontSize: 14,
@@ -248,31 +229,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#000000',
   },
-  supportContainer: {
-    backgroundColor: '#F8F8F8',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 24,
-    borderWidth: 1,
-    borderColor: '#E5E5E5',
-  },
-  supportTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#000000',
-    marginBottom: 12,
-  },
-  supportItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  supportText: {
-    fontSize: 14,
-    color: '#FF9500',
-    marginLeft: 12,
-    fontWeight: '600',
-  },
   resetButton: {
     backgroundColor: '#FF9500',
     height: 52,
@@ -311,18 +267,6 @@ const styles = StyleSheet.create({
     color: '#000000',
     fontSize: 16,
     fontWeight: '600',
-  },
-  helpContainer: {
-    backgroundColor: '#F0F0F0',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 32,
-  },
-  helpText: {
-    fontSize: 12,
-    color: '#666666',
-    lineHeight: 18,
-    textAlign: 'center',
   },
 });
 

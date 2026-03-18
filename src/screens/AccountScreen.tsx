@@ -1,5 +1,5 @@
 // src/screens/AccountScreen.tsx
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -11,7 +11,7 @@ import {
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useAuth } from '../context/AuthContext';
 
@@ -65,23 +65,18 @@ const normalizePhoneNumber = (value: string): string =>
 
 const AccountScreen = () => {
   const navigation = useNavigation<any>();
-  const { user, refreshUserProfile, updateProfile, logout } = useAuth();
+  const { user, refreshUserProfile, updateProfile, logout, authMethod } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState({
     firstName: '',
     lastName: '',
     countryCode: '',
     phoneNumber: '',
   });
-  const refreshProfileRef = useRef(refreshUserProfile);
-
-  useEffect(() => {
-    refreshProfileRef.current = refreshUserProfile;
-  }, [refreshUserProfile]);
-
   useEffect(() => {
     if (isEditing) {
       return;
@@ -97,25 +92,23 @@ const AccountScreen = () => {
     });
   }, [user, isEditing]);
 
-  const loadProfile = useCallback(async () => {
+  const loadProfile = async () => {
+    if (isLoading) return;
     setIsLoading(true);
+    setLoadError(null);
     try {
-      await refreshProfileRef.current();
+      await refreshUserProfile();
     } catch (error) {
-      // Only show alerts if we have no profile data at all.
-      // If data is already present from the login session, ignore
-      // transient /profile fetch failures silently.
-      if (!user) {
-        const message =
-          error instanceof Error && error.message
-            ? error.message
-            : 'Failed to load profile.';
-        Alert.alert('Error', message);
-      }
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Unable to load user profile.';
+      setLoadError(message);
     } finally {
       setIsLoading(false);
     }
-  }, [user]);
+  };
+
 
   const handleSaveProfile = useCallback(async () => {
     const firstName = form.firstName.trim();
@@ -186,13 +179,13 @@ const AccountScreen = () => {
     setIsEditing(false);
   }, [user]);
 
-  useFocusEffect(
-    useCallback(() => {
-      loadProfile().catch(() => {
-        // Errors are already handled in loadProfile.
-      });
-    }, [loadProfile]),
-  );
+  // Load profile once on mount
+  useEffect(() => {
+    loadProfile().catch(() => {
+      // Errors are already handled in loadProfile.
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleLogout = useCallback(() => {
     Alert.alert('Logout', 'Are you sure you want to logout?', [
@@ -242,13 +235,20 @@ const AccountScreen = () => {
               });
             }}
             disabled={isLoading || isEditing || isSaving}>
-            {isLoading ? (
-              <ActivityIndicator color="#FF9500" />
-            ) : (
-              <Icon name="refresh" size={20} color="#FF9500" />
-            )}
+            <Icon
+              name="refresh"
+              size={20}
+              color="#FF9500"
+              style={isLoading ? { opacity: 0.4 } : undefined}
+            />
           </TouchableOpacity>
         </View>
+
+        {loadError ? (
+          <View style={styles.errorBanner}>
+            <Text style={styles.errorText}>{loadError}</Text>
+          </View>
+        ) : null}
 
         <View style={styles.profileSection}>
           <View style={styles.avatar}>
@@ -375,7 +375,7 @@ const AccountScreen = () => {
           </TouchableOpacity>
         )}
 
-        {!isEditing && (
+        {!isEditing && authMethod === 'email' && (
           <TouchableOpacity
             style={styles.changePasswordButton}
             onPress={() => {
@@ -418,6 +418,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 16,
     backgroundColor: '#FFFFFF',
+  },
+  errorBanner: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#FFF4E5',
+    borderWidth: 1,
+    borderColor: '#FFC58B',
+  },
+  errorText: {
+    color: '#D46B08',
+    fontSize: 13,
+    textAlign: 'center',
   },
   headerTitle: {
     fontSize: 18,
