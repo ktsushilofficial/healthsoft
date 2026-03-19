@@ -1,15 +1,16 @@
 import React, { useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
+import { useBleDeviceManager } from '../bluetooth/useBleDeviceManager';
 
 const contacts = [
   {
@@ -57,12 +58,6 @@ const medicines = [
   },
 ];
 
-const bluetoothDevices = [
-  { id: '1', name: 'Smart Pill Dispenser', status: 'Connected' },
-  { id: '2', name: 'Fall Detection Pendant', status: 'Available' },
-  { id: '3', name: 'Blood Pressure Monitor', status: 'Available' },
-];
-
 const DeviceScreen = () => {
   const navigation = useNavigation();
   const tabs = useMemo(
@@ -76,6 +71,22 @@ const DeviceScreen = () => {
   );
   const [activeTab, setActiveTab] = useState(tabs[0].id);
   const hasPurchased = true;
+
+  const {
+    isScanning,
+    devices,
+    scanError,
+    connectionState,
+    connectedDeviceId,
+    gattDetails,
+    deviceIdentity,
+    startScan,
+    stopScan,
+    connectToDevice,
+    disconnect,
+  } = useBleDeviceManager();
+
+  const [showGattDetails, setShowGattDetails] = useState(false);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -258,7 +269,11 @@ const DeviceScreen = () => {
               <View style={styles.card}>
                 <View style={styles.deviceHeaderRow}>
                   <Text style={styles.deviceTitle}>Device Manager</Text>
-                  <TouchableOpacity style={styles.unlinkChip}>
+                  <TouchableOpacity
+                    style={styles.unlinkChip}
+                    onPress={() => disconnect()}
+                    disabled={connectionState === 'disconnected'}
+                  >
                     <Text style={styles.unlinkText}>Unlink</Text>
                   </TouchableOpacity>
                 </View>
@@ -272,20 +287,66 @@ const DeviceScreen = () => {
 
                 <View style={styles.deviceInfoRow}>
                   <Text style={styles.deviceInfoLabel}>IMEI Code</Text>
-                  <Text style={styles.deviceInfoValue}>359544090451234</Text>
+                  <Text style={styles.deviceInfoValue}>
+                    {deviceIdentity?.serialNumber ?? '—'}
+                  </Text>
                 </View>
                 <View style={styles.deviceInfoRow}>
                   <Text style={styles.deviceInfoLabel}>SIM Number</Text>
-                  <Text style={styles.deviceInfoValue}>445683072100208</Text>
+                  <Text style={styles.deviceInfoValue}>—</Text>
                 </View>
                 <View style={styles.deviceInfoRow}>
                   <Text style={styles.deviceInfoLabel}>Date of Setup</Text>
-                  <Text style={styles.deviceInfoValue}>Apr 15, 2023</Text>
+                  <Text style={styles.deviceInfoValue}>—</Text>
                 </View>
 
-                <TouchableOpacity style={styles.primaryButton}>
+                <TouchableOpacity
+                  style={styles.primaryButton}
+                  onPress={() => setShowGattDetails(prev => !prev)}
+                >
                   <Text style={styles.primaryButtonText}>Manage Settings</Text>
                 </TouchableOpacity>
+
+                {showGattDetails && connectionState === 'connected' ? (
+                  <View style={{ marginTop: 10 }}>
+                    <Text style={styles.cardTitle}>Connected Device Info</Text>
+                    <Text style={styles.cardSubtitle}>
+                      {deviceIdentity?.manufacturer ? `Manufacturer: ${deviceIdentity.manufacturer}` : 'Manufacturer: —'}
+                    </Text>
+                    <Text style={styles.cardSubtitle}>
+                      {deviceIdentity?.model ? `Model: ${deviceIdentity.model}` : 'Model: —'}
+                    </Text>
+                    <Text style={styles.cardSubtitle}>
+                      {gattDetails?.services?.length
+                        ? `Services discovered: ${gattDetails.services.length}`
+                        : 'Services discovered: —'}
+                    </Text>
+
+                    <View style={styles.deviceDivider} />
+
+                    <Text style={styles.cardTitle}>GATT Services</Text>
+                    <Text style={styles.cardSubtitle}>
+                      This screen is discovery-only for now. To edit settings you must map the device-specific UUIDs for writable characteristics.
+                    </Text>
+
+                    {(gattDetails?.services ?? []).slice(0, 6).map(service => (
+                      <View key={service.uuid} style={{ marginTop: 6 }}>
+                        <View style={styles.deviceInfoRow}>
+                          <Text style={styles.deviceInfoLabel}>{service.uuid}</Text>
+                          <Text style={styles.deviceInfoValue}>
+                            {service.characteristics.length} chars
+                          </Text>
+                        </View>
+
+                        {service.characteristics.slice(0, 8).map(ch => (
+                          <Text key={ch.uuid} style={styles.cardSubtitle}>
+                            - {ch.uuid}
+                          </Text>
+                        ))}
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
 
                 <View style={styles.deviceDivider} />
 
@@ -293,22 +354,55 @@ const DeviceScreen = () => {
                 <Text style={styles.cardSubtitle}>
                   Link and manage nearby medical devices for the care plan.
                 </Text>
-                <TouchableOpacity style={styles.primaryButton}>
-                  <Icon name="bluetooth" size={18} color="#FFFFFF" />
-                  <Text style={styles.primaryButtonText}>Link New Device</Text>
+                <TouchableOpacity
+                  style={styles.primaryButton}
+                  onPress={() => {
+                    if (isScanning) stopScan();
+                    else startScan();
+                  }}
+                >
+                  {isScanning ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <Icon name="bluetooth" size={18} color="#FFFFFF" />
+                  )}
+                  <Text style={styles.primaryButtonText}>
+                    {isScanning ? 'Scanning...' : 'Scan Nearby'}
+                  </Text>
                 </TouchableOpacity>
 
-                {bluetoothDevices.map(device => (
+                {scanError ? <Text style={{ color: '#B00020', marginTop: 8 }}>{scanError}</Text> : null}
+
+                {devices.length === 0 && !isScanning ? (
+                  <Text style={styles.cardSubtitle}>(No BLE devices found yet.)</Text>
+                ) : null}
+
+                {devices.slice(0, 8).map(device => (
                   <View key={device.id} style={styles.deviceRow}>
                     <Icon name="radio" size={20} color="#F28C28" />
                     <View style={styles.deviceInfo}>
-                      <Text style={styles.deviceName}>{device.name}</Text>
-                      <Text style={styles.deviceStatus}>{device.status}</Text>
-                    </View>
-                    <TouchableOpacity style={styles.linkButton}>
-                      <Text style={styles.linkButtonText}>
-                        {device.status === 'Connected' ? 'Manage' : 'Link'}
+                      <Text style={styles.deviceName}>
+                        {device.name ?? device.localName ?? 'Unknown device'}
                       </Text>
+                      <Text style={styles.deviceStatus}>
+                        {connectionState === 'connected' && connectedDeviceId === device.id
+                          ? 'Connected'
+                          : device.rssi != null
+                            ? `RSSI: ${device.rssi}`
+                            : 'Available'}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[
+                        styles.linkButton,
+                        connectionState === 'connected' && connectedDeviceId === device.id
+                          ? { opacity: 0.5 }
+                          : null,
+                      ]}
+                      onPress={() => connectToDevice(device.id)}
+                      disabled={connectionState === 'connected' && connectedDeviceId === device.id}
+                    >
+                      <Text style={styles.linkButtonText}>Link</Text>
                     </TouchableOpacity>
                   </View>
                 ))}

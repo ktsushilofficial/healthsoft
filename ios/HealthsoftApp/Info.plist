@@ -48,7 +48,13 @@
 		</dict>
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string/>
+	<string>Location access is used to enable Bluetooth scanning for health devices.</string>
+
+	<!-- Bluetooth permissions for scanning/connecting -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Bluetooth access is required to scan and connect to nearby health devices.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Bluetooth access is required to communicate with nearby health devices.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
