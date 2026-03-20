@@ -51,18 +51,39 @@ export function useBleDeviceManager() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [devices, setDevices] = useState<BleDiscoveredDevice[]>([]);
 
-  const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
-  const [connectedDeviceId, setConnectedDeviceId] = useState<string | null>(null);
-  const [gattDetails, setGattDetails] = useState<BleGattDetails | null>(null);
-  const [deviceIdentity, setDeviceIdentity] = useState<BleDeviceIdentity | null>(null);
+  const [connectionStates, setConnectionStates] = useState<Record<string, ConnectionState>>({});
+  const [gattDetailsById, setGattDetailsById] = useState<Record<string, BleGattDetails>>({});
+  const [deviceIdentityById, setDeviceIdentityById] = useState<Record<string, BleDeviceIdentity>>({});
 
-  const connectedDeviceRef = useRef<Device | null>(null);
-  const disconnectedSubRef = useRef<{ remove: () => void } | null>(null);
+  const connectedDeviceRefs = useRef<Record<string, Device>>({});
+  const disconnectedSubRefs = useRef<Record<string, { remove: () => void }>>({});
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const devicesByIdRef = useRef<Record<string, BleDiscoveredDevice>>({});
 
   const managerStateString = useMemo(() => bleState, [bleState]);
+
+  const connectedDeviceIds = useMemo(
+    () =>
+      Object.entries(connectionStates)
+        .filter(([, state]) => state === 'connected')
+        .map(([id]) => id),
+    [connectionStates],
+  );
+
+  const primaryConnectedId = useMemo(
+    () => connectedDeviceIds[0] ?? null,
+    [connectedDeviceIds],
+  );
+
+  const aggregateConnectionState = useMemo<ConnectionState>(() => {
+    const states = Object.values(connectionStates);
+    if (states.includes('connecting')) return 'connecting';
+    if (states.includes('connected')) return 'connected';
+    if (states.includes('disconnecting')) return 'disconnecting';
+    if (states.includes('error')) return 'error';
+    return 'disconnected';
+  }, [connectionStates]);
 
   useEffect(() => {
     const sub = bleManager.onStateChange(
@@ -72,6 +93,37 @@ export function useBleDeviceManager() {
     return () => {
       sub.remove();
     };
+  }, []);
+
+  const cleanupDeviceState = useCallback((deviceId: string) => {
+    try {
+      if (disconnectedSubRefs.current[deviceId]) {
+        disconnectedSubRefs.current[deviceId]?.remove();
+        delete disconnectedSubRefs.current[deviceId];
+      }
+    } catch {
+      // Best-effort
+    }
+
+    delete connectedDeviceRefs.current[deviceId];
+
+    setConnectionStates(prev => {
+      const next = { ...prev };
+      delete next[deviceId];
+      return next;
+    });
+
+    setGattDetailsById(prev => {
+      const next = { ...prev };
+      delete next[deviceId];
+      return next;
+    });
+
+    setDeviceIdentityById(prev => {
+      const next = { ...prev };
+      delete next[deviceId];
+      return next;
+    });
   }, []);
 
   const stopScan = useCallback(async () => {
@@ -154,33 +206,42 @@ export function useBleDeviceManager() {
     [stopScan, bleState],
   );
 
-  const disconnect = useCallback(async () => {
-    setConnectionState('disconnecting');
+  const disconnect = useCallback(
+    async (deviceId?: string) => {
+      const targetIds = deviceId ? [deviceId] : Object.keys(connectionStates);
 
-    try {
-      if (disconnectedSubRef.current) {
-        disconnectedSubRef.current.remove();
-        disconnectedSubRef.current = null;
-      }
+      if (targetIds.length === 0) return;
 
-      if (connectedDeviceRef.current) {
-        await connectedDeviceRef.current.cancelConnection();
-      } else if (connectedDeviceId) {
-        await bleManager.cancelDeviceConnection(connectedDeviceId);
-      }
-    } catch {
-      // Best-effort disconnect.
-    } finally {
-      connectedDeviceRef.current = null;
-      setConnectedDeviceId(null);
-      setGattDetails(null);
-      setDeviceIdentity(null);
-      setConnectionState('disconnected');
-    }
-  }, [connectedDeviceId]);
+      setConnectionStates(prev => {
+        const next = { ...prev };
+        targetIds.forEach(id => {
+          if (next[id]) next[id] = 'disconnecting';
+        });
+        return next;
+      });
+
+      await Promise.all(
+        targetIds.map(async id => {
+          try {
+            if (connectedDeviceRefs.current[id]) {
+              await connectedDeviceRefs.current[id].cancelConnection();
+            } else {
+              await bleManager.cancelDeviceConnection(id);
+            }
+          } catch {
+            // Best-effort disconnect.
+          } finally {
+            cleanupDeviceState(id);
+          }
+        }),
+      );
+    },
+    [cleanupDeviceState, connectionStates],
+  );
 
   const readDeviceInformation = useCallback(async (device: Device) => {
-    // Read standard GATT Device Information characteristics if the peripheral exposes them.
+    const deviceId = device.id;
+
     try {
       const characteristics = await device.characteristicsForService(DEVICE_INFORMATION_SERVICE_UUID);
 
@@ -192,7 +253,6 @@ export function useBleDeviceManager() {
 
       const identity: BleDeviceIdentity = {};
 
-      // Read each explicitly so we don't rely on function name hacks.
       const manufacturerChar = byUuid[MANUFACTURER_NAME_UUID];
       if (manufacturerChar?.isReadable) {
         const c = await device.readCharacteristicForService(
@@ -220,94 +280,112 @@ export function useBleDeviceManager() {
         if (c?.value) identity.serialNumber = decodeBase64ToUtf8(c.value);
       }
 
-      setDeviceIdentity(Object.keys(identity).length ? identity : null);
+      setDeviceIdentityById(prev => {
+        const next = { ...prev };
+        if (Object.keys(identity).length) {
+          next[deviceId] = identity;
+        } else {
+          delete next[deviceId];
+        }
+        return next;
+      });
     } catch {
       // Device info service may not exist or characteristics may not be readable.
-      setDeviceIdentity(null);
+      setDeviceIdentityById(prev => {
+        const next = { ...prev };
+        delete next[deviceId];
+        return next;
+      });
     }
   }, []);
 
-  const connectToDevice = useCallback(async (deviceId: string) => {
-    setScanError(null);
-    setConnectionState('connecting');
+  const connectToDevice = useCallback(
+    async (deviceId: string) => {
+      setScanError(null);
+      setConnectionStates(prev => ({ ...prev, [deviceId]: 'connecting' }));
 
-    try {
-      // Make sure scan is not running while connecting.
-      await stopScan();
+      try {
+        await stopScan();
 
-      const hasPermissions = await requestAndroidBlePermissions();
-      if (!hasPermissions && Platform.OS === 'android') {
-        throw new Error('Bluetooth permissions not granted.');
-      }
-
-      const device = await bleManager.connectToDevice(deviceId, { autoConnect: false, timeout: 10000 });
-      connectedDeviceRef.current = device;
-      setConnectedDeviceId(deviceId);
-
-      // Track disconnection.
-      const sub = bleManager.onDeviceDisconnected(deviceId, (error, dev) => {
-        // Only react if this device disconnected.
-        if (error || dev) {
-          setConnectionState('disconnected');
-          connectedDeviceRef.current = null;
-          setConnectedDeviceId(null);
-          setGattDetails(null);
-          setDeviceIdentity(null);
+        const hasPermissions = await requestAndroidBlePermissions();
+        if (!hasPermissions && Platform.OS === 'android') {
+          throw new Error('Bluetooth permissions not granted.');
         }
-      });
-      disconnectedSubRef.current = sub;
 
-      // Discover services/characteristics.
-      await device.discoverAllServicesAndCharacteristics();
+        const device = await bleManager.connectToDevice(deviceId, { autoConnect: false, timeout: 10000 });
+        connectedDeviceRefs.current[deviceId] = device;
 
-      const services = await device.services();
-
-      const serviceSummaries: BleServiceSummary[] = [];
-      for (const service of services) {
-        const characteristics = await device.characteristicsForService(service.uuid);
-        const charSummaries: BleCharacteristicSummary[] = characteristics.map((c: any) => ({
-          uuid: c.uuid,
-          isReadable: !!c.isReadable,
-          isWritableWithResponse: !!c.isWritableWithResponse,
-          isWritableWithoutResponse: !!c.isWritableWithoutResponse,
-          isNotifiable: !!c.isNotifiable,
-          isIndicatable: !!c.isIndicatable,
-        }));
-
-        serviceSummaries.push({
-          uuid: service.uuid,
-          characteristics: charSummaries,
+        const sub = bleManager.onDeviceDisconnected(deviceId, () => {
+          cleanupDeviceState(deviceId);
         });
+        disconnectedSubRefs.current[deviceId] = sub;
+
+        await device.discoverAllServicesAndCharacteristics();
+
+        const services = await device.services();
+
+        const serviceSummaries: BleServiceSummary[] = [];
+        for (const service of services) {
+          const characteristics = await device.characteristicsForService(service.uuid);
+          const charSummaries: BleCharacteristicSummary[] = characteristics.map((c: any) => ({
+            uuid: c.uuid,
+            isReadable: !!c.isReadable,
+            isWritableWithResponse: !!c.isWritableWithResponse,
+            isWritableWithoutResponse: !!c.isWritableWithoutResponse,
+            isNotifiable: !!c.isNotifiable,
+            isIndicatable: !!c.isIndicatable,
+          }));
+
+          serviceSummaries.push({
+            uuid: service.uuid,
+            characteristics: charSummaries,
+          });
+        }
+
+        setGattDetailsById(prev => ({ ...prev, [deviceId]: { services: serviceSummaries } }));
+
+        await readDeviceInformation(device);
+
+        // Ensure the connected device shows up in the list even if it was not seen in the current scan.
+        const existing = devicesByIdRef.current[deviceId] ?? { id: deviceId };
+        devicesByIdRef.current[deviceId] = {
+          ...existing,
+          name: device.name ?? existing.name ?? null,
+          localName: device.localName ?? existing.localName ?? null,
+        };
+        setDevices(Object.values(devicesByIdRef.current));
+
+        setConnectionStates(prev => ({ ...prev, [deviceId]: 'connected' }));
+      } catch (e: any) {
+        Alert.alert('BLE Connection Failed', e?.message ?? 'Unable to connect to device.');
+        setConnectionStates(prev => ({ ...prev, [deviceId]: 'error' }));
       }
-
-      setGattDetails({ services: serviceSummaries });
-
-      await readDeviceInformation(device);
-
-      setConnectionState('connected');
-    } catch (e: any) {
-      Alert.alert('BLE Connection Failed', e?.message ?? 'Unable to connect to device.');
-      setConnectionState('error');
-    }
-  }, [readDeviceInformation, stopScan]);
+    },
+    [cleanupDeviceState, readDeviceInformation, stopScan],
+  );
 
   const writeUtf8ToCharacteristic = useCallback(
-    async (serviceUuid: string, characteristicUuid: string, valueUtf8: string) => {
-      if (!connectedDeviceId) {
+    async (
+      serviceUuid: string,
+      characteristicUuid: string,
+      valueUtf8: string,
+      targetDeviceId?: string,
+    ) => {
+      const activeDeviceId = targetDeviceId ?? primaryConnectedId ?? connectedDeviceIds[0];
+      if (!activeDeviceId) {
         throw new Error('No connected device.');
       }
 
       const base64Value = encodeUtf8ToBase64(valueUtf8);
 
-      // Prefer manager-level API (works regardless of whether we kept a Device ref).
       await bleManager.writeCharacteristicWithResponseForDevice(
-        connectedDeviceId,
+        activeDeviceId,
         serviceUuid,
         characteristicUuid,
         base64Value,
       );
     },
-    [connectedDeviceId],
+    [connectedDeviceIds, primaryConnectedId],
   );
 
   useEffect(() => {
@@ -316,6 +394,22 @@ export function useBleDeviceManager() {
       if (scanTimerRef.current) {
         clearTimeout(scanTimerRef.current);
       }
+
+       Object.keys(disconnectedSubRefs.current).forEach(id => {
+         try {
+           disconnectedSubRefs.current[id]?.remove();
+         } catch {
+           // ignore
+         }
+       });
+
+       Object.keys(connectedDeviceRefs.current).forEach(id => {
+         try {
+           connectedDeviceRefs.current[id]?.cancelConnection();
+         } catch {
+           // ignore
+         }
+       });
     };
   }, []);
 
@@ -324,10 +418,14 @@ export function useBleDeviceManager() {
     isScanning,
     devices,
     scanError,
-    connectionState,
-    connectedDeviceId,
-    gattDetails,
-    deviceIdentity,
+    connectionState: aggregateConnectionState,
+    connectionStates,
+    connectedDeviceIds,
+    primaryConnectedId,
+    gattDetails: primaryConnectedId ? gattDetailsById[primaryConnectedId] ?? null : null,
+    gattDetailsById,
+    deviceIdentity: primaryConnectedId ? deviceIdentityById[primaryConnectedId] ?? null : null,
+    deviceIdentityById,
     startScan,
     stopScan,
     connectToDevice,
@@ -335,4 +433,3 @@ export function useBleDeviceManager() {
     writeUtf8ToCharacteristic,
   };
 }
-

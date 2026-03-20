@@ -11,6 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useBleDeviceManager } from '../bluetooth/useBleDeviceManager';
+import type { BleDiscoveredDevice } from '../bluetooth/types';
 
 const contacts = [
   {
@@ -73,13 +74,18 @@ const DeviceScreen = () => {
   const hasPurchased = true;
 
   const {
+    bleState,
     isScanning,
     devices,
     scanError,
     connectionState,
-    connectedDeviceId,
+    connectionStates,
+    connectedDeviceIds,
+    primaryConnectedId,
     gattDetails,
+    gattDetailsById,
     deviceIdentity,
+    deviceIdentityById,
     startScan,
     stopScan,
     connectToDevice,
@@ -87,6 +93,41 @@ const DeviceScreen = () => {
   } = useBleDeviceManager();
 
   const [showGattDetails, setShowGattDetails] = useState(false);
+  const [expandedDeviceId, setExpandedDeviceId] = useState<string | null>(null);
+
+  const knownDevices: BleDiscoveredDevice[] = useMemo(() => {
+    const map = new Map<string, BleDiscoveredDevice>();
+
+    devices.forEach(d => map.set(d.id, d));
+
+    connectedDeviceIds.forEach(id => {
+      if (!map.has(id)) {
+        map.set(id, {
+          id,
+          name: deviceIdentityById[id]?.model ?? 'Connected device',
+          localName: null,
+          rssi: null,
+          isConnectable: null,
+          serviceUUIDs: null,
+        });
+      }
+    });
+
+    return Array.from(map.values());
+  }, [connectedDeviceIds, deviceIdentityById, devices]);
+
+  const getStatusLabel = (device: BleDiscoveredDevice) => {
+    const state = connectionStates[device.id];
+    if (state === 'connected') return 'Connected';
+    if (state === 'connecting') return 'Connecting...';
+    if (state === 'disconnecting') return 'Disconnecting...';
+    if (state === 'error') return 'Error';
+    if (typeof device.rssi === 'number') return `RSSI: ${device.rssi}`;
+    return 'Available';
+  };
+
+  const activeIdentity = expandedDeviceId ? deviceIdentityById[expandedDeviceId] ?? null : null;
+  const activeGattDetails = expandedDeviceId ? gattDetailsById[expandedDeviceId] ?? null : null;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -301,24 +342,37 @@ const DeviceScreen = () => {
                 </View>
 
                 <TouchableOpacity
-                  style={styles.primaryButton}
-                  onPress={() => setShowGattDetails(prev => !prev)}
+                  style={[
+                    styles.primaryButton,
+                    !primaryConnectedId ? { opacity: 0.6 } : null,
+                  ]}
+                  disabled={!primaryConnectedId}
+                  onPress={() => {
+                    if (!primaryConnectedId) return;
+                    if (expandedDeviceId === primaryConnectedId && showGattDetails) {
+                      setShowGattDetails(false);
+                      setExpandedDeviceId(null);
+                    } else {
+                      setExpandedDeviceId(primaryConnectedId);
+                      setShowGattDetails(true);
+                    }
+                  }}
                 >
                   <Text style={styles.primaryButtonText}>Manage Settings</Text>
                 </TouchableOpacity>
 
-                {showGattDetails && connectionState === 'connected' ? (
+                {showGattDetails && expandedDeviceId ? (
                   <View style={{ marginTop: 10 }}>
                     <Text style={styles.cardTitle}>Connected Device Info</Text>
                     <Text style={styles.cardSubtitle}>
-                      {deviceIdentity?.manufacturer ? `Manufacturer: ${deviceIdentity.manufacturer}` : 'Manufacturer: —'}
+                      {activeIdentity?.manufacturer ? `Manufacturer: ${activeIdentity.manufacturer}` : 'Manufacturer: —'}
                     </Text>
                     <Text style={styles.cardSubtitle}>
-                      {deviceIdentity?.model ? `Model: ${deviceIdentity.model}` : 'Model: —'}
+                      {activeIdentity?.model ? `Model: ${activeIdentity.model}` : 'Model: —'}
                     </Text>
                     <Text style={styles.cardSubtitle}>
-                      {gattDetails?.services?.length
-                        ? `Services discovered: ${gattDetails.services.length}`
+                      {activeGattDetails?.services?.length
+                        ? `Services discovered: ${activeGattDetails.services.length}`
                         : 'Services discovered: —'}
                     </Text>
 
@@ -329,7 +383,7 @@ const DeviceScreen = () => {
                       This screen is discovery-only for now. To edit settings you must map the device-specific UUIDs for writable characteristics.
                     </Text>
 
-                    {(gattDetails?.services ?? []).slice(0, 6).map(service => (
+                    {(activeGattDetails?.services ?? []).slice(0, 6).map(service => (
                       <View key={service.uuid} style={{ marginTop: 6 }}>
                         <View style={styles.deviceInfoRow}>
                           <Text style={styles.deviceInfoLabel}>{service.uuid}</Text>
@@ -367,45 +421,61 @@ const DeviceScreen = () => {
                     <Icon name="bluetooth" size={18} color="#FFFFFF" />
                   )}
                   <Text style={styles.primaryButtonText}>
-                    {isScanning ? 'Scanning...' : 'Scan Nearby'}
+                    {isScanning ? 'Scanning...' : bleState === 'PoweredOn' ? 'Scan Nearby' : 'Enable Bluetooth'}
                   </Text>
                 </TouchableOpacity>
 
-                {scanError ? <Text style={{ color: '#B00020', marginTop: 8 }}>{scanError}</Text> : null}
+                {bleState !== 'PoweredOn' ? (
+                  <Text style={styles.warningText}>Bluetooth is not powered on.</Text>
+                ) : null}
 
-                {devices.length === 0 && !isScanning ? (
+                {scanError ? <Text style={styles.warningText}>{scanError}</Text> : null}
+
+                {knownDevices.length === 0 && !isScanning ? (
                   <Text style={styles.cardSubtitle}>(No BLE devices found yet.)</Text>
                 ) : null}
 
-                {devices.slice(0, 8).map(device => (
-                  <View key={device.id} style={styles.deviceRow}>
-                    <Icon name="radio" size={20} color="#F28C28" />
-                    <View style={styles.deviceInfo}>
-                      <Text style={styles.deviceName}>
-                        {device.name ?? device.localName ?? 'Unknown device'}
-                      </Text>
-                      <Text style={styles.deviceStatus}>
-                        {connectionState === 'connected' && connectedDeviceId === device.id
-                          ? 'Connected'
-                          : device.rssi != null
-                            ? `RSSI: ${device.rssi}`
-                            : 'Available'}
-                      </Text>
+                {knownDevices.slice(0, 12).map(device => {
+                  const state = connectionStates[device.id] ?? 'disconnected';
+                  const isConnected = state === 'connected';
+                  const isBusy = state === 'connecting' || state === 'disconnecting';
+
+                  return (
+                    <View key={device.id} style={styles.deviceRow}>
+                      <Icon name="radio" size={20} color="#F28C28" />
+                      <View style={styles.deviceInfo}>
+                        <Text style={styles.deviceName}>
+                          {device.name ?? device.localName ?? 'Unknown device'}
+                        </Text>
+                        <Text style={styles.deviceStatus}>{getStatusLabel(device)}</Text>
+                      </View>
+                      <View style={styles.deviceActions}>
+                        <TouchableOpacity
+                          style={[
+                            styles.linkButton,
+                            isConnected ? styles.linkButtonSecondary : null,
+                            isBusy ? { opacity: 0.6 } : null,
+                          ]}
+                          onPress={() => (isConnected ? disconnect(device.id) : connectToDevice(device.id))}
+                          disabled={isBusy}
+                        >
+                          <Text style={styles.linkButtonText}>
+                            {isConnected ? 'Disconnect' : isBusy ? 'Working...' : 'Connect'}
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.secondaryChip}
+                          onPress={() => {
+                            setExpandedDeviceId(device.id);
+                            setShowGattDetails(true);
+                          }}
+                        >
+                          <Text style={styles.secondaryChipText}>Manage</Text>
+                        </TouchableOpacity>
+                      </View>
                     </View>
-                    <TouchableOpacity
-                      style={[
-                        styles.linkButton,
-                        connectionState === 'connected' && connectedDeviceId === device.id
-                          ? { opacity: 0.5 }
-                          : null,
-                      ]}
-                      onPress={() => connectToDevice(device.id)}
-                      disabled={connectionState === 'connected' && connectedDeviceId === device.id}
-                    >
-                      <Text style={styles.linkButtonText}>Link</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
+                  );
+                })}
               </View>
             ) : null}
           </>
@@ -595,6 +665,10 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 10,
   },
+  deviceActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   deviceInfo: {
     flex: 1,
     marginLeft: 10,
@@ -615,10 +689,32 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 14,
   },
+  linkButtonSecondary: {
+    backgroundColor: '#F2B046',
+  },
   linkButtonText: {
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '600',
+  },
+  secondaryChip: {
+    marginLeft: 8,
+    backgroundColor: '#F6F1EA',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#F1E2CF',
+  },
+  secondaryChipText: {
+    color: '#F28C28',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  warningText: {
+    color: '#B00020',
+    marginTop: 8,
+    textAlign: 'center',
   },
   card: {
     backgroundColor: '#FFFFFF',
