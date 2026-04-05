@@ -52,6 +52,7 @@ jest.mock('@react-native-google-signin/google-signin', () => ({
 
 const mockMessagingInstance = {
   requestPermission: jest.fn(() => Promise.resolve(1)),
+  registerDeviceForRemoteMessages: jest.fn(() => Promise.resolve()),
   getToken: jest.fn(() => Promise.resolve('mock-fcm-token')),
   onMessage: jest.fn(() => jest.fn()),
   onNotificationOpenedApp: jest.fn(() => jest.fn()),
@@ -73,3 +74,20 @@ jest.mock('react-native-vector-icons/Ionicons', () => 'Icon');
 jest.mock('react-native-webview', () => ({
   WebView: 'WebView',
 }));
+
+jest.mock('react-native-ble-plx', () => {
+  const remove = jest.fn();
+  return {
+    BleManager: jest.fn(() => ({
+      onStateChange: jest.fn(() => ({ remove })),
+      startDeviceScan: jest.fn(),
+      stopDeviceScan: jest.fn(() => Promise.resolve()),
+      connectToDevice: jest.fn(),
+      cancelDeviceConnection: jest.fn(),
+      writeCharacteristicWithResponseForDevice: jest.fn(() => Promise.resolve()),
+      writeCharacteristicWithoutResponseForDevice: jest.fn(() => Promise.resolve()),
+      onDeviceDisconnected: jest.fn(() => ({ remove })),
+      destroy: jest.fn(),
+    })),
+  };
+});

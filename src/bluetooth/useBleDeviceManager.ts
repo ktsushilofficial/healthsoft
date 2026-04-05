@@ -6,11 +6,21 @@ import type {
   BleCharacteristicSummary,
   BleDeviceIdentity,
   BleDiscoveredDevice,
+  BleDataSnapshot,
   BleGattDetails,
   BleServiceSummary,
 } from './types';
 import { Buffer } from 'buffer';
 import { decodeBase64ToUtf8, encodeUtf8ToBase64 } from './base64';
+import { buildConfigFrame, parseEv07bFrame } from './ev07bProtocol';
+import {
+  decodeEv07bAlarmClock,
+  decodeEv07bAsciiSetting,
+  decodeEv07bAuthorizedPhone,
+  decodeEv07bFlagMask,
+  decodeEv07bNoDisturb,
+  hasEv07bFlag,
+} from './ev07bConfigCodec';
 
 type ConnectionState =
   | 'disconnected'
@@ -37,6 +47,54 @@ const BATTERY_LEVEL_UUID = '2a19';
 const NUS_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 const NUS_RX_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // write from central
 const NUS_TX_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // notify to central
+
+// Maximum bytes per BLE write packet (conservative; negotiated MTU - 3)
+const BLE_MTU_PAYLOAD = 20;
+
+const EV07B_ERROR_MESSAGES: Record<number, string> = {
+  0x00: 'Device reported success',
+  0x11: 'Protocol version is not supported',
+  0x12: 'Encryption method is not supported',
+  0x13: 'Protocol length is invalid',
+  0x14: 'Checksum failed',
+  0x15: 'Command is not supported',
+  0x16: 'One of the requested keys is invalid',
+  0x17: 'Key length is invalid',
+  0x21: 'Data format is invalid',
+  0x22: 'Data size is invalid',
+  0x23: 'Device is not in the right state for this command',
+  0x24: 'One of the parameters is invalid',
+  0x25: 'Device storage is full',
+  0x26: 'Sub-function is not supported',
+  0x27: 'GPS is not ready yet',
+  0x28: 'Address response error',
+  0x30: 'Device is out of service',
+  0x40: 'BLE password handshake is required before this command',
+  0xf0: 'Battery is too low for this command',
+  0xf1: 'Device failed to open the requested file',
+};
+
+function readUint32Le(bytes: Uint8Array, offset: number = 0): number {
+  return (
+    ((bytes[offset] ?? 0)) |
+    ((bytes[offset + 1] ?? 0) << 8) |
+    ((bytes[offset + 2] ?? 0) << 16) |
+    ((bytes[offset + 3] ?? 0) << 24)
+  ) >>> 0;
+}
+
+function formatMacAddress(bytes?: Uint8Array | null): string | undefined {
+  if (!bytes || bytes.length < 6) return undefined;
+  return Array.from(bytes.slice(0, 6))
+    .map(b => b.toString(16).padStart(2, '0').toUpperCase())
+    .join(':');
+}
+
+function formatEv07bError(code?: number): string {
+  if (code === undefined) return 'Device rejected the request';
+  const message = EV07B_ERROR_MESSAGES[code] ?? 'Unknown device error';
+  return `${message} (0x${code.toString(16).padStart(2, '0')})`;
+}
 
 function toLowerUuid(uuid?: string | null): string | undefined {
   if (!uuid) return undefined;
@@ -69,15 +127,280 @@ export function useBleDeviceManager() {
   const [connectionStates, setConnectionStates] = useState<Record<string, ConnectionState>>({});
   const [gattDetailsById, setGattDetailsById] = useState<Record<string, BleGattDetails>>({});
   const [deviceIdentityById, setDeviceIdentityById] = useState<Record<string, BleDeviceIdentity>>({});
+  const [dataSnapshotById, setDataSnapshotById] = useState<Record<string, BleDataSnapshot>>({});
+  const [bleLogById, setBleLogById] = useState<Record<string, string[]>>({});
+
+  const pushLog = useCallback((deviceId: string, entry: string) => {
+    setBleLogById(prev => {
+      const arr = prev[deviceId] ?? [];
+      // Keep last 50 entries
+      const next = [...arr, `[${new Date().toLocaleTimeString()}] ${entry}`].slice(-50);
+      return { ...prev, [deviceId]: next };
+    });
+  }, []);
 
   const connectedDeviceRefs = useRef<Record<string, Device>>({});
   const disconnectedSubRefs = useRef<Record<string, { remove: () => void }>>({});
   const notificationSubsRef = useRef<Record<string, Subscription[]>>({});
+  // pendingEv07b: keyed by seqId OR -1 for wildcard (accept any 0x02 response)
+  const pendingEv07b = useRef<Record<number, (frame: Uint8Array) => void>>({});
+  const seqRef = useRef<number>(0x0100);
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Reassembly buffer per device for fragmented NUS frames
+  const reassemblyBuf = useRef<Record<string, { data: number[]; expectedLen: number }>>({});
 
   const devicesByIdRef = useRef<Record<string, BleDiscoveredDevice>>({});
 
   const managerStateString = useMemo(() => bleState, [bleState]);
+  const applyEv07bKeys = useCallback(
+    (
+      deviceId: string,
+      keys: Record<number, Uint8Array>,
+      blocks?: Array<{ key: number; value: Uint8Array }>,
+    ) => {
+      let changed = false;
+      const nextIdentity: BleDeviceIdentity = { ...(deviceIdentityById[deviceId] ?? {}) };
+
+      const setText = (
+        field: keyof BleDeviceIdentity,
+        val?: Uint8Array,
+        options?: { allowEmpty?: boolean },
+      ) => {
+        if (!val) return;
+        const str = decodeEv07bAsciiSetting(val);
+        if (str === null) return;
+        if (str || options?.allowEmpty) {
+          (nextIdentity as any)[field] = str;
+          changed = true;
+        }
+      };
+
+      // Identity keys
+      if (keys[0x03]) setText('imei', keys[0x03]);
+      if (keys[0x04]) setText('iccid', keys[0x04]);
+      if (keys[0x05]) {
+        const mac = formatMacAddress(keys[0x05]);
+        if (mac) {
+          nextIdentity.bluetoothMacAddress = mac;
+          changed = true;
+        }
+      }
+
+      // Firmware & software
+      if (keys[0x02]) setText('firmwareRevision', keys[0x02]);
+      if (keys[0x1A]) setText('versionInfo', keys[0x1A]);
+      if (keys[0x1B]) setText('softwareRevision', keys[0x1B]);
+
+      // Firmware build info (key 0x08 — date/time block stored as ASCII)
+      if (keys[0x08]) {
+        const raw = keys[0x08];
+        // Often structured as: 2 bytes flags + ASCII date + null + ASCII time
+        const fullStr = Buffer.from(raw).toString('ascii').replace(/\0/g, ' ').trim();
+        if (fullStr) {
+          nextIdentity.firmwareBuildInfo = fullStr;
+          changed = true;
+        }
+      }
+
+      // Device name / model
+      if (keys[0x13]) {
+        setText('model', keys[0x13]);
+        const decoded = Buffer.from(keys[0x13]).toString('ascii').replace(/\0+$/, '').trim();
+        if (decoded) {
+          const existing = devicesByIdRef.current[deviceId] ?? { id: deviceId };
+          devicesByIdRef.current[deviceId] = { ...existing, name: decoded };
+          setDevices(Object.values(devicesByIdRef.current));
+        }
+      }
+
+      // Battery (key 0x14): byte0 = level%, byte1-2 = voltage mV LE
+      if (keys[0x14] && keys[0x14].length >= 3) {
+        const level = keys[0x14][0];
+        const voltage = keys[0x14][1] | (keys[0x14][2] << 8);
+        nextIdentity.batteryLevel = level;
+        nextIdentity.batteryVoltage = voltage;
+        changed = true;
+      }
+
+      // Timezone (key 0x0E): signed 8-bit, units of 15 minutes
+      if (keys[0x0E] && keys[0x0E].length >= 1) {
+        const tz = (keys[0x0E][0] << 24) >> 24; // sign-extend
+        nextIdentity.timezone = tz;
+        changed = true;
+      }
+
+      // SOS / Authorized numbers.
+      const phoneBlocks = (blocks ?? []).filter(block => block.key >= 0x30 && block.key <= 0x39);
+      if (phoneBlocks.length > 0) {
+        let sosNumber1: string | undefined;
+        let sosSlot1: number | undefined;
+        let sosNumber2: string | undefined;
+        let sosSlot2: number | undefined;
+        let sosNumber3: string | undefined;
+        let sosSlot3: number | undefined;
+
+        phoneBlocks.forEach(block => {
+          const fallbackSlot = block.key - 0x30;
+          const decoded = decodeEv07bAuthorizedPhone(block.value, fallbackSlot);
+          if (!decoded) return;
+
+          if (decoded.slot === 0) {
+            sosNumber1 = decoded.number;
+            sosSlot1 = decoded.slot;
+          } else if (decoded.slot === 1) {
+            sosNumber2 = decoded.number;
+            sosSlot2 = decoded.slot;
+          } else if (decoded.slot === 2) {
+            sosNumber3 = decoded.number;
+            sosSlot3 = decoded.slot;
+          }
+        });
+
+        if (sosNumber1 !== undefined) {
+          nextIdentity.sosNumber = sosNumber1;
+          nextIdentity.sosSlot = sosSlot1;
+          changed = true;
+        }
+        if (sosNumber2 !== undefined) {
+          nextIdentity.sosNumber2 = sosNumber2;
+          nextIdentity.sosSlot2 = sosSlot2;
+          changed = true;
+        }
+        if (sosNumber3 !== undefined) {
+          nextIdentity.sosNumber3 = sosNumber3;
+          nextIdentity.sosSlot3 = sosSlot3;
+          changed = true;
+        }
+      } else if (keys[0x30] && keys[0x30].length >= 1) {
+        const decoded = decodeEv07bAuthorizedPhone(keys[0x30], 0);
+        if (decoded) {
+          nextIdentity.sosNumber = decoded.number;
+          nextIdentity.sosSlot = decoded.slot;
+          changed = true;
+        }
+      }
+
+      // APN (key 0x40)
+      if (keys[0x40]) setText('apn', keys[0x40], { allowEmpty: true });
+
+      // APN Username (key 0x41)
+      if (keys[0x41]) setText('apnUsername', keys[0x41], { allowEmpty: true });
+
+      // APN Password (key 0x42)
+      if (keys[0x42]) setText('apnPassword', keys[0x42], { allowEmpty: true });
+
+      // Server address (key 0x43) — flag + port (BE) + host/domain
+      if (keys[0x43] && keys[0x43].length > 3) {
+        const port = (keys[0x43][1] << 8) | keys[0x43][2];
+        const serverStr = Buffer.from(keys[0x43].slice(3)).toString('ascii').replace(/\0+$/, '').trim();
+        if (serverStr) {
+          nextIdentity.serverAddress = serverStr;
+          nextIdentity.serverPort = port;
+          changed = true;
+        }
+      }
+
+      // Reporting intervals (key 0x44) — heartbeat + upload + lazy upload, u32le each
+      if (keys[0x44] && keys[0x44].length >= 12) {
+        nextIdentity.heartbeatInterval = readUint32Le(keys[0x44], 0) & 0x7fffffff;
+        nextIdentity.uploadInterval = readUint32Le(keys[0x44], 4);
+        nextIdentity.lazyUploadInterval = readUint32Le(keys[0x44], 8);
+        changed = true;
+      }
+
+      // Initialize Mileage (key 0x09) — u32le, meters
+      if (keys[0x09] && keys[0x09].length >= 4) {
+        const mileage = readUint32Le(keys[0x09]);
+        nextIdentity.initMileage = mileage;
+        changed = true;
+      }
+
+      // Working Mode (key 0x0A) — 3-byte interval + 1-byte mode
+      if (keys[0x0A] && keys[0x0A].length >= 1) {
+        const rawMode = keys[0x0A][keys[0x0A].length >= 4 ? 3 : 0];
+        nextIdentity.workingMode = rawMode >= 1 ? rawMode - 1 : rawMode;
+        changed = true;
+      }
+
+      // Alarm Clock (key 0x0B) — index/enable + hour + minute + workday + duration + ring
+      const alarmClock = decodeEv07bAlarmClock(keys[0x0B]);
+      if (alarmClock) {
+        nextIdentity.alarmClockIndex = alarmClock.index;
+        nextIdentity.alarmClockEnabled = alarmClock.enabled;
+        nextIdentity.alarmClockHour = alarmClock.hour;
+        nextIdentity.alarmClockMinute = alarmClock.minute;
+        nextIdentity.alarmClockWorkdayMask = alarmClock.workdayMask;
+        nextIdentity.alarmClockDurationSec = alarmClock.durationSec;
+        nextIdentity.alarmClockRing = alarmClock.ring;
+        changed = true;
+      }
+
+      // No Disturb (key 0x0C) — byte0=enable, byte1=startHour, byte2=startMin, byte3=endHour, byte4=endMin
+      const noDisturb = decodeEv07bNoDisturb(keys[0x0C]);
+      if (noDisturb) {
+        nextIdentity.noDisturbEnabled = noDisturb.enabled;
+        nextIdentity.noDisturbStart = noDisturb.startHour * 60 + noDisturb.startMinute;
+        nextIdentity.noDisturbEnd = noDisturb.endHour * 60 + noDisturb.endMinute;
+        changed = true;
+      }
+
+      // Enable Control (key 0x0F) — 32-bit bitmask
+      const ctrl = decodeEv07bFlagMask(keys[0x0F]);
+      if (ctrl !== null) {
+        nextIdentity.enableControl = ctrl;
+        nextIdentity.bleLocating = hasEv07bFlag(ctrl, 8);
+        changed = true;
+      }
+
+      // Ring-Tone Volume (key 0x10) — byte 0-100
+      if (keys[0x10] && keys[0x10].length >= 1) {
+        nextIdentity.ringtoneVolume = keys[0x10][0];
+        changed = true;
+      }
+
+      // Mic Volume (key 0x11) — byte 0-15
+      if (keys[0x11] && keys[0x11].length >= 1) {
+        nextIdentity.micVolume = keys[0x11][0];
+        changed = true;
+      }
+
+      // Speaker Volume (key 0x12) — byte 0-100
+      if (keys[0x12] && keys[0x12].length >= 1) {
+        nextIdentity.speakerVolume = keys[0x12][0];
+        changed = true;
+      }
+
+      // Whitelist Device (key 0x16) — flag + 6-byte MAC
+      if (keys[0x16] && keys[0x16].length >= 7) {
+        const mac = formatMacAddress(keys[0x16].slice(1));
+        if (mac) {
+          nextIdentity.whitelistDevice = mac;
+          changed = true;
+        }
+      }
+
+      // SMS GPS URL (key 0x17) — ASCII URL
+      if (keys[0x17]) setText('smsGpsUrl', keys[0x17], { allowEmpty: true });
+
+      // SMS WiFi/LBS URL (key 0x18) — ASCII URL
+      if (keys[0x18]) setText('smsWifiLbsUrl', keys[0x18], { allowEmpty: true });
+
+      // Voice Prompt (key 0x19) — 32-bit bitmask
+      const voicePromptMask = decodeEv07bFlagMask(keys[0x19]);
+      if (voicePromptMask !== null) {
+        nextIdentity.voicePromptMask = voicePromptMask;
+        changed = true;
+      }
+
+      if (changed) {
+        setDeviceIdentityById(prev => ({
+          ...prev,
+          [deviceId]: { ...(prev[deviceId] ?? {}), ...nextIdentity },
+        }));
+      }
+    },
+    [deviceIdentityById],
+  );
 
   const connectedDeviceIds = useMemo(
     () =>
@@ -513,19 +836,99 @@ export function useBleDeviceManager() {
                 nusService.uuid,
                 txChar.uuid,
                 (error, characteristic) => {
-                  if (error) {
-                    return;
-                  }
-                  // For now, we only log. Consumers can extend to route data.
-                  if (characteristic?.value) {
-                    // eslint-disable-next-line no-console
-                    console.log(
-                      `[BLE][${deviceId}] NUS notify ${txChar.uuid}:`,
-                      decodeBase64ToUtf8(characteristic.value),
-                    );
-                  }
-                },
-              );
+                  if (error || !characteristic?.value) return;
+          try {
+            const chunk = Buffer.from(characteristic.value, 'base64');
+            pushLog(deviceId, `RX chunk (${chunk.length}B): ${chunk.toString('hex').slice(0, 40)}...`);
+
+            // --- Frame reassembly ---
+            let buf = reassemblyBuf.current[deviceId];
+
+            if (chunk[0] === 0xAB && chunk.length >= 4) {
+              // New frame start
+              const bodyLen = chunk[2] | (chunk[3] << 8);
+              const expectedLen = bodyLen + 8; // header(1)+props(1)+len(2)+crc(2)+seq(2)+body
+              buf = { data: Array.from(chunk), expectedLen };
+              reassemblyBuf.current[deviceId] = buf;
+              pushLog(deviceId, `FRAME START: expecting ${expectedLen}B, got ${chunk.length}B`);
+            } else if (buf) {
+              // Continuation fragment
+              buf.data.push(...chunk);
+              pushLog(deviceId, `FRAME CONT: ${buf.data.length}/${buf.expectedLen}B`);
+            } else {
+              // Orphan chunk — no active reassembly
+              console.warn('[BLE NUS RX] orphan chunk, no reassembly in progress');
+              pushLog(deviceId, `ORPHAN chunk (${chunk.length}B) — ignored`);
+              return;
+            }
+
+            // Check if frame is complete
+            if (buf.data.length < buf.expectedLen) {
+              return; // wait for more chunks
+            }
+
+            // Frame complete — parse it
+            const fullFrame = Uint8Array.from(buf.data);
+            delete reassemblyBuf.current[deviceId];
+
+            const rawHex = Buffer.from(fullFrame).toString('hex');
+            console.log(`[BLE NUS RX] assembled frame (${fullFrame.length}B)`);
+            pushLog(deviceId, `ASSEMBLED (${fullFrame.length}B)`);
+
+            let parsed = parseEv07bFrame(fullFrame);
+            if (!parsed) {
+              // try ascii-hex fallback
+              const ascii = Buffer.from(fullFrame).toString('ascii').trim();
+              if (/^[0-9a-fA-F]+$/.test(ascii) && ascii.length % 2 === 0) {
+                const hexBytes = Uint8Array.from(
+                  ascii.match(/.{1,2}/g)!.map(h => parseInt(h, 16)),
+                );
+                parsed = parseEv07bFrame(hexBytes);
+              }
+            }
+            if (parsed) {
+              const keyList = Object.keys(parsed.keys).map(k => `0x${Number(k).toString(16)}`).join(',');
+              console.log(`[BLE NUS RX] parsed cmd=0x${parsed.command.toString(16)} seq=0x${parsed.seqId.toString(16)} keys=[${keyList}]`);
+              pushLog(deviceId, `PARSED cmd=0x${parsed.command.toString(16)} seq=0x${parsed.seqId.toString(16)} keys=[${keyList}]`);
+              if (parsed.command === 0x02) {
+                applyEv07bKeys(deviceId, parsed.keys, parsed.blocks);
+                // Try exact seqId match first, then fall back to wildcard (-1)
+                if (pendingEv07b.current[parsed.seqId]) {
+                  pendingEv07b.current[parsed.seqId]?.(fullFrame);
+                  delete pendingEv07b.current[parsed.seqId];
+                } else if (pendingEv07b.current[-1]) {
+                  pendingEv07b.current[-1]?.(fullFrame);
+                  delete pendingEv07b.current[-1];
+                }
+              }
+              if (parsed.command === 0x7f) {
+                pushLog(deviceId, `DEVICE ERROR: ${formatEv07bError(parsed.errorCode)}`);
+                if (pendingEv07b.current[parsed.seqId]) {
+                  pendingEv07b.current[parsed.seqId]?.(fullFrame);
+                  delete pendingEv07b.current[parsed.seqId];
+                } else if (pendingEv07b.current[-1]) {
+                  pendingEv07b.current[-1]?.(fullFrame);
+                  delete pendingEv07b.current[-1];
+                }
+              }
+              if (parsed.command === 0x01) {
+                setDataSnapshotById(prev => ({
+                  ...prev,
+                  [deviceId]: { keys: parsed.keys, receivedAt: Date.now() },
+                }));
+                // Also populate identity from data packet keys
+                applyEv07bKeys(deviceId, parsed.keys, parsed.blocks);
+              }
+            } else {
+              console.warn(`[BLE NUS RX] frame parse FAILED (${fullFrame.length}B) — hex: ${rawHex.slice(0, 80)}...`);
+              pushLog(deviceId, `PARSE FAIL (${fullFrame.length}B): ${rawHex.slice(0, 60)}...`);
+            }
+          } catch (err) {
+            console.error('[BLE NUS RX] exception:', err);
+            pushLog(deviceId, `RX ERROR: ${err}`);
+          }
+        },
+      );
               notificationSubsRef.current[deviceId] = [
                 ...(notificationSubsRef.current[deviceId] ?? []),
                 sub,
@@ -538,13 +941,15 @@ export function useBleDeviceManager() {
 
         await readDeviceInformation(device);
 
-        // If identity is still empty, at least surface deviceId as serial placeholder.
+        // Surface the device name as the model if identity has no model yet.
         setDeviceIdentityById(prev => {
           const current = prev[deviceId] ?? {};
-          if (current.serialNumber || current.model || current.manufacturer) return prev;
+          if (current.model) return prev;
+          const nameFromScan = devicesByIdRef.current[deviceId]?.name ?? device.name ?? null;
+          if (!nameFromScan) return prev;
           return {
             ...prev,
-            [deviceId]: { ...current, serialNumber: deviceId, model: devicesByIdRef.current[deviceId]?.name ?? device.name ?? null },
+            [deviceId]: { ...current, model: nameFromScan },
           };
         });
 
@@ -563,7 +968,7 @@ export function useBleDeviceManager() {
         setConnectionStates(prev => ({ ...prev, [deviceId]: 'error' }));
       }
     },
-    [cleanupDeviceState, readDeviceInformation, stopScan],
+    [applyEv07bKeys, cleanupDeviceState, pushLog, readDeviceInformation, stopScan],
   );
 
   const writeUtf8ToCharacteristic = useCallback(
@@ -590,32 +995,123 @@ export function useBleDeviceManager() {
     [connectedDeviceIds, primaryConnectedId],
   );
 
+  const sendEv07bConfig = useCallback(
+    async (
+      deviceId: string,
+      options: { readKeys?: number[]; writeBlocks?: { key: number; value: Uint8Array }[] },
+      timeoutMs: number = 12000,
+    ) => {
+      const device = connectedDeviceRefs.current[deviceId];
+      if (!device) throw new Error('Device not connected');
+      const seq = (seqRef.current = (seqRef.current + 1) & 0xffff);
+      const frame = buildConfigFrame({ seqId: seq, ...options });
+
+      // Use wildcard key (-1) for write-only frames since the device may
+      // respond with seqId=0 or another value instead of echoing ours back.
+      const isWriteOnly = !options.readKeys?.length;
+      const pendingKey = isWriteOnly ? -1 : seq;
+
+      const waitForResponse = new Promise<Uint8Array>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          delete pendingEv07b.current[pendingKey];
+          reject(new Error('Timeout waiting for device response'));
+        }, timeoutMs);
+        pendingEv07b.current[pendingKey] = resp => {
+          clearTimeout(timer);
+          resolve(resp);
+        };
+      });
+
+      const txHex = Buffer.from(frame).toString('hex');
+      console.log(`[BLE NUS TX] frame ${frame.length}B, seq=0x${seq.toString(16)}, isWriteOnly=${isWriteOnly}`);
+      pushLog(deviceId, `TX (${frame.length}B): ${txHex.slice(0, 60)}...`);
+
+      // ── Chunk frame into MTU-sized packets ──────────────────────────────
+      // BLE characteristics are limited to ~20 bytes per write by default.
+      // We split the frame and send each chunk sequentially.
+      const chunks: Uint8Array[] = [];
+      for (let offset = 0; offset < frame.length; offset += BLE_MTU_PAYLOAD) {
+        chunks.push(frame.slice(offset, offset + BLE_MTU_PAYLOAD));
+      }
+      pushLog(deviceId, `TX chunking into ${chunks.length} packet(s) of ≤${BLE_MTU_PAYLOAD}B`);
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const chunkB64 = Buffer.from(chunk).toString('base64');
+        try {
+          await bleManager.writeCharacteristicWithResponseForDevice(
+            deviceId,
+            NUS_SERVICE_UUID,
+            NUS_RX_UUID,
+            chunkB64,
+          );
+        } catch (writeWithRespErr: any) {
+          // Fallback to write-without-response
+          console.warn(`[BLE NUS TX] chunk ${i} writeWithResponse failed:`, writeWithRespErr?.message);
+          try {
+            await bleManager.writeCharacteristicWithoutResponseForDevice(
+              deviceId,
+              NUS_SERVICE_UUID,
+              NUS_RX_UUID,
+              chunkB64,
+            );
+          } catch (writeWithoutRespErr: any) {
+            pushLog(deviceId, `TX chunk ${i} FAILED: ${writeWithoutRespErr?.message}`);
+            // Clean up pending promise and rethrow
+            delete pendingEv07b.current[pendingKey];
+            throw writeWithoutRespErr;
+          }
+        }
+        // Small inter-chunk delay to avoid flooding the device's receive buffer
+        if (i < chunks.length - 1) {
+          await new Promise<void>(r => setTimeout(r, 20));
+        }
+      }
+      pushLog(deviceId, `TX all ${chunks.length} chunk(s) sent, waiting for ACK...`);
+
+      const respBytes = await waitForResponse;
+      const parsed = parseEv07bFrame(respBytes);
+      if (!parsed) throw new Error('Invalid response frame');
+      if (parsed.command === 0x7f) {
+        throw new Error(formatEv07bError(parsed.errorCode));
+      }
+      if (parsed.command === 0x02) {
+        applyEv07bKeys(deviceId, parsed.keys, parsed.blocks);
+      }
+      return parsed;
+    },
+    [applyEv07bKeys, pushLog],
+  );
+
   useEffect(() => {
+    const disconnectedSubs = disconnectedSubRefs.current;
+    const notificationSubs = notificationSubsRef.current;
+    const connectedDevices = connectedDeviceRefs.current;
     return () => {
       // Cleanup scan timer, subscriptions, etc.
       if (scanTimerRef.current) {
         clearTimeout(scanTimerRef.current);
       }
 
-      Object.keys(disconnectedSubRefs.current).forEach(id => {
+      Object.keys(disconnectedSubs).forEach(id => {
         try {
-          disconnectedSubRefs.current[id]?.remove();
+          disconnectedSubs[id]?.remove();
         } catch {
           // ignore
         }
       });
 
-      Object.keys(notificationSubsRef.current).forEach(id => {
+      Object.keys(notificationSubs).forEach(id => {
         try {
-          notificationSubsRef.current[id]?.forEach(sub => sub?.remove?.());
+          notificationSubs[id]?.forEach(sub => sub?.remove?.());
         } catch {
           // ignore
         }
       });
 
-      Object.keys(connectedDeviceRefs.current).forEach(id => {
+      Object.keys(connectedDevices).forEach(id => {
         try {
-          connectedDeviceRefs.current[id]?.cancelConnection();
+          connectedDevices[id]?.cancelConnection();
         } catch {
           // ignore
         }
@@ -636,10 +1132,13 @@ export function useBleDeviceManager() {
     gattDetailsById,
     deviceIdentity: primaryConnectedId ? deviceIdentityById[primaryConnectedId] ?? null : null,
     deviceIdentityById,
+    dataSnapshotById,
+    bleLogById,
     startScan,
     stopScan,
     connectToDevice,
     disconnect,
     writeUtf8ToCharacteristic,
+    sendEv07bConfig,
   };
 }
