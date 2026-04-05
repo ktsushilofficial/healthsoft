@@ -13,6 +13,7 @@ import ResetPasswordScreen from './src/screens/ResetPasswordScreen';
 import NotificationsScreen from './src/screens/NotificationsScreen';
 import WebViewScreen from './src/screens/WebViewScreen';
 import ChangePasswordScreen from './src/screens/ChangePasswordScreen';
+import DeviceDetailScreen from './src/screens/DeviceDetailScreen';
 import {
   requestNotificationPermission,
   getFCMToken,
@@ -54,6 +55,7 @@ const AppNavigator = () => {
           <Stack.Screen name="Notifications" component={NotificationsScreen} />
           <Stack.Screen name="WebView" component={WebViewScreen} />
           <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
+          <Stack.Screen name="DeviceDetail" component={DeviceDetailScreen} />
         </>
       )}
     </Stack.Navigator>

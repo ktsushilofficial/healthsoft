@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, PermissionsAndroid, Platform } from 'react-native';
-import type { BleError, Device, State } from 'react-native-ble-plx';
+import type { BleError, Device, State, Subscription } from 'react-native-ble-plx';
 import bleManager from './bleManager';
 import type {
   BleCharacteristicSummary,
@@ -22,6 +22,17 @@ const DEVICE_INFORMATION_SERVICE_UUID = '180a';
 const MANUFACTURER_NAME_UUID = '2a29';
 const MODEL_NUMBER_UUID = '2a24';
 const SERIAL_NUMBER_UUID = '2a25';
+const FIRMWARE_REVISION_UUID = '2a26';
+const HARDWARE_REVISION_UUID = '2a27';
+const SOFTWARE_REVISION_UUID = '2a28';
+
+const GENERIC_ACCESS_SERVICE_UUID = '1800';
+const DEVICE_NAME_UUID = '2a00';
+
+// Nordic UART Service (NUS)
+const NUS_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_RX_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // write from central
+const NUS_TX_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // notify to central
 
 function toLowerUuid(uuid?: string | null): string | undefined {
   if (!uuid) return undefined;
@@ -57,6 +68,7 @@ export function useBleDeviceManager() {
 
   const connectedDeviceRefs = useRef<Record<string, Device>>({});
   const disconnectedSubRefs = useRef<Record<string, { remove: () => void }>>({});
+  const notificationSubsRef = useRef<Record<string, Subscription[]>>({});
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const devicesByIdRef = useRef<Record<string, BleDiscoveredDevice>>({});
@@ -106,6 +118,13 @@ export function useBleDeviceManager() {
     }
 
     delete connectedDeviceRefs.current[deviceId];
+
+    try {
+      (notificationSubsRef.current[deviceId] || []).forEach(sub => sub?.remove?.());
+    } catch {
+      // ignore
+    }
+    delete notificationSubsRef.current[deviceId];
 
     setConnectionStates(prev => {
       const next = { ...prev };
@@ -280,6 +299,33 @@ export function useBleDeviceManager() {
         if (c?.value) identity.serialNumber = decodeBase64ToUtf8(c.value);
       }
 
+      const firmwareChar = byUuid[FIRMWARE_REVISION_UUID];
+      if (firmwareChar?.isReadable) {
+        const c = await device.readCharacteristicForService(
+          DEVICE_INFORMATION_SERVICE_UUID,
+          FIRMWARE_REVISION_UUID,
+        );
+        if (c?.value) identity.firmwareRevision = decodeBase64ToUtf8(c.value);
+      }
+
+      const hardwareChar = byUuid[HARDWARE_REVISION_UUID];
+      if (hardwareChar?.isReadable) {
+        const c = await device.readCharacteristicForService(
+          DEVICE_INFORMATION_SERVICE_UUID,
+          HARDWARE_REVISION_UUID,
+        );
+        if (c?.value) identity.hardwareRevision = decodeBase64ToUtf8(c.value);
+      }
+
+      const softwareChar = byUuid[SOFTWARE_REVISION_UUID];
+      if (softwareChar?.isReadable) {
+        const c = await device.readCharacteristicForService(
+          DEVICE_INFORMATION_SERVICE_UUID,
+          SOFTWARE_REVISION_UUID,
+        );
+        if (c?.value) identity.softwareRevision = decodeBase64ToUtf8(c.value);
+      }
+
       setDeviceIdentityById(prev => {
         const next = { ...prev };
         if (Object.keys(identity).length) {
@@ -344,6 +390,74 @@ export function useBleDeviceManager() {
 
         setGattDetailsById(prev => ({ ...prev, [deviceId]: { services: serviceSummaries } }));
 
+        // Read Device Name from Generic Access if available.
+        const gaService = serviceSummaries.find(
+          s => toLowerUuid(s.uuid) === GENERIC_ACCESS_SERVICE_UUID,
+        );
+        if (gaService) {
+          const deviceNameChar = gaService.characteristics.find(
+            c => toLowerUuid(c.uuid) === DEVICE_NAME_UUID && c.isReadable,
+          );
+          if (deviceNameChar) {
+            try {
+              const nameChar = await device.readCharacteristicForService(
+                GENERIC_ACCESS_SERVICE_UUID,
+                DEVICE_NAME_UUID,
+              );
+              if (nameChar?.value) {
+                const decoded = decodeBase64ToUtf8(nameChar.value);
+                const existing = devicesByIdRef.current[deviceId] ?? { id: deviceId };
+                devicesByIdRef.current[deviceId] = {
+                  ...existing,
+                  name: decoded || existing.name || device.name || null,
+                };
+              }
+            } catch {
+              // ignore if not readable
+            }
+          }
+        }
+
+        // Auto-subscribe to Nordic UART TX if present for notify stream.
+        const nusService = serviceSummaries.find(
+          s => toLowerUuid(s.uuid) === NUS_SERVICE_UUID,
+        );
+        if (nusService) {
+          const txChar = nusService.characteristics.find(
+            c =>
+              toLowerUuid(c.uuid) === NUS_TX_UUID ||
+              c.isNotifiable ||
+              c.isIndicatable,
+          );
+          if (txChar && (txChar.isNotifiable || txChar.isIndicatable)) {
+            try {
+              const sub = device.monitorCharacteristicForService(
+                nusService.uuid,
+                txChar.uuid,
+                (error, characteristic) => {
+                  if (error) {
+                    return;
+                  }
+                  // For now, we only log. Consumers can extend to route data.
+                  if (characteristic?.value) {
+                    // eslint-disable-next-line no-console
+                    console.log(
+                      `[BLE][${deviceId}] NUS notify ${txChar.uuid}:`,
+                      decodeBase64ToUtf8(characteristic.value),
+                    );
+                  }
+                },
+              );
+              notificationSubsRef.current[deviceId] = [
+                ...(notificationSubsRef.current[deviceId] ?? []),
+                sub,
+              ];
+            } catch {
+              // ignore monitor errors
+            }
+          }
+        }
+
         await readDeviceInformation(device);
 
         // Ensure the connected device shows up in the list even if it was not seen in the current scan.
@@ -395,21 +509,29 @@ export function useBleDeviceManager() {
         clearTimeout(scanTimerRef.current);
       }
 
-       Object.keys(disconnectedSubRefs.current).forEach(id => {
-         try {
-           disconnectedSubRefs.current[id]?.remove();
-         } catch {
-           // ignore
-         }
-       });
+      Object.keys(disconnectedSubRefs.current).forEach(id => {
+        try {
+          disconnectedSubRefs.current[id]?.remove();
+        } catch {
+          // ignore
+        }
+      });
 
-       Object.keys(connectedDeviceRefs.current).forEach(id => {
-         try {
-           connectedDeviceRefs.current[id]?.cancelConnection();
-         } catch {
-           // ignore
-         }
-       });
+      Object.keys(notificationSubsRef.current).forEach(id => {
+        try {
+          notificationSubsRef.current[id]?.forEach(sub => sub?.remove?.());
+        } catch {
+          // ignore
+        }
+      });
+
+      Object.keys(connectedDeviceRefs.current).forEach(id => {
+        try {
+          connectedDeviceRefs.current[id]?.cancelConnection();
+        } catch {
+          // ignore
+        }
+      });
     };
   }, []);
 

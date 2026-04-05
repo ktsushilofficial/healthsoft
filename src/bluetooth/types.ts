@@ -18,6 +18,9 @@ export interface BleDeviceIdentity {
   manufacturer?: string;
   model?: string;
   serialNumber?: string;
+  firmwareRevision?: string;
+  hardwareRevision?: string;
+  softwareRevision?: string;
 }
 
 export interface BleCharacteristicSummary {
@@ -37,4 +40,3 @@ export interface BleServiceSummary {
 export interface BleGattDetails {
   services: BleServiceSummary[];
 }
-

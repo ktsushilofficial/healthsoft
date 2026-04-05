@@ -12,6 +12,9 @@ import { useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useBleDeviceManager } from '../bluetooth/useBleDeviceManager';
 import type { BleDiscoveredDevice } from '../bluetooth/types';
+import { DeviceStackParamList } from '../types/navigation';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RouteProp } from '@react-navigation/native';
 
 const contacts = [
   {
@@ -60,7 +63,7 @@ const medicines = [
 ];
 
 const DeviceScreen = () => {
-  const navigation = useNavigation();
+  const navigation = useNavigation<any>();
   const tabs = useMemo(
     () => [
       { id: 'devices', label: 'Devices' },
@@ -308,102 +311,6 @@ const DeviceScreen = () => {
 
             {activeTab === 'devices' ? (
               <View style={styles.card}>
-                <View style={styles.deviceHeaderRow}>
-                  <Text style={styles.deviceTitle}>Device Manager</Text>
-                  <TouchableOpacity
-                    style={styles.unlinkChip}
-                    onPress={() => disconnect()}
-                    disabled={connectionState === 'disconnected'}
-                  >
-                    <Text style={styles.unlinkText}>Unlink</Text>
-                  </TouchableOpacity>
-                </View>
-
-                <View style={styles.deviceCard}>
-                  <View style={styles.deviceImage}>
-                    <Icon name="medical" size={40} color="#FFFFFF" />
-                  </View>
-                  <Text style={styles.deviceCardName}>Pill Dispenser</Text>
-                </View>
-
-                <View style={styles.deviceInfoRow}>
-                  <Text style={styles.deviceInfoLabel}>IMEI Code</Text>
-                  <Text style={styles.deviceInfoValue}>
-                    {deviceIdentity?.serialNumber ?? '—'}
-                  </Text>
-                </View>
-                <View style={styles.deviceInfoRow}>
-                  <Text style={styles.deviceInfoLabel}>SIM Number</Text>
-                  <Text style={styles.deviceInfoValue}>—</Text>
-                </View>
-                <View style={styles.deviceInfoRow}>
-                  <Text style={styles.deviceInfoLabel}>Date of Setup</Text>
-                  <Text style={styles.deviceInfoValue}>—</Text>
-                </View>
-
-                <TouchableOpacity
-                  style={[
-                    styles.primaryButton,
-                    !primaryConnectedId ? { opacity: 0.6 } : null,
-                  ]}
-                  disabled={!primaryConnectedId}
-                  onPress={() => {
-                    if (!primaryConnectedId) return;
-                    if (expandedDeviceId === primaryConnectedId && showGattDetails) {
-                      setShowGattDetails(false);
-                      setExpandedDeviceId(null);
-                    } else {
-                      setExpandedDeviceId(primaryConnectedId);
-                      setShowGattDetails(true);
-                    }
-                  }}
-                >
-                  <Text style={styles.primaryButtonText}>Manage Settings</Text>
-                </TouchableOpacity>
-
-                {showGattDetails && expandedDeviceId ? (
-                  <View style={{ marginTop: 10 }}>
-                    <Text style={styles.cardTitle}>Connected Device Info</Text>
-                    <Text style={styles.cardSubtitle}>
-                      {activeIdentity?.manufacturer ? `Manufacturer: ${activeIdentity.manufacturer}` : 'Manufacturer: —'}
-                    </Text>
-                    <Text style={styles.cardSubtitle}>
-                      {activeIdentity?.model ? `Model: ${activeIdentity.model}` : 'Model: —'}
-                    </Text>
-                    <Text style={styles.cardSubtitle}>
-                      {activeGattDetails?.services?.length
-                        ? `Services discovered: ${activeGattDetails.services.length}`
-                        : 'Services discovered: —'}
-                    </Text>
-
-                    <View style={styles.deviceDivider} />
-
-                    <Text style={styles.cardTitle}>GATT Services</Text>
-                    <Text style={styles.cardSubtitle}>
-                      This screen is discovery-only for now. To edit settings you must map the device-specific UUIDs for writable characteristics.
-                    </Text>
-
-                    {(activeGattDetails?.services ?? []).slice(0, 6).map(service => (
-                      <View key={service.uuid} style={{ marginTop: 6 }}>
-                        <View style={styles.deviceInfoRow}>
-                          <Text style={styles.deviceInfoLabel}>{service.uuid}</Text>
-                          <Text style={styles.deviceInfoValue}>
-                            {service.characteristics.length} chars
-                          </Text>
-                        </View>
-
-                        {service.characteristics.slice(0, 8).map(ch => (
-                          <Text key={ch.uuid} style={styles.cardSubtitle}>
-                            - {ch.uuid}
-                          </Text>
-                        ))}
-                      </View>
-                    ))}
-                  </View>
-                ) : null}
-
-                <View style={styles.deviceDivider} />
-
                 <Text style={styles.cardTitle}>Bluetooth Devices</Text>
                 <Text style={styles.cardSubtitle}>
                   Link and manage nearby medical devices for the care plan.
@@ -439,6 +346,7 @@ const DeviceScreen = () => {
                   const state = connectionStates[device.id] ?? 'disconnected';
                   const isConnected = state === 'connected';
                   const isBusy = state === 'connecting' || state === 'disconnecting';
+                  const identity = deviceIdentityById[device.id];
 
                   return (
                     <View key={device.id} style={styles.deviceRow}>
@@ -448,6 +356,16 @@ const DeviceScreen = () => {
                           {device.name ?? device.localName ?? 'Unknown device'}
                         </Text>
                         <Text style={styles.deviceStatus}>{getStatusLabel(device)}</Text>
+                        <Text style={styles.deviceStatus}>
+                          {identity?.serialNumber
+                            ? `IMEI/Serial: ${identity.serialNumber}`
+                            : 'IMEI/Serial: —'}
+                        </Text>
+                        {identity?.firmwareRevision ? (
+                          <Text style={styles.deviceStatus}>
+                            FW: {identity.firmwareRevision}
+                          </Text>
+                        ) : null}
                       </View>
                       <View style={styles.deviceActions}>
                         <TouchableOpacity
@@ -466,8 +384,10 @@ const DeviceScreen = () => {
                         <TouchableOpacity
                           style={styles.secondaryChip}
                           onPress={() => {
-                            setExpandedDeviceId(device.id);
-                            setShowGattDetails(true);
+                            navigation.navigate('DeviceDetail', {
+                              deviceId: device.id,
+                              deviceName: device.name ?? device.localName ?? 'Device',
+                            });
                           }}
                         >
                           <Text style={styles.secondaryChipText}>Manage</Text>
