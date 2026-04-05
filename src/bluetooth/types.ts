@@ -21,6 +21,7 @@ export interface BleDeviceIdentity {
   firmwareRevision?: string;
   hardwareRevision?: string;
   softwareRevision?: string;
+  batteryLevel?: number; // percentage 0-100
 }
 
 export interface BleCharacteristicSummary {

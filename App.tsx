@@ -14,6 +14,7 @@ import NotificationsScreen from './src/screens/NotificationsScreen';
 import WebViewScreen from './src/screens/WebViewScreen';
 import ChangePasswordScreen from './src/screens/ChangePasswordScreen';
 import DeviceDetailScreen from './src/screens/DeviceDetailScreen';
+import { BleProvider } from './src/bluetooth/BleProvider';
 import {
   requestNotificationPermission,
   getFCMToken,
@@ -100,11 +101,13 @@ function App(): React.JSX.Element {
 
   return (
     <AuthProvider>
-      <SafeAreaProvider>
-        <NavigationContainer>
-          <AppNavigator />
-        </NavigationContainer>
-      </SafeAreaProvider>
+      <BleProvider>
+        <SafeAreaProvider>
+          <NavigationContainer>
+            <AppNavigator />
+          </NavigationContainer>
+        </SafeAreaProvider>
+      </BleProvider>
     </AuthProvider>
   );
 }

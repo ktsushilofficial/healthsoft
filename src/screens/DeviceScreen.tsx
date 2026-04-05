@@ -10,11 +10,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
-import { useBleDeviceManager } from '../bluetooth/useBleDeviceManager';
+import { useBle } from '../bluetooth/BleProvider';
 import type { BleDiscoveredDevice } from '../bluetooth/types';
-import { DeviceStackParamList } from '../types/navigation';
+import type { DeviceStackParamList } from '../types/navigation';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import type { RouteProp } from '@react-navigation/native';
 
 const contacts = [
   {
@@ -63,13 +62,10 @@ const medicines = [
 ];
 
 const DeviceScreen = () => {
-  const navigation = useNavigation<any>();
+  const navigation = useNavigation<NativeStackNavigationProp<DeviceStackParamList>>();
   const tabs = useMemo(
     () => [
       { id: 'devices', label: 'Devices' },
-      { id: 'conditions', label: 'Conditions' },
-      { id: 'medicines', label: 'Medicines' },
-      { id: 'contacts', label: 'Contacts' },
     ],
     [],
   );
@@ -81,22 +77,14 @@ const DeviceScreen = () => {
     isScanning,
     devices,
     scanError,
-    connectionState,
     connectionStates,
     connectedDeviceIds,
-    primaryConnectedId,
-    gattDetails,
-    gattDetailsById,
-    deviceIdentity,
     deviceIdentityById,
     startScan,
     stopScan,
     connectToDevice,
     disconnect,
-  } = useBleDeviceManager();
-
-  const [showGattDetails, setShowGattDetails] = useState(false);
-  const [expandedDeviceId, setExpandedDeviceId] = useState<string | null>(null);
+  } = useBle();
 
   const knownDevices: BleDiscoveredDevice[] = useMemo(() => {
     const map = new Map<string, BleDiscoveredDevice>();
@@ -129,8 +117,6 @@ const DeviceScreen = () => {
     return 'Available';
   };
 
-  const activeIdentity = expandedDeviceId ? deviceIdentityById[expandedDeviceId] ?? null : null;
-  const activeGattDetails = expandedDeviceId ? gattDetailsById[expandedDeviceId] ?? null : null;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -145,27 +131,7 @@ const DeviceScreen = () => {
 
         {hasPurchased ? (
           <>
-            <View style={styles.segmentWrap}>
-              {tabs.map(tab => {
-                const isActive = tab.id === activeTab;
-                return (
-                  <TouchableOpacity
-                    key={tab.id}
-                    style={[styles.segment, isActive && styles.segmentActive]}
-                    onPress={() => setActiveTab(tab.id)}
-                  >
-                    <Text
-                      style={[
-                        styles.segmentText,
-                        isActive && styles.segmentTextActive,
-                      ]}
-                    >
-                      {tab.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+            {/* Tab bar hidden — only Devices tab is active */}
 
             {activeTab === 'contacts' ? (
               <View style={styles.card}>
@@ -361,6 +327,9 @@ const DeviceScreen = () => {
                             ? `IMEI/Serial: ${identity.serialNumber}`
                             : 'IMEI/Serial: —'}
                         </Text>
+                        {identity?.batteryLevel != null ? (
+                          <Text style={styles.deviceStatus}>Battery: {identity.batteryLevel}%</Text>
+                        ) : null}
                         {identity?.firmwareRevision ? (
                           <Text style={styles.deviceStatus}>
                             FW: {identity.firmwareRevision}

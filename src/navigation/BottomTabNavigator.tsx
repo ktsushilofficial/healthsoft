@@ -7,7 +7,7 @@ import Icon from 'react-native-vector-icons/Ionicons';
 // Import screens (we'll create these next)
 import HomeScreen from '../screens/HomeScreen';
 import ActivityScreen from '../screens/ActivityScreen';
-import ExploreScreen from '../screens/ExploreScreen';
+
 import DeviceScreen from '../screens/DeviceScreen';
 import AccountScreen from '../screens/AccountScreen';
 
@@ -25,8 +25,7 @@ const BottomTabNavigator = () => {
             iconName = focused ? 'home' : 'home-outline';
           } else if (route.name === 'Activity') {
             iconName = focused ? 'flame' : 'flame-outline';
-          } else if (route.name === 'Explore') {
-            iconName = focused ? 'grid' : 'grid-outline';
+
           } else if (route.name === 'Device') {
             iconName = focused ? 'watch' : 'watch-outline';
           } else if (route.name === 'Account') {
@@ -53,7 +52,7 @@ const BottomTabNavigator = () => {
       })}>
       <Tab.Screen name="Home" component={HomeScreen} />
       <Tab.Screen name="Activity" component={ActivityScreen} />
-      <Tab.Screen name="Explore" component={ExploreScreen} />
+
       <Tab.Screen name="Device" component={DeviceScreen} />
       <Tab.Screen name="Account" component={AccountScreen} />
     </Tab.Navigator>

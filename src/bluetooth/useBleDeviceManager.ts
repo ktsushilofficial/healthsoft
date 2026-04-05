@@ -9,6 +9,7 @@ import type {
   BleGattDetails,
   BleServiceSummary,
 } from './types';
+import { Buffer } from 'buffer';
 import { decodeBase64ToUtf8, encodeUtf8ToBase64 } from './base64';
 
 type ConnectionState =
@@ -28,6 +29,9 @@ const SOFTWARE_REVISION_UUID = '2a28';
 
 const GENERIC_ACCESS_SERVICE_UUID = '1800';
 const DEVICE_NAME_UUID = '2a00';
+
+const BATTERY_SERVICE_UUID = '180f';
+const BATTERY_LEVEL_UUID = '2a19';
 
 // Nordic UART Service (NUS)
 const NUS_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
@@ -411,9 +415,83 @@ export function useBleDeviceManager() {
                   ...existing,
                   name: decoded || existing.name || device.name || null,
                 };
+                // Also store as model fallback in identity for UI display.
+                if (decoded) {
+                  setDeviceIdentityById(prev => ({
+                    ...prev,
+                    [deviceId]: {
+                      ...(prev[deviceId] ?? {}),
+                      model: decoded,
+                    },
+                  }));
+                }
               }
             } catch {
               // ignore if not readable
+            }
+          }
+        }
+
+        // Battery level if present.
+        const batteryService = serviceSummaries.find(
+          s => toLowerUuid(s.uuid) === BATTERY_SERVICE_UUID,
+        );
+        if (batteryService) {
+          const batteryChar = batteryService.characteristics.find(
+            c => toLowerUuid(c.uuid) === BATTERY_LEVEL_UUID && c.isReadable,
+          );
+          if (batteryChar) {
+            try {
+              const levelChar = await device.readCharacteristicForService(
+                BATTERY_SERVICE_UUID,
+                BATTERY_LEVEL_UUID,
+              );
+              const lvl = levelChar?.value
+                ? Buffer.from(levelChar.value, 'base64')[0]
+                : null;
+              if (!Number.isNaN(lvl) && lvl !== null) {
+                setDeviceIdentityById(prev => ({
+                  ...prev,
+                  [deviceId]: {
+                    ...(prev[deviceId] ?? {}),
+                    batteryLevel: lvl,
+                  },
+                }));
+              }
+            } catch {
+              // ignore read errors
+            }
+          }
+
+          // Subscribe if notifiable
+          const batteryNotifyChar = batteryService.characteristics.find(
+            c => toLowerUuid(c.uuid) === BATTERY_LEVEL_UUID && (c.isNotifiable || c.isIndicatable),
+          );
+          if (batteryNotifyChar) {
+            try {
+              const sub = device.monitorCharacteristicForService(
+                BATTERY_SERVICE_UUID,
+                BATTERY_LEVEL_UUID,
+                (error, characteristic) => {
+                  if (error || !characteristic?.value) return;
+                  const lvl = Buffer.from(characteristic.value, 'base64')[0];
+                  if (!Number.isNaN(lvl)) {
+                    setDeviceIdentityById(prev => ({
+                      ...prev,
+                      [deviceId]: {
+                        ...(prev[deviceId] ?? {}),
+                        batteryLevel: lvl,
+                      },
+                    }));
+                  }
+                },
+              );
+              notificationSubsRef.current[deviceId] = [
+                ...(notificationSubsRef.current[deviceId] ?? []),
+                sub,
+              ];
+            } catch {
+              // ignore
             }
           }
         }
@@ -459,6 +537,16 @@ export function useBleDeviceManager() {
         }
 
         await readDeviceInformation(device);
+
+        // If identity is still empty, at least surface deviceId as serial placeholder.
+        setDeviceIdentityById(prev => {
+          const current = prev[deviceId] ?? {};
+          if (current.serialNumber || current.model || current.manufacturer) return prev;
+          return {
+            ...prev,
+            [deviceId]: { ...current, serialNumber: deviceId, model: devicesByIdRef.current[deviceId]?.name ?? device.name ?? null },
+          };
+        });
 
         // Ensure the connected device shows up in the list even if it was not seen in the current scan.
         const existing = devicesByIdRef.current[deviceId] ?? { id: deviceId };

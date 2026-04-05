@@ -1,9 +1,9 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useBleDeviceManager } from '../bluetooth/useBleDeviceManager';
+import { useBle } from '../bluetooth/BleProvider';
 import type { BleServiceSummary } from '../bluetooth/types';
 
 type RouteParams = {
@@ -20,13 +20,21 @@ const DeviceDetailScreen = () => {
     connectionStates,
     deviceIdentityById,
     gattDetailsById,
-  } = useBleDeviceManager();
+    connectToDevice,
+  } = useBle();
 
   const state = connectionStates[deviceId] ?? 'disconnected';
   const identity = deviceIdentityById[deviceId];
   const gatt = gattDetailsById[deviceId];
 
   const services: BleServiceSummary[] = useMemo(() => gatt?.services ?? [], [gatt]);
+
+  useEffect(() => {
+    // Ensure we have a connection to fetch details when entering the screen.
+    if (deviceId && state === 'disconnected') {
+      connectToDevice(deviceId);
+    }
+  }, [connectToDevice, deviceId, state]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -49,6 +57,7 @@ const DeviceDetailScreen = () => {
           <DetailRow label="IMEI / Serial" value={identity?.serialNumber ?? '—'} />
           <DetailRow label="Manufacturer" value={identity?.manufacturer ?? '—'} />
           <DetailRow label="Model" value={identity?.model ?? '—'} />
+          <DetailRow label="Battery" value={identity?.batteryLevel != null ? `${identity.batteryLevel}%` : '—'} />
           <DetailRow label="Firmware" value={identity?.firmwareRevision ?? '—'} />
           <DetailRow label="Hardware" value={identity?.hardwareRevision ?? '—'} />
           <DetailRow label="Software" value={identity?.softwareRevision ?? '—'} />
@@ -59,28 +68,112 @@ const DeviceDetailScreen = () => {
           {services.length === 0 ? (
             <Text style={styles.subtitle}>No services cached. Connect and discover.</Text>
           ) : null}
-          {services.map(service => (
-            <View key={service.uuid} style={styles.serviceBlock}>
-              <Text style={styles.serviceTitle}>{service.uuid}</Text>
-              {service.characteristics.map(ch => (
-                <View key={ch.uuid} style={styles.charRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.charUuid}>{ch.uuid}</Text>
-                    <Text style={styles.charMeta}>
-                      {ch.isReadable ? 'R ' : ''}
-                      {ch.isWritableWithResponse || ch.isWritableWithoutResponse ? 'W ' : ''}
-                      {ch.isNotifiable || ch.isIndicatable ? 'N ' : ''}
-                    </Text>
-                  </View>
-                  {/* Placeholders for future read/write actions */}
-                </View>
-              ))}
-            </View>
-          ))}
+          {services.map(service => {
+            const writable = service.characteristics.filter(
+              c => c.isWritableWithResponse || c.isWritableWithoutResponse,
+            );
+            const readableOnly = service.characteristics.filter(
+              c => c.isReadable && !(c.isWritableWithResponse || c.isWritableWithoutResponse),
+            );
+            const notifyOnly = service.characteristics.filter(
+              c =>
+                (c.isNotifiable || c.isIndicatable) &&
+                !c.isReadable &&
+                !(c.isWritableWithResponse || c.isWritableWithoutResponse),
+            );
+            const other = service.characteristics.filter(
+              c =>
+                !writable.includes(c) &&
+                !readableOnly.includes(c) &&
+                !notifyOnly.includes(c),
+            );
+            if (!writable.length && !readableOnly.length && !notifyOnly.length && !other.length)
+              return null;
+            return (
+              <View key={service.uuid} style={styles.serviceBlock}>
+                <Text style={styles.serviceTitle}>{service.uuid}</Text>
+
+                {writable.length ? (
+                  <>
+                    <Text style={styles.groupLabel}>Writable</Text>
+                    {writable.map(ch => (
+                      <CharRow key={ch.uuid} ch={ch} />
+                    ))}
+                  </>
+                ) : null}
+
+                {readableOnly.length ? (
+                  <>
+                    <Text style={styles.groupLabel}>Readable Only</Text>
+                    {readableOnly.map(ch => (
+                      <CharRow key={ch.uuid} ch={ch} />
+                    ))}
+                  </>
+                ) : null}
+
+                {notifyOnly.length ? (
+                  <>
+                    <Text style={styles.groupLabel}>Notify/Indicate Only</Text>
+                    {notifyOnly.map(ch => (
+                      <CharRow key={ch.uuid} ch={ch} />
+                    ))}
+                  </>
+                ) : null}
+
+                {other.length ? (
+                  <>
+                    <Text style={styles.groupLabel}>Other</Text>
+                    {other.map(ch => (
+                      <CharRow key={ch.uuid} ch={ch} />
+                    ))}
+                  </>
+                ) : null}
+              </View>
+            );
+          })}
         </View>
       </ScrollView>
     </SafeAreaView>
   );
+};
+
+const CharRow = ({ ch }: { ch: BleServiceSummary['characteristics'][number] }) => (
+  <View style={styles.charRow}>
+    <View style={styles.charInfo}>
+      <Text style={styles.charLabel}>{labelForUuid(ch.uuid)}</Text>
+      <Text style={styles.charUuid}>{ch.uuid}</Text>
+      <Text style={styles.charMeta}>
+        {ch.isReadable ? 'R ' : ''}
+        {ch.isWritableWithResponse || ch.isWritableWithoutResponse ? 'W ' : ''}
+        {ch.isNotifiable || ch.isIndicatable ? 'N ' : ''}
+      </Text>
+    </View>
+  </View>
+);
+
+const labelForUuid = (uuid: string) => {
+  const u = uuid.toLowerCase();
+  const map: Record<string, string> = {
+    '1800': 'Generic Access',
+    '1801': 'Generic Attribute',
+    '180a': 'Device Information',
+    '180f': 'Battery Service',
+    '2a00': 'Device Name',
+    '2a01': 'Appearance',
+    '2a04': 'Connection Params',
+    '2a05': 'Service Changed',
+    '2a19': 'Battery Level',
+    '2a24': 'Model Number',
+    '2a25': 'Serial Number',
+    '2a26': 'Firmware Revision',
+    '2a27': 'Hardware Revision',
+    '2a28': 'Software Revision',
+    '2a29': 'Manufacturer',
+    '6e400001-b5a3-f393-e0a9-e50e24dcca9e': 'NUS Service',
+    '6e400002-b5a3-f393-e0a9-e50e24dcca9e': 'NUS RX (write)',
+    '6e400003-b5a3-f393-e0a9-e50e24dcca9e': 'NUS TX (notify)',
+  };
+  return map[u] ?? 'Unknown';
 };
 
 const DetailRow = ({ label, value }: { label: string; value: string }) => (
@@ -125,6 +218,7 @@ const styles = StyleSheet.create({
   detailValue: { fontSize: 13, color: '#2E2A27', fontWeight: '600' },
   serviceBlock: { marginTop: 12, borderTopWidth: 1, borderTopColor: '#EFE7DD', paddingTop: 10 },
   serviceTitle: { fontSize: 13, fontWeight: '700', color: '#2E2A27', marginBottom: 6 },
+  groupLabel: { fontSize: 12, fontWeight: '700', color: '#7A726A', marginTop: 6, marginBottom: 4 },
   charRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -132,6 +226,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#F1E8DE',
   },
+  charInfo: { flex: 1 },
   charUuid: { fontSize: 12, color: '#2E2A27' },
   charMeta: { fontSize: 11, color: '#7A726A', marginTop: 2 },
 });

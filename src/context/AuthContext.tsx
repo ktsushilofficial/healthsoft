@@ -1,5 +1,5 @@
 // src/context/AuthContext.tsx
-import React, { createContext, useEffect, useRef, useState, useContext } from 'react';
+import React, { createContext, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { Platform } from 'react-native';
 import axios, { Method } from 'axios';
 import * as Keychain from 'react-native-keychain';
@@ -363,23 +363,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     setTokens(sessionTokens);
     await saveTokens(sessionTokens);
 
-    // Profile persistence removed.
-    // We strictly use the sessionUser provided by the login/signup response
-    // or rely on fetching the profile from the API subsequently.
-
     const normalized = normalizeUser(sessionUser, sessionTokens);
     setUser(normalized);
     setIsAuthenticated(true);
     setAuthMethod(method ?? 'unknown');
 
-    // Fetch fresh profile immediately after login to ensure role and user data are current
-    try {
-      const refreshed = await refreshUserProfile();
-      return refreshed;
-    } catch (error) {
-      console.warn('Failed to refresh profile post-login; using session payload.', error);
-      return normalized;
-    }
+    // Return the normalized user from the login/signup response directly.
+    // A separate /profile fetch is NOT performed here — AccountScreen fetches
+    // it once on mount via its own loadProfile() call, preventing an infinite
+    // re-fetch loop that was triggered when applySession called refreshUserProfile()
+    // which updated user state, causing consumers to re-render and re-request.
+    return normalized;
   };
 
   const refreshTokens = async (): Promise<AuthTokens | null> => {
@@ -471,7 +465,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const refreshUserProfile = async (): Promise<UserData> => {
+  const refreshUserProfile = useCallback(async (): Promise<UserData> => {
     const profile = await authorizedRequest<Partial<UserData>>(
       '/profile',
       'GET',
@@ -485,7 +479,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     setUser(normalized);
     setIsAuthenticated(true);
     return normalized;
-  };
+    // authorizedRequest and withProfileOverride are stable (defined outside or via refs)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const updateProfile = async (data: UpdateProfileData): Promise<UserData> => {
     const currentUser = user;
@@ -877,7 +873,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const getMySeniors = async (): Promise<Senior[]> => {
+  const getMySeniors = useCallback(async (): Promise<Senior[]> => {
     try {
       const seniorsList = await authorizedRequest<Senior[]>(
         '/api/v1/seniors/my-seniors',
@@ -888,7 +884,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     } catch (error) {
       throw new Error(getErrorMessage(error));
     }
-  };
+    // authorizedRequest is stable (reads from refs internally)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const selectSenior = async (seniorId: string): Promise<void> => {
     const senior = seniors.find(s => s.userId === seniorId);
@@ -939,35 +937,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, [user?.role]);
 
+  const contextValue = useMemo(
+    () => ({
+      user,
+      isAuthenticated,
+      isInitializing,
+      isCaretaker,
+      authMethod,
+      login,
+      loginWithPhone,
+      loginMobileSendOtp,
+      loginMobileVerifyOtp,
+      loginWithGoogle,
+      signup,
+      verifyEmail,
+      refreshUserProfile,
+      updateProfile,
+      logout,
+      changePassword,
+      refreshToken,
+      googleAuth,
+      initiateGoogleLogin,
+      forgotPassword,
+      resetPassword,
+      seniors,
+      selectedSenior,
+      getMySeniors,
+      selectSenior,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      user, isAuthenticated, isInitializing, isCaretaker, authMethod,
+      seniors, selectedSenior, refreshUserProfile, getMySeniors,
+    ],
+  );
+
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        isAuthenticated,
-        isInitializing,
-        isCaretaker,
-        authMethod,
-        login,
-        loginWithPhone,
-        loginMobileSendOtp,
-        loginMobileVerifyOtp,
-        loginWithGoogle,
-        signup,
-        verifyEmail,
-        refreshUserProfile,
-        updateProfile,
-        logout,
-        changePassword,
-        refreshToken,
-        googleAuth,
-        initiateGoogleLogin,
-        forgotPassword,
-        resetPassword,
-        seniors,
-        selectedSenior,
-        getMySeniors,
-        selectSenior,
-      }}>
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );
