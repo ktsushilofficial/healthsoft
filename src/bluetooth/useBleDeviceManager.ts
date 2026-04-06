@@ -125,6 +125,7 @@ async function requestAndroidBlePermissions(): Promise<boolean> {
 export function useBleDeviceManager() {
   const [bleState, setBleState] = useState<State | 'Unknown'>('Unknown');
   const [isScanning, setIsScanning] = useState(false);
+  const [isResolvingScanIdentities, setIsResolvingScanIdentities] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [devices, setDevices] = useState<BleDiscoveredDevice[]>([]);
 
@@ -152,6 +153,9 @@ export function useBleDeviceManager() {
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Reassembly buffer per device for fragmented NUS frames
   const reassemblyBuf = useRef<Record<string, { data: number[]; expectedLen: number }>>({});
+  const disconnectBehaviorRef = useRef<Record<string, { preserveIdentity?: boolean }>>({});
+  const shouldResolveAfterScanRef = useRef(false);
+  const probingDeviceIdsRef = useRef<Record<string, true>>({});
 
   const devicesByIdRef = useRef<Record<string, BleDiscoveredDevice>>({});
 
@@ -483,7 +487,7 @@ export function useBleDeviceManager() {
     };
   }, []);
 
-  const cleanupDeviceState = useCallback((deviceId: string) => {
+  const cleanupDeviceState = useCallback((deviceId: string, options?: { preserveIdentity?: boolean }) => {
     try {
       if (disconnectedSubRefs.current[deviceId]) {
         disconnectedSubRefs.current[deviceId]?.remove();
@@ -514,11 +518,16 @@ export function useBleDeviceManager() {
       return next;
     });
 
-    setDeviceIdentityById(prev => {
-      const next = { ...prev };
-      delete next[deviceId];
-      return next;
-    });
+    if (!options?.preserveIdentity) {
+      setDeviceIdentityById(prev => {
+        const next = { ...prev };
+        delete next[deviceId];
+        return next;
+      });
+    }
+
+    delete disconnectBehaviorRef.current[deviceId];
+    delete probingDeviceIdsRef.current[deviceId];
   }, []);
 
   const stopScan = useCallback(async () => {
@@ -558,6 +567,7 @@ export function useBleDeviceManager() {
         devicesByIdRef.current = {};
         setDevices([]);
         setIsScanning(true);
+        shouldResolveAfterScanRef.current = true;
 
         await bleManager.startDeviceScan(
           null,
@@ -594,6 +604,7 @@ export function useBleDeviceManager() {
           stopScan().catch(() => {});
         }, scanDurationMs);
       } catch (e: any) {
+        shouldResolveAfterScanRef.current = false;
         setScanError(e?.message ?? 'Failed to start BLE scan.');
         setIsScanning(false);
       }
@@ -617,6 +628,7 @@ export function useBleDeviceManager() {
 
       await Promise.all(
         targetIds.map(async id => {
+          disconnectBehaviorRef.current[id] = { preserveIdentity: true };
           try {
             if (connectedDeviceRefs.current[id]) {
               await connectedDeviceRefs.current[id].cancelConnection();
@@ -626,7 +638,9 @@ export function useBleDeviceManager() {
           } catch {
             // Best-effort disconnect.
           } finally {
-            cleanupDeviceState(id);
+            if (disconnectBehaviorRef.current[id]) {
+              cleanupDeviceState(id, disconnectBehaviorRef.current[id]);
+            }
           }
         }),
       );
@@ -722,12 +736,30 @@ export function useBleDeviceManager() {
   }, []);
 
   const connectToDevice = useCallback(
-    async (deviceId: string) => {
+    async (
+      deviceId: string,
+      options?: {
+        silent?: boolean;
+        autoStopScan?: boolean;
+        trackConnectionState?: boolean;
+      },
+    ) => {
+      const {
+        silent = false,
+        autoStopScan = true,
+        trackConnectionState = true,
+      } = options ?? {};
+
       setScanError(null);
-      setConnectionStates(prev => ({ ...prev, [deviceId]: 'connecting' }));
+      if (trackConnectionState) {
+        setConnectionStates(prev => ({ ...prev, [deviceId]: 'connecting' }));
+      }
 
       try {
-        await stopScan();
+        if (autoStopScan) {
+          shouldResolveAfterScanRef.current = false;
+          await stopScan();
+        }
 
         const hasPermissions = await requestAndroidBlePermissions();
         if (!hasPermissions && Platform.OS === 'android') {
@@ -738,7 +770,7 @@ export function useBleDeviceManager() {
         connectedDeviceRefs.current[deviceId] = device;
 
         const sub = bleManager.onDeviceDisconnected(deviceId, () => {
-          cleanupDeviceState(deviceId);
+          cleanupDeviceState(deviceId, disconnectBehaviorRef.current[deviceId]);
         });
         disconnectedSubRefs.current[deviceId] = sub;
 
@@ -1011,10 +1043,20 @@ export function useBleDeviceManager() {
         };
         setDevices(Object.values(devicesByIdRef.current));
 
-        setConnectionStates(prev => ({ ...prev, [deviceId]: 'connected' }));
+        if (trackConnectionState) {
+          setConnectionStates(prev => ({ ...prev, [deviceId]: 'connected' }));
+        }
+        return true;
       } catch (e: any) {
-        Alert.alert('BLE Connection Failed', e?.message ?? 'Unable to connect to device.');
-        setConnectionStates(prev => ({ ...prev, [deviceId]: 'error' }));
+        if (!silent) {
+          Alert.alert('BLE Connection Failed', e?.message ?? 'Unable to connect to device.');
+        }
+        if (trackConnectionState) {
+          setConnectionStates(prev => ({ ...prev, [deviceId]: 'error' }));
+        } else {
+          cleanupDeviceState(deviceId);
+        }
+        return false;
       }
     },
     [applyEv07bKeys, cleanupDeviceState, pushLog, readDeviceInformation, stopScan],
@@ -1059,78 +1101,176 @@ export function useBleDeviceManager() {
       // respond with seqId=0 or another value instead of echoing ours back.
       const isWriteOnly = !options.readKeys?.length;
       const pendingKey = isWriteOnly ? -1 : seq;
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
 
-      const waitForResponse = new Promise<Uint8Array>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          delete pendingEv07b.current[pendingKey];
-          reject(new Error('Timeout waiting for device response'));
-        }, timeoutMs);
-        pendingEv07b.current[pendingKey] = resp => {
+      const clearPendingWait = () => {
+        if (settled) return;
+        settled = true;
+        delete pendingEv07b.current[pendingKey];
+        if (timer) {
           clearTimeout(timer);
-          resolve(resp);
-        };
-      });
+          timer = null;
+        }
+      };
 
-      const txHex = Buffer.from(frame).toString('hex');
-      console.log(`[BLE NUS TX] frame ${frame.length}B, seq=0x${seq.toString(16)}, isWriteOnly=${isWriteOnly}`);
-      pushLog(deviceId, `TX (${frame.length}B): ${txHex.slice(0, 60)}...`);
+      try {
+        const waitForResponse = new Promise<Uint8Array>((resolve, reject) => {
+          timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            delete pendingEv07b.current[pendingKey];
+            timer = null;
+            reject(new Error('Timeout waiting for device response'));
+          }, timeoutMs);
+          pendingEv07b.current[pendingKey] = resp => {
+            if (settled) return;
+            settled = true;
+            if (timer) {
+              clearTimeout(timer);
+              timer = null;
+            }
+            resolve(resp);
+          };
+        });
 
-      // ── Chunk frame into MTU-sized packets ──────────────────────────────
-      // BLE characteristics are limited to ~20 bytes per write by default.
-      // We split the frame and send each chunk sequentially.
-      const chunks: Uint8Array[] = [];
-      for (let offset = 0; offset < frame.length; offset += BLE_MTU_PAYLOAD) {
-        chunks.push(frame.slice(offset, offset + BLE_MTU_PAYLOAD));
-      }
-      pushLog(deviceId, `TX chunking into ${chunks.length} packet(s) of ≤${BLE_MTU_PAYLOAD}B`);
+        const txHex = Buffer.from(frame).toString('hex');
+        console.log(`[BLE NUS TX] frame ${frame.length}B, seq=0x${seq.toString(16)}, isWriteOnly=${isWriteOnly}`);
+        pushLog(deviceId, `TX (${frame.length}B): ${txHex.slice(0, 60)}...`);
 
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        const chunkB64 = Buffer.from(chunk).toString('base64');
-        try {
-          await bleManager.writeCharacteristicWithResponseForDevice(
-            deviceId,
-            NUS_SERVICE_UUID,
-            NUS_RX_UUID,
-            chunkB64,
-          );
-        } catch (writeWithRespErr: any) {
-          // Fallback to write-without-response
-          console.warn(`[BLE NUS TX] chunk ${i} writeWithResponse failed:`, writeWithRespErr?.message);
+        // ── Chunk frame into MTU-sized packets ──────────────────────────────
+        // BLE characteristics are limited to ~20 bytes per write by default.
+        // We split the frame and send each chunk sequentially.
+        const chunks: Uint8Array[] = [];
+        for (let offset = 0; offset < frame.length; offset += BLE_MTU_PAYLOAD) {
+          chunks.push(frame.slice(offset, offset + BLE_MTU_PAYLOAD));
+        }
+        pushLog(deviceId, `TX chunking into ${chunks.length} packet(s) of ≤${BLE_MTU_PAYLOAD}B`);
+
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          const chunkB64 = Buffer.from(chunk).toString('base64');
           try {
-            await bleManager.writeCharacteristicWithoutResponseForDevice(
+            await bleManager.writeCharacteristicWithResponseForDevice(
               deviceId,
               NUS_SERVICE_UUID,
               NUS_RX_UUID,
               chunkB64,
             );
-          } catch (writeWithoutRespErr: any) {
-            pushLog(deviceId, `TX chunk ${i} FAILED: ${writeWithoutRespErr?.message}`);
-            // Clean up pending promise and rethrow
-            delete pendingEv07b.current[pendingKey];
-            throw writeWithoutRespErr;
+          } catch (writeWithRespErr: any) {
+            // Fallback to write-without-response
+            console.warn(`[BLE NUS TX] chunk ${i} writeWithResponse failed:`, writeWithRespErr?.message);
+            try {
+              await bleManager.writeCharacteristicWithoutResponseForDevice(
+                deviceId,
+                NUS_SERVICE_UUID,
+                NUS_RX_UUID,
+                chunkB64,
+              );
+            } catch (writeWithoutRespErr: any) {
+              pushLog(deviceId, `TX chunk ${i} FAILED: ${writeWithoutRespErr?.message}`);
+              // Clean up pending promise and rethrow
+              clearPendingWait();
+              throw writeWithoutRespErr;
+            }
+          }
+          // Small inter-chunk delay to avoid flooding the device's receive buffer
+          if (i < chunks.length - 1) {
+            await new Promise<void>(r => setTimeout(r, 20));
           }
         }
-        // Small inter-chunk delay to avoid flooding the device's receive buffer
-        if (i < chunks.length - 1) {
-          await new Promise<void>(r => setTimeout(r, 20));
-        }
-      }
-      pushLog(deviceId, `TX all ${chunks.length} chunk(s) sent, waiting for ACK...`);
+        pushLog(deviceId, `TX all ${chunks.length} chunk(s) sent, waiting for ACK...`);
 
-      const respBytes = await waitForResponse;
-      const parsed = parseEv07bFrame(respBytes);
-      if (!parsed) throw new Error('Invalid response frame');
-      if (parsed.command === 0x7f) {
-        throw new Error(formatEv07bError(parsed.errorCode));
+        const respBytes = await waitForResponse;
+        const parsed = parseEv07bFrame(respBytes);
+        if (!parsed) throw new Error('Invalid response frame');
+        if (parsed.command === 0x7f) {
+          throw new Error(formatEv07bError(parsed.errorCode));
+        }
+        if (parsed.command === 0x02) {
+          applyEv07bKeys(deviceId, parsed.keys, parsed.blocks);
+        }
+        return parsed;
+      } catch (error) {
+        clearPendingWait();
+        throw error;
       }
-      if (parsed.command === 0x02) {
-        applyEv07bKeys(deviceId, parsed.keys, parsed.blocks);
-      }
-      return parsed;
     },
     [applyEv07bKeys, pushLog],
   );
+
+  const probeDiscoveredDevicesForIdentity = useCallback(
+    async (deviceIds?: string[]) => {
+      const idsToProbe = (deviceIds ?? Object.keys(devicesByIdRef.current)).filter(deviceId => {
+        if (probingDeviceIdsRef.current[deviceId]) return false;
+        if (connectedDeviceRefs.current[deviceId]) return false;
+        return !deviceIdentityById[deviceId]?.imei;
+      });
+
+      if (idsToProbe.length === 0) {
+        return;
+      }
+
+      setIsResolvingScanIdentities(true);
+
+      try {
+        for (const deviceId of idsToProbe) {
+          probingDeviceIdsRef.current[deviceId] = true;
+
+          const connected = await connectToDevice(deviceId, {
+            silent: true,
+            autoStopScan: false,
+            trackConnectionState: false,
+          });
+
+          if (!connected) {
+            delete probingDeviceIdsRef.current[deviceId];
+            continue;
+          }
+
+          try {
+            await sendEv07bConfig(deviceId, { readKeys: [0x03] }, 2500);
+          } catch {
+            // Some nearby devices may not support the EV07B config read flow.
+          }
+
+          disconnectBehaviorRef.current[deviceId] = { preserveIdentity: true };
+          try {
+            if (connectedDeviceRefs.current[deviceId]) {
+              await connectedDeviceRefs.current[deviceId].cancelConnection();
+            } else {
+              await bleManager.cancelDeviceConnection(deviceId);
+            }
+          } catch {
+            // Best-effort disconnect after probing.
+          } finally {
+            if (disconnectBehaviorRef.current[deviceId]) {
+              cleanupDeviceState(deviceId, disconnectBehaviorRef.current[deviceId]);
+            }
+          }
+        }
+      } finally {
+        setIsResolvingScanIdentities(false);
+      }
+    },
+    [cleanupDeviceState, connectToDevice, deviceIdentityById, sendEv07bConfig],
+  );
+
+  useEffect(() => {
+    if (isScanning || !shouldResolveAfterScanRef.current) {
+      return;
+    }
+
+    shouldResolveAfterScanRef.current = false;
+    const scannedIds = Object.keys(devicesByIdRef.current);
+    if (scannedIds.length === 0) {
+      return;
+    }
+
+    probeDiscoveredDevicesForIdentity(scannedIds).catch(() => {
+      // Best-effort scan enrichment.
+    });
+  }, [isScanning, probeDiscoveredDevicesForIdentity]);
 
   useEffect(() => {
     const disconnectedSubs = disconnectedSubRefs.current;
@@ -1171,6 +1311,7 @@ export function useBleDeviceManager() {
   return {
     bleState: managerStateString,
     isScanning,
+    isResolvingScanIdentities,
     devices,
     scanError,
     connectionState: aggregateConnectionState,

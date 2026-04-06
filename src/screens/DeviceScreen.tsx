@@ -20,6 +20,13 @@ import {
   resolveDisplayedImei,
   type SeniorAssignedDevice,
 } from '../utils/deviceAssignments';
+import {
+  clearCachedAssignedDeviceMatchesForSenior,
+  findCachedAssignedDeviceMatch,
+  getCachedAssignedDeviceMatchesForSenior,
+  type CachedAssignedDeviceMatch,
+  upsertCachedAssignedDeviceMatches,
+} from '../utils/assignedDeviceMatchCache';
 
 const contacts = [
   {
@@ -67,6 +74,14 @@ const medicines = [
   },
 ];
 
+type AssignedDeviceRow = {
+  rowId: string;
+  device: BleDiscoveredDevice;
+  assignedDevice: SeniorAssignedDevice;
+  source: 'live' | 'cached';
+  cachedMatch: CachedAssignedDeviceMatch | null;
+};
+
 const DeviceScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<DeviceStackParamList>>();
   const {
@@ -86,10 +101,14 @@ const DeviceScreen = () => {
   const [assignedDevices, setAssignedDevices] = useState<SeniorAssignedDevice[]>([]);
   const [assignedDevicesLoading, setAssignedDevicesLoading] = useState(false);
   const [assignedDevicesError, setAssignedDevicesError] = useState<string | null>(null);
+  const [cachedAssignedMatches, setCachedAssignedMatches] = useState<CachedAssignedDeviceMatch[]>([]);
+  const [cachedAssignedMatchesLoading, setCachedAssignedMatchesLoading] = useState(false);
+  const [isClearingCache, setIsClearingCache] = useState(false);
 
   const {
     bleState,
     isScanning,
+    isResolvingScanIdentities,
     devices,
     scanError,
     connectionStates,
@@ -159,6 +178,40 @@ const DeviceScreen = () => {
     loadAssignedDevices();
   }, [loadAssignedDevices]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadCachedMatches = async () => {
+      if (!activeSeniorId) {
+        setCachedAssignedMatches([]);
+        setCachedAssignedMatchesLoading(false);
+        return;
+      }
+
+      setCachedAssignedMatchesLoading(true);
+      try {
+        const cachedMatches = await getCachedAssignedDeviceMatchesForSenior(activeSeniorId);
+        if (!cancelled) {
+          setCachedAssignedMatches(cachedMatches);
+        }
+      } catch {
+        if (!cancelled) {
+          setCachedAssignedMatches([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setCachedAssignedMatchesLoading(false);
+        }
+      }
+    };
+
+    loadCachedMatches();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSeniorId]);
+
   const visibleDevices = useMemo(
     () =>
       knownDevices
@@ -179,6 +232,49 @@ const DeviceScreen = () => {
     [assignedDevices, deviceIdentityById, knownDevices],
   );
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const persistVisibleMatches = async () => {
+      if (!activeSeniorId || visibleDevices.length === 0) {
+        return;
+      }
+
+      const nextCacheEntries: CachedAssignedDeviceMatch[] = visibleDevices
+        .map(({ device, assignedDevice }) => ({
+          seniorId: activeSeniorId,
+          bleDeviceId: device.id,
+          assignmentId: assignedDevice.assignmentId,
+          assignedDeviceId: assignedDevice.deviceId,
+          deviceIdentifier: assignedDevice.deviceIdentifier,
+          imei: resolveDisplayedImei(deviceIdentityById[device.id], assignedDevice),
+          deviceName: device.name ?? assignedDevice.name ?? null,
+          localName: device.localName ?? null,
+          updatedAt: Date.now(),
+        }))
+        .filter(entry => !!entry.bleDeviceId && !!entry.imei);
+
+      if (nextCacheEntries.length === 0) {
+        return;
+      }
+
+      try {
+        const merged = await upsertCachedAssignedDeviceMatches(nextCacheEntries);
+        if (!cancelled) {
+          setCachedAssignedMatches(merged.filter(entry => entry.seniorId === activeSeniorId));
+        }
+      } catch {
+        // Best-effort local cache update.
+      }
+    };
+
+    persistVisibleMatches();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSeniorId, deviceIdentityById, visibleDevices]);
+
   const assignedImeisSummary = useMemo(() => {
     const imeis = assignedDevices
       .map(device => device.imei ?? device.serialNumber ?? null)
@@ -186,20 +282,110 @@ const DeviceScreen = () => {
     return imeis.join(', ');
   }, [assignedDevices]);
 
+  const assignedDeviceRows = useMemo<AssignedDeviceRow[]>(() => {
+    const liveRows: AssignedDeviceRow[] = visibleDevices.map(({ device, assignedDevice }) => ({
+      rowId: `live-${device.id}`,
+      device,
+      assignedDevice,
+      source: 'live',
+      cachedMatch: null,
+    }));
+
+    const liveAssignedIds = new Set(liveRows.map(row => row.assignedDevice.id));
+
+    const cachedRows: AssignedDeviceRow[] = activeSeniorId
+      ? assignedDevices
+          .filter(assignedDevice => !liveAssignedIds.has(assignedDevice.id))
+          .map<AssignedDeviceRow | null>(assignedDevice => {
+            const cachedMatch = findCachedAssignedDeviceMatch(
+              activeSeniorId,
+              assignedDevice,
+              cachedAssignedMatches,
+            );
+            if (!cachedMatch) {
+              return null;
+            }
+
+            return {
+              rowId: `cached-${assignedDevice.id}-${cachedMatch.bleDeviceId}`,
+              device: {
+                id: cachedMatch.bleDeviceId,
+                name: cachedMatch.deviceName ?? assignedDevice.name ?? null,
+                localName: cachedMatch.localName ?? null,
+                rssi: null,
+                isConnectable: null,
+                serviceUUIDs: null,
+              },
+              assignedDevice,
+              source: 'cached',
+              cachedMatch,
+            };
+          })
+          .filter((item): item is AssignedDeviceRow => item !== null)
+      : [];
+
+    if (!activeSeniorId || assignedDevices.length > 0 || !assignedDevicesError) {
+      return [...liveRows, ...cachedRows];
+    }
+
+    const fallbackRows: AssignedDeviceRow[] = cachedAssignedMatches.map(cachedMatch => ({
+      rowId: `cached-fallback-${cachedMatch.bleDeviceId}-${cachedMatch.assignmentId ?? cachedMatch.assignedDeviceId ?? cachedMatch.imei ?? 'saved'}`,
+      device: {
+        id: cachedMatch.bleDeviceId,
+        name: cachedMatch.deviceName,
+        localName: cachedMatch.localName,
+        rssi: null,
+        isConnectable: null,
+        serviceUUIDs: null,
+      },
+      assignedDevice: {
+        id: cachedMatch.assignmentId ?? cachedMatch.assignedDeviceId ?? cachedMatch.bleDeviceId,
+        assignmentId: cachedMatch.assignmentId,
+        deviceId: cachedMatch.assignedDeviceId,
+        deviceIdentifier: cachedMatch.deviceIdentifier,
+        imei: cachedMatch.imei,
+        serialNumber: null,
+        bluetoothMacAddress: null,
+        name: cachedMatch.deviceName,
+        status: 'CACHED',
+        raw: {},
+      },
+      source: 'cached',
+      cachedMatch,
+    }));
+
+    return [...liveRows, ...fallbackRows];
+  }, [activeSeniorId, assignedDevices, assignedDevicesError, cachedAssignedMatches, visibleDevices]);
+
   const otherScannedDevices = useMemo(() => {
     const visibleIds = new Set(visibleDevices.map(item => item.device.id));
     return knownDevices.filter(device => !visibleIds.has(device.id));
   }, [knownDevices, visibleDevices]);
 
-  const getStatusLabel = (device: BleDiscoveredDevice) => {
+  const getStatusLabel = (device: BleDiscoveredDevice, options?: { cachedOnly?: boolean }) => {
     const state = connectionStates[device.id];
     if (state === 'connected') return 'Connected';
     if (state === 'connecting') return 'Connecting...';
     if (state === 'disconnecting') return 'Disconnecting...';
     if (state === 'error') return 'Error';
+    if (options?.cachedOnly) return 'Saved device';
     if (typeof device.rssi === 'number') return `RSSI: ${device.rssi}`;
     return 'Available';
   };
+
+  const clearSavedAssignedDeviceList = useCallback(async () => {
+    if (!activeSeniorId) {
+      return;
+    }
+
+    setIsClearingCache(true);
+    try {
+      await clearCachedAssignedDeviceMatchesForSenior(activeSeniorId);
+      setCachedAssignedMatches([]);
+    } finally {
+      setIsClearingCache(false);
+    }
+  }, [activeSeniorId]);
 
 
   return (
@@ -369,29 +555,82 @@ const DeviceScreen = () => {
                   <Text style={styles.cardSubtitle}>
                     {assignedDevicesLoading
                       ? 'Loading assigned devices...'
+                      : cachedAssignedMatchesLoading
+                        ? 'Loading saved device list...'
+                      : isResolvingScanIdentities
+                        ? 'Reading IMEI from scanned devices...'
                       : `Assigned devices: ${assignedDevices.length}`}
                   </Text>
                 ) : null}
-                <TouchableOpacity
-                  style={[
-                    styles.primaryButton,
-                    !activeSeniorId ? styles.primaryButtonDisabled : null,
-                  ]}
-                  onPress={() => {
-                    if (isScanning) stopScan();
-                    else startScan();
-                  }}
-                  disabled={!activeSeniorId}
-                >
+                <View style={styles.actionRow}>
+                  <TouchableOpacity
+                    style={[
+                      styles.primaryButton,
+                      styles.actionButton,
+                      !activeSeniorId || isResolvingScanIdentities ? styles.primaryButtonDisabled : null,
+                    ]}
+                    onPress={() => {
+                      if (isScanning) stopScan();
+                      else startScan();
+                    }}
+                    disabled={!activeSeniorId || isResolvingScanIdentities}
+                  >
                   {isScanning ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : isResolvingScanIdentities ? (
                     <ActivityIndicator color="#FFFFFF" />
                   ) : (
                     <Icon name="bluetooth" size={18} color="#FFFFFF" />
                   )}
                   <Text style={styles.primaryButtonText}>
-                    {isScanning ? 'Scanning...' : bleState === 'PoweredOn' ? 'Scan Nearby' : 'Enable Bluetooth'}
+                    {isScanning
+                      ? 'Scanning...'
+                      : isResolvingScanIdentities
+                        ? 'Reading IMEI...'
+                        : bleState === 'PoweredOn'
+                          ? 'Scan Nearby'
+                          : 'Enable Bluetooth'}
                   </Text>
                 </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.refreshButton,
+                      !activeSeniorId || assignedDevicesLoading || isResolvingScanIdentities ? styles.primaryButtonDisabled : null,
+                    ]}
+                    onPress={loadAssignedDevices}
+                    disabled={!activeSeniorId || assignedDevicesLoading || isResolvingScanIdentities}
+                  >
+                    {assignedDevicesLoading ? (
+                      <ActivityIndicator color="#F28C28" />
+                    ) : (
+                      <Icon name="refresh" size={18} color="#F28C28" />
+                    )}
+                    <Text style={styles.refreshButtonText}>
+                      {assignedDevicesLoading ? 'Refreshing...' : 'Refresh'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {activeSeniorId ? (
+                  <TouchableOpacity
+                    style={[
+                      styles.clearCacheButton,
+                      cachedAssignedMatches.length === 0 || isClearingCache ? styles.primaryButtonDisabled : null,
+                    ]}
+                    onPress={clearSavedAssignedDeviceList}
+                    disabled={cachedAssignedMatches.length === 0 || isClearingCache}
+                  >
+                    {isClearingCache ? (
+                      <ActivityIndicator color="#8B5E34" />
+                    ) : (
+                      <Icon name="trash-outline" size={16} color="#8B5E34" />
+                    )}
+                    <Text style={styles.clearCacheButtonText}>
+                      {isClearingCache ? 'Clearing Saved List...' : `Clear Saved List (${cachedAssignedMatches.length})`}
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
 
                 {bleState !== 'PoweredOn' ? (
                   <Text style={styles.warningText}>Bluetooth is not powered on.</Text>
@@ -400,11 +639,11 @@ const DeviceScreen = () => {
                 {assignedDevicesError ? <Text style={styles.warningText}>{assignedDevicesError}</Text> : null}
                 {scanError ? <Text style={styles.warningText}>{scanError}</Text> : null}
 
-                {!assignedDevicesLoading && activeSeniorId && assignedDevices.length === 0 ? (
+                {!assignedDevicesLoading && !cachedAssignedMatchesLoading && activeSeniorId && assignedDevices.length === 0 && !assignedDevicesError ? (
                   <Text style={styles.cardSubtitle}>(No devices are assigned to this senior yet.)</Text>
                 ) : null}
 
-                {!assignedDevicesLoading && assignedDevices.length > 0 && visibleDevices.length === 0 ? (
+                {!assignedDevicesLoading && !cachedAssignedMatchesLoading && assignedDevices.length > 0 && assignedDeviceRows.length === 0 ? (
                   <Text style={styles.cardSubtitle}>
                     {assignedImeisSummary
                       ? `No assigned device found nearby yet. Expected IMEI: ${assignedImeisSummary}`
@@ -412,21 +651,25 @@ const DeviceScreen = () => {
                   </Text>
                 ) : null}
 
-                {visibleDevices.slice(0, 12).map(({ device, assignedDevice }) => {
+                {assignedDeviceRows.slice(0, 12).map(({ rowId, device, assignedDevice, source, cachedMatch }) => {
                   const state = connectionStates[device.id] ?? 'disconnected';
                   const isConnected = state === 'connected';
                   const isBusy = state === 'connecting' || state === 'disconnecting';
                   const identity = deviceIdentityById[device.id];
-                  const displayImei = resolveDisplayedImei(identity, assignedDevice);
+                  const displayImei = resolveDisplayedImei(
+                    identity ?? (cachedMatch?.imei ? { imei: cachedMatch.imei } : undefined),
+                    assignedDevice,
+                  );
+                  const isCachedOnly = source === 'cached' && !knownDevices.some(knownDevice => knownDevice.id === device.id);
 
                   return (
-                    <View key={device.id} style={styles.deviceRow}>
-                      <Icon name="radio" size={20} color="#F28C28" />
+                    <View key={rowId} style={styles.deviceRow}>
+                      <Icon name="radio" size={20} color={isCachedOnly ? '#8B7F74' : '#F28C28'} />
                       <View style={styles.deviceInfo}>
                         <Text style={styles.deviceName}>
-                          {assignedDevice.name ?? device.name ?? device.localName ?? 'Unknown device'}
+                          {assignedDevice.name ?? cachedMatch?.deviceName ?? device.name ?? device.localName ?? 'Unknown device'}
                         </Text>
-                        <Text style={styles.deviceStatus}>{getStatusLabel(device)}</Text>
+                        <Text style={styles.deviceStatus}>{getStatusLabel(device, { cachedOnly: isCachedOnly })}</Text>
                         <Text style={styles.deviceStatus}>
                           {displayImei ? `IMEI: ${displayImei}` : 'IMEI: —'}
                         </Text>
@@ -458,7 +701,7 @@ const DeviceScreen = () => {
                           onPress={() => {
                             navigation.navigate('DeviceDetail', {
                               deviceId: device.id,
-                              deviceName: assignedDevice.name ?? device.name ?? device.localName ?? 'Device',
+                              deviceName: assignedDevice.name ?? cachedMatch?.deviceName ?? device.name ?? device.localName ?? 'Device',
                               assignedImei: displayImei,
                             });
                           }}
@@ -820,6 +1063,11 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     lineHeight: 17,
   },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    marginBottom: 16,
+  },
   primaryButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -828,6 +1076,45 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     paddingVertical: 12,
     marginBottom: 16,
+  },
+  actionButton: {
+    flex: 1,
+    marginBottom: 0,
+  },
+  refreshButton: {
+    minWidth: 118,
+    marginLeft: 10,
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: '#F1E2CF',
+    backgroundColor: '#F6F1EA',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  refreshButtonText: {
+    color: '#F28C28',
+    fontWeight: '600',
+    marginLeft: 6,
+  },
+  clearCacheButton: {
+    alignSelf: 'center',
+    marginBottom: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: '#F6EEE4',
+    borderWidth: 1,
+    borderColor: '#E7D5C1',
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  clearCacheButtonText: {
+    color: '#8B5E34',
+    fontSize: 12,
+    fontWeight: '600',
+    marginLeft: 6,
   },
   primaryButtonDisabled: {
     opacity: 0.6,

@@ -5,6 +5,7 @@ import axios, { Method } from 'axios';
 import * as Keychain from 'react-native-keychain';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import { extractSeniorAssignedDevices, type SeniorAssignedDevice } from '../utils/deviceAssignments';
+import { clearAllCachedAssignedDeviceMatches } from '../utils/assignedDeviceMatchCache';
 
 const API_BASE_URL = 'http://seniorcare.healthsoftcare.in';
 const TOKEN_STORAGE_SERVICE = 'healthsoft.auth.tokens';
@@ -801,6 +802,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     setSeniors([]);
     try {
       await Keychain.resetGenericPassword({ service: SELECTED_SENIOR_STORAGE_SERVICE });
+    } catch {
+      // Ignore
+    }
+    try {
+      await clearAllCachedAssignedDeviceMatches();
     } catch {
       // Ignore
     }
