@@ -27,6 +27,39 @@ export interface Ev07bAuthorizedPhoneConfig {
   number: string;
 }
 
+export interface Ev07bGeoPoint {
+  latitude: number;
+  longitude: number;
+}
+
+export interface Ev07bGeoAlertConfig {
+  index: number;
+  enabled: boolean;
+  direction: 'out' | 'in';
+  type: 'circle' | 'polygon';
+  radiusMeters: number;
+  points: Ev07bGeoPoint[];
+}
+
+export interface Ev07bNoMotionAlertConfig {
+  enabled: boolean;
+  dial: boolean;
+  staticPeriodSec: number;
+}
+
+export interface Ev07bTiltAlertConfig {
+  enabled: boolean;
+  dial: boolean;
+  angleDeg: number;
+  durationSec: number;
+}
+
+export interface Ev07bFallDownAlertConfig {
+  enabled: boolean;
+  dial: boolean;
+  sensitivity: number;
+}
+
 export interface Ev07bFlagDefinition {
   bit: number;
   key: string;
@@ -41,6 +74,22 @@ export const EV07B_PHONE_ACCEPT_SMS_MASK = 0x40;
 export const EV07B_PHONE_NO_SIM_DIALING_MASK = 0x20;
 export const EV07B_PHONE_ACCEPT_CALL_MASK = 0x10;
 export const EV07B_PHONE_SLOT_MASK = 0x0f;
+export const EV07B_GEO_ALERT_INDEX_MASK = 0x0f;
+export const EV07B_GEO_ALERT_POINTS_MASK = 0xf0;
+export const EV07B_GEO_ALERT_ENABLE_MASK = 0x00000100;
+export const EV07B_GEO_ALERT_DIRECTION_MASK = 0x00000200;
+export const EV07B_GEO_ALERT_TYPE_MASK = 0x00000400;
+export const EV07B_GEO_ALERT_RADIUS_MASK = 0xffff0000;
+export const EV07B_NO_MOTION_ENABLE_MASK = 0x80000000;
+export const EV07B_NO_MOTION_DIAL_MASK = 0x40000000;
+export const EV07B_NO_MOTION_PERIOD_MASK = 0x3fffffff;
+export const EV07B_TILT_ENABLE_MASK = 0x80000000;
+export const EV07B_TILT_DIAL_MASK = 0x40000000;
+export const EV07B_TILT_ANGLE_MASK = 0x00ff0000;
+export const EV07B_TILT_DURATION_MASK = 0x0000ffff;
+export const EV07B_FALL_DOWN_ENABLE_MASK = 0x80;
+export const EV07B_FALL_DOWN_DIAL_MASK = 0x40;
+export const EV07B_FALL_DOWN_SENSITIVITY_MASK = 0x0f;
 export const EV07B_WEEKDAY_OPTIONS = [
   { key: 'mon', label: 'Mon', bit: 0 },
   { key: 'tue', label: 'Tue', bit: 1 },
@@ -116,6 +165,25 @@ function readPartialUintLe(bytes: Uint8Array): number {
   return value >>> 0;
 }
 
+function readInt32Le(bytes: Uint8Array, offset: number = 0): number {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return view.getInt32(offset, true);
+}
+
+function int32Le(value: number): Uint8Array {
+  const buffer = new ArrayBuffer(4);
+  const view = new DataView(buffer);
+  view.setInt32(0, value, true);
+  return new Uint8Array(buffer);
+}
+
+function uint32Le(value: number): Uint8Array {
+  const buffer = new ArrayBuffer(4);
+  const view = new DataView(buffer);
+  view.setUint32(0, value >>> 0, true);
+  return new Uint8Array(buffer);
+}
+
 function clampInt(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.floor(value)));
@@ -144,6 +212,131 @@ export function hasEv07bFlag(mask: number | null | undefined, bit: number): bool
 export function toggleEv07bFlag(mask: number, bit: number): number {
   const bitMask = (1 << bit) >>> 0;
   return (((mask >>> 0) ^ bitMask) >>> 0);
+}
+
+export function decodeEv07bGeoAlert(value?: Uint8Array | null): Ev07bGeoAlertConfig | null {
+  if (!value || value.length < 12) return null;
+
+  const flag = readPartialUintLe(value.slice(0, 4));
+  const type: Ev07bGeoAlertConfig['type'] =
+    (flag & EV07B_GEO_ALERT_TYPE_MASK) !== 0 ? 'polygon' : 'circle';
+  const direction: Ev07bGeoAlertConfig['direction'] =
+    (flag & EV07B_GEO_ALERT_DIRECTION_MASK) !== 0 ? 'in' : 'out';
+  const declaredPointCount = (flag & EV07B_GEO_ALERT_POINTS_MASK) >>> 4;
+  const availablePointCount = Math.floor((value.length - 4) / 8);
+  const expectedPointCount = type === 'circle'
+    ? Math.min(1, availablePointCount)
+    : Math.min(
+        Math.max(declaredPointCount || availablePointCount, 1),
+        availablePointCount,
+      );
+
+  const points: Ev07bGeoPoint[] = [];
+  for (let index = 0; index < expectedPointCount; index += 1) {
+    const offset = 4 + index * 8;
+    points.push({
+      latitude: readInt32Le(value, offset) / 10000000,
+      longitude: readInt32Le(value, offset + 4) / 10000000,
+    });
+  }
+
+  return {
+    index: clampInt(flag & EV07B_GEO_ALERT_INDEX_MASK, 0, 15),
+    enabled: (flag & EV07B_GEO_ALERT_ENABLE_MASK) !== 0,
+    direction,
+    type,
+    radiusMeters: clampInt((flag & EV07B_GEO_ALERT_RADIUS_MASK) >>> 16, 0, 65535),
+    points,
+  };
+}
+
+export function encodeEv07bGeoAlert(config: Ev07bGeoAlertConfig): Uint8Array {
+  const type: Ev07bGeoAlertConfig['type'] = config.type === 'polygon' ? 'polygon' : 'circle';
+  const rawPoints = Array.isArray(config.points) ? config.points : [];
+  const points = (type === 'circle' ? rawPoints.slice(0, 1) : rawPoints.slice(0, 15)).map(point => ({
+    latitude: Math.max(-90, Math.min(90, point.latitude)),
+    longitude: Math.max(-180, Math.min(180, point.longitude)),
+  }));
+
+  if (points.length === 0) {
+    throw new Error('Geo fence requires at least one coordinate');
+  }
+  if (type === 'polygon' && points.length < 3) {
+    throw new Error('Geo fence polygon requires at least 3 points');
+  }
+
+  const pointCount = type === 'circle' ? 1 : clampInt(points.length, 3, 15);
+  let flag =
+    ((clampInt(config.radiusMeters, 0, 65535) << 16) >>> 0) |
+    ((pointCount << 4) >>> 0) |
+    (clampInt(config.index, 0, 15) & EV07B_GEO_ALERT_INDEX_MASK);
+  if (config.enabled) flag |= EV07B_GEO_ALERT_ENABLE_MASK;
+  if (config.direction === 'in') flag |= EV07B_GEO_ALERT_DIRECTION_MASK;
+  if (type === 'polygon') flag |= EV07B_GEO_ALERT_TYPE_MASK;
+
+  const bytes = Array.from(uint32Le(flag));
+  points.forEach(point => {
+    bytes.push(...int32Le(Math.round(point.latitude * 10000000)));
+    bytes.push(...int32Le(Math.round(point.longitude * 10000000)));
+  });
+  return Uint8Array.from(bytes);
+}
+
+export function decodeEv07bNoMotionAlert(value?: Uint8Array | null): Ev07bNoMotionAlertConfig | null {
+  const raw = decodeEv07bFlagMask(value);
+  if (raw === null) return null;
+
+  return {
+    enabled: (raw & EV07B_NO_MOTION_ENABLE_MASK) !== 0,
+    dial: (raw & EV07B_NO_MOTION_DIAL_MASK) !== 0,
+    staticPeriodSec: clampInt(raw & EV07B_NO_MOTION_PERIOD_MASK, 60, 36000),
+  };
+}
+
+export function encodeEv07bNoMotionAlert(config: Ev07bNoMotionAlertConfig): Uint8Array {
+  let raw = clampInt(config.staticPeriodSec, 60, 36000) & EV07B_NO_MOTION_PERIOD_MASK;
+  if (config.enabled) raw |= EV07B_NO_MOTION_ENABLE_MASK;
+  if (config.dial) raw |= EV07B_NO_MOTION_DIAL_MASK;
+  return uint32Le(raw);
+}
+
+export function decodeEv07bTiltAlert(value?: Uint8Array | null): Ev07bTiltAlertConfig | null {
+  const raw = decodeEv07bFlagMask(value);
+  if (raw === null) return null;
+
+  return {
+    enabled: (raw & EV07B_TILT_ENABLE_MASK) !== 0,
+    dial: (raw & EV07B_TILT_DIAL_MASK) !== 0,
+    angleDeg: clampInt((raw & EV07B_TILT_ANGLE_MASK) >>> 16, 30, 90),
+    durationSec: clampInt(raw & EV07B_TILT_DURATION_MASK, 10, 3600),
+  };
+}
+
+export function encodeEv07bTiltAlert(config: Ev07bTiltAlertConfig): Uint8Array {
+  let raw =
+    (clampInt(config.durationSec, 10, 3600) & EV07B_TILT_DURATION_MASK) |
+    ((clampInt(config.angleDeg, 30, 90) << 16) >>> 0);
+  if (config.enabled) raw |= EV07B_TILT_ENABLE_MASK;
+  if (config.dial) raw |= EV07B_TILT_DIAL_MASK;
+  return uint32Le(raw);
+}
+
+export function decodeEv07bFallDownAlert(value?: Uint8Array | null): Ev07bFallDownAlertConfig | null {
+  if (!value || value.length < 1) return null;
+
+  const raw = value[0];
+  return {
+    enabled: (raw & EV07B_FALL_DOWN_ENABLE_MASK) !== 0,
+    dial: (raw & EV07B_FALL_DOWN_DIAL_MASK) !== 0,
+    sensitivity: clampInt(raw & EV07B_FALL_DOWN_SENSITIVITY_MASK, 1, 9),
+  };
+}
+
+export function encodeEv07bFallDownAlert(config: Ev07bFallDownAlertConfig): Uint8Array {
+  let raw = clampInt(config.sensitivity, 1, 9) & EV07B_FALL_DOWN_SENSITIVITY_MASK;
+  if (config.enabled) raw |= EV07B_FALL_DOWN_ENABLE_MASK;
+  if (config.dial) raw |= EV07B_FALL_DOWN_DIAL_MASK;
+  return Uint8Array.from([raw]);
 }
 
 export function normalizeEv07bWorkdayMask(mask: number, enabled: boolean): number {

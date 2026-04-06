@@ -2,12 +2,20 @@ import {
   decodeEv07bAlarmClock,
   decodeEv07bAsciiSetting,
   decodeEv07bAuthorizedPhone,
+  decodeEv07bFallDownAlert,
   decodeEv07bFlagMask,
+  decodeEv07bGeoAlert,
+  decodeEv07bNoMotionAlert,
   decodeEv07bNoDisturb,
+  decodeEv07bTiltAlert,
   encodeEv07bAlarmClock,
   encodeEv07bAsciiSetting,
   encodeEv07bAuthorizedPhone,
+  encodeEv07bFallDownAlert,
+  encodeEv07bGeoAlert,
+  encodeEv07bNoMotionAlert,
   encodeEv07bNoDisturb,
+  encodeEv07bTiltAlert,
   hasEv07bFlag,
   normalizeEv07bWorkdayMask,
   toggleEv07bFlag,
@@ -144,5 +152,101 @@ describe('ev07bConfigCodec', () => {
     expect(hasEv07bFlag(decoded, 8)).toBe(true);
     expect(hasEv07bFlag(decoded, 31)).toBe(true);
     expect(toggleEv07bFlag(decoded ?? 0, 8)).toBe(0x80000000);
+  });
+
+  test('encodes and decodes no-motion alert payload', () => {
+    const encoded = encodeEv07bNoMotionAlert({
+      enabled: true,
+      dial: true,
+      staticPeriodSec: 900,
+    });
+
+    expect(Array.from(encoded)).toEqual(Array.from(u32le(0xc0000384)));
+    expect(decodeEv07bNoMotionAlert(encoded)).toEqual({
+      enabled: true,
+      dial: true,
+      staticPeriodSec: 900,
+    });
+  });
+
+  test('encodes and decodes tilt alert payload', () => {
+    const encoded = encodeEv07bTiltAlert({
+      enabled: true,
+      dial: false,
+      angleDeg: 60,
+      durationSec: 120,
+    });
+
+    expect(Array.from(encoded)).toEqual(Array.from(u32le(0x803c0078)));
+    expect(decodeEv07bTiltAlert(encoded)).toEqual({
+      enabled: true,
+      dial: false,
+      angleDeg: 60,
+      durationSec: 120,
+    });
+  });
+
+  test('encodes and decodes fall-down alert payload', () => {
+    const encoded = encodeEv07bFallDownAlert({
+      enabled: true,
+      dial: true,
+      sensitivity: 7,
+    });
+
+    expect(Array.from(encoded)).toEqual([0xc7]);
+    expect(decodeEv07bFallDownAlert(encoded)).toEqual({
+      enabled: true,
+      dial: true,
+      sensitivity: 7,
+    });
+  });
+
+  test('encodes and decodes circle geo alert payload', () => {
+    const encoded = encodeEv07bGeoAlert({
+      index: 2,
+      enabled: true,
+      direction: 'in',
+      type: 'circle',
+      radiusMeters: 150,
+      points: [{ latitude: 12.9716, longitude: 77.5946 }],
+    });
+    const decoded = decodeEv07bGeoAlert(encoded);
+
+    expect(decoded).toMatchObject({
+      index: 2,
+      enabled: true,
+      direction: 'in',
+      type: 'circle',
+      radiusMeters: 150,
+    });
+    expect(decoded?.points[0].latitude).toBeCloseTo(12.9716, 5);
+    expect(decoded?.points[0].longitude).toBeCloseTo(77.5946, 5);
+  });
+
+  test('encodes and decodes polygon geo alert payload', () => {
+    const encoded = encodeEv07bGeoAlert({
+      index: 1,
+      enabled: false,
+      direction: 'out',
+      type: 'polygon',
+      radiusMeters: 0,
+      points: [
+        { latitude: 12.97, longitude: 77.59 },
+        { latitude: 12.98, longitude: 77.6 },
+        { latitude: 12.99, longitude: 77.61 },
+      ],
+    });
+    const decoded = decodeEv07bGeoAlert(encoded);
+
+    expect(decoded).toMatchObject({
+      index: 1,
+      enabled: false,
+      direction: 'out',
+      type: 'polygon',
+      radiusMeters: 0,
+    });
+    expect(decoded?.points).toHaveLength(3);
+    expect(decoded?.points[2].latitude).toBeCloseTo(12.99, 5);
+    expect(decoded?.points[2].longitude).toBeCloseTo(77.61, 5);
   });
 });

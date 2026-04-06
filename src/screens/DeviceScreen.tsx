@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   View,
@@ -14,6 +14,12 @@ import { useBle } from '../bluetooth/BleProvider';
 import type { BleDiscoveredDevice } from '../bluetooth/types';
 import type { DeviceStackParamList } from '../types/navigation';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useAuth } from '../context/AuthContext';
+import {
+  findAssignedDeviceForBleDevice,
+  resolveDisplayedImei,
+  type SeniorAssignedDevice,
+} from '../utils/deviceAssignments';
 
 const contacts = [
   {
@@ -63,6 +69,12 @@ const medicines = [
 
 const DeviceScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<DeviceStackParamList>>();
+  const {
+    user,
+    isCaretaker,
+    selectedSenior,
+    getAssignedDevicesForSenior,
+  } = useAuth();
   const tabs = useMemo(
     () => [
       { id: 'devices', label: 'Devices' },
@@ -71,6 +83,9 @@ const DeviceScreen = () => {
   );
   const [activeTab, setActiveTab] = useState(tabs[0].id);
   const hasPurchased = true;
+  const [assignedDevices, setAssignedDevices] = useState<SeniorAssignedDevice[]>([]);
+  const [assignedDevicesLoading, setAssignedDevicesLoading] = useState(false);
+  const [assignedDevicesError, setAssignedDevicesError] = useState<string | null>(null);
 
   const {
     bleState,
@@ -85,6 +100,13 @@ const DeviceScreen = () => {
     connectToDevice,
     disconnect,
   } = useBle();
+
+  const activeSeniorId = useMemo(() => {
+    if (isCaretaker) {
+      return selectedSenior?.userId ?? null;
+    }
+    return user?.role === 'SENIOR' ? user.user_id : null;
+  }, [isCaretaker, selectedSenior?.userId, user?.role, user?.user_id]);
 
   const knownDevices: BleDiscoveredDevice[] = useMemo(() => {
     const map = new Map<string, BleDiscoveredDevice>();
@@ -106,6 +128,68 @@ const DeviceScreen = () => {
 
     return Array.from(map.values());
   }, [connectedDeviceIds, deviceIdentityById, devices]);
+
+  const loadAssignedDevices = useCallback(async () => {
+    if (!activeSeniorId) {
+      setAssignedDevices([]);
+      setAssignedDevicesLoading(false);
+      setAssignedDevicesError(
+        isCaretaker ? 'Select a senior profile first to view assigned devices.' : null,
+      );
+      return;
+    }
+
+    setAssignedDevicesLoading(true);
+    setAssignedDevicesError(null);
+
+    try {
+      const nextDevices = await getAssignedDevicesForSenior(activeSeniorId);
+      setAssignedDevices(nextDevices);
+    } catch (error) {
+      setAssignedDevices([]);
+      setAssignedDevicesError(
+        error instanceof Error ? error.message : 'Failed to load assigned devices.',
+      );
+    } finally {
+      setAssignedDevicesLoading(false);
+    }
+  }, [activeSeniorId, getAssignedDevicesForSenior, isCaretaker]);
+
+  useEffect(() => {
+    loadAssignedDevices();
+  }, [loadAssignedDevices]);
+
+  const visibleDevices = useMemo(
+    () =>
+      knownDevices
+        .map(device => ({
+          device,
+          assignedDevice: findAssignedDeviceForBleDevice(
+            device,
+            deviceIdentityById[device.id],
+            assignedDevices,
+          ),
+        }))
+        .filter(
+          (
+            item,
+          ): item is { device: BleDiscoveredDevice; assignedDevice: SeniorAssignedDevice } =>
+            item.assignedDevice !== null,
+        ),
+    [assignedDevices, deviceIdentityById, knownDevices],
+  );
+
+  const assignedImeisSummary = useMemo(() => {
+    const imeis = assignedDevices
+      .map(device => device.imei ?? device.serialNumber ?? null)
+      .filter((value): value is string => !!value);
+    return imeis.join(', ');
+  }, [assignedDevices]);
+
+  const otherScannedDevices = useMemo(() => {
+    const visibleIds = new Set(visibleDevices.map(item => item.device.id));
+    return knownDevices.filter(device => !visibleIds.has(device.id));
+  }, [knownDevices, visibleDevices]);
 
   const getStatusLabel = (device: BleDiscoveredDevice) => {
     const state = connectionStates[device.id];
@@ -281,12 +365,23 @@ const DeviceScreen = () => {
                 <Text style={styles.cardSubtitle}>
                   Link and manage nearby medical devices for the care plan.
                 </Text>
+                {activeSeniorId ? (
+                  <Text style={styles.cardSubtitle}>
+                    {assignedDevicesLoading
+                      ? 'Loading assigned devices...'
+                      : `Assigned devices: ${assignedDevices.length}`}
+                  </Text>
+                ) : null}
                 <TouchableOpacity
-                  style={styles.primaryButton}
+                  style={[
+                    styles.primaryButton,
+                    !activeSeniorId ? styles.primaryButtonDisabled : null,
+                  ]}
                   onPress={() => {
                     if (isScanning) stopScan();
                     else startScan();
                   }}
+                  disabled={!activeSeniorId}
                 >
                   {isScanning ? (
                     <ActivityIndicator color="#FFFFFF" />
@@ -302,30 +397,38 @@ const DeviceScreen = () => {
                   <Text style={styles.warningText}>Bluetooth is not powered on.</Text>
                 ) : null}
 
+                {assignedDevicesError ? <Text style={styles.warningText}>{assignedDevicesError}</Text> : null}
                 {scanError ? <Text style={styles.warningText}>{scanError}</Text> : null}
 
-                {knownDevices.length === 0 && !isScanning ? (
-                  <Text style={styles.cardSubtitle}>(No BLE devices found yet.)</Text>
+                {!assignedDevicesLoading && activeSeniorId && assignedDevices.length === 0 ? (
+                  <Text style={styles.cardSubtitle}>(No devices are assigned to this senior yet.)</Text>
                 ) : null}
 
-                {knownDevices.slice(0, 12).map(device => {
+                {!assignedDevicesLoading && assignedDevices.length > 0 && visibleDevices.length === 0 ? (
+                  <Text style={styles.cardSubtitle}>
+                    {assignedImeisSummary
+                      ? `No assigned device found nearby yet. Expected IMEI: ${assignedImeisSummary}`
+                      : 'No assigned device found nearby yet.'}
+                  </Text>
+                ) : null}
+
+                {visibleDevices.slice(0, 12).map(({ device, assignedDevice }) => {
                   const state = connectionStates[device.id] ?? 'disconnected';
                   const isConnected = state === 'connected';
                   const isBusy = state === 'connecting' || state === 'disconnecting';
                   const identity = deviceIdentityById[device.id];
+                  const displayImei = resolveDisplayedImei(identity, assignedDevice);
 
                   return (
                     <View key={device.id} style={styles.deviceRow}>
                       <Icon name="radio" size={20} color="#F28C28" />
                       <View style={styles.deviceInfo}>
                         <Text style={styles.deviceName}>
-                          {device.name ?? device.localName ?? 'Unknown device'}
+                          {assignedDevice.name ?? device.name ?? device.localName ?? 'Unknown device'}
                         </Text>
                         <Text style={styles.deviceStatus}>{getStatusLabel(device)}</Text>
                         <Text style={styles.deviceStatus}>
-                          {identity?.serialNumber
-                            ? `IMEI/Serial: ${identity.serialNumber}`
-                            : 'IMEI/Serial: —'}
+                          {displayImei ? `IMEI: ${displayImei}` : 'IMEI: —'}
                         </Text>
                         {identity?.batteryLevel != null ? (
                           <Text style={styles.deviceStatus}>Battery: {identity.batteryLevel}%</Text>
@@ -355,7 +458,8 @@ const DeviceScreen = () => {
                           onPress={() => {
                             navigation.navigate('DeviceDetail', {
                               deviceId: device.id,
-                              deviceName: device.name ?? device.localName ?? 'Device',
+                              deviceName: assignedDevice.name ?? device.name ?? device.localName ?? 'Device',
+                              assignedImei: displayImei,
                             });
                           }}
                         >
@@ -365,6 +469,74 @@ const DeviceScreen = () => {
                     </View>
                   );
                 })}
+
+                {otherScannedDevices.length > 0 ? (
+                  <>
+                    <View style={styles.sectionDivider} />
+                    <Text style={styles.sectionTitle}>Other Scanned Devices</Text>
+                    <Text style={styles.sectionSubtitle}>
+                      Devices found nearby that are not in the assigned-device list.
+                    </Text>
+
+                    {otherScannedDevices.slice(0, 12).map(device => {
+                      const state = connectionStates[device.id] ?? 'disconnected';
+                      const isConnected = state === 'connected';
+                      const isBusy = state === 'connecting' || state === 'disconnecting';
+                      const identity = deviceIdentityById[device.id];
+                      const displayImei = resolveDisplayedImei(identity);
+
+                      return (
+                        <View key={`other-${device.id}`} style={styles.deviceRow}>
+                          <Icon name="radio" size={20} color="#8B7F74" />
+                          <View style={styles.deviceInfo}>
+                            <Text style={styles.deviceName}>
+                              {device.name ?? device.localName ?? 'Unknown device'}
+                            </Text>
+                            <Text style={styles.deviceStatus}>{getStatusLabel(device)}</Text>
+                            <Text style={styles.deviceStatus}>
+                              {displayImei ? `IMEI: ${displayImei}` : 'IMEI: —'}
+                            </Text>
+                            {identity?.batteryLevel != null ? (
+                              <Text style={styles.deviceStatus}>Battery: {identity.batteryLevel}%</Text>
+                            ) : null}
+                            {identity?.firmwareRevision ? (
+                              <Text style={styles.deviceStatus}>
+                                FW: {identity.firmwareRevision}
+                              </Text>
+                            ) : null}
+                          </View>
+                          <View style={styles.deviceActions}>
+                            <TouchableOpacity
+                              style={[
+                                styles.linkButton,
+                                isConnected ? styles.linkButtonSecondary : null,
+                                isBusy ? { opacity: 0.6 } : null,
+                              ]}
+                              onPress={() => (isConnected ? disconnect(device.id) : connectToDevice(device.id))}
+                              disabled={isBusy}
+                            >
+                              <Text style={styles.linkButtonText}>
+                                {isConnected ? 'Disconnect' : isBusy ? 'Working...' : 'Connect'}
+                              </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={styles.secondaryChip}
+                              onPress={() => {
+                                navigation.navigate('DeviceDetail', {
+                                  deviceId: device.id,
+                                  deviceName: device.name ?? device.localName ?? 'Device',
+                                  assignedImei: displayImei,
+                                });
+                              }}
+                            >
+                              <Text style={styles.secondaryChipText}>Manage</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </>
+                ) : null}
               </View>
             ) : null}
           </>
@@ -631,6 +803,23 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     lineHeight: 18,
   },
+  sectionDivider: {
+    height: 1,
+    backgroundColor: '#EFE7DD',
+    marginVertical: 16,
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#2E2A27',
+    marginBottom: 4,
+  },
+  sectionSubtitle: {
+    fontSize: 12,
+    color: '#7A726A',
+    marginBottom: 12,
+    lineHeight: 17,
+  },
   primaryButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -639,6 +828,9 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     paddingVertical: 12,
     marginBottom: 16,
+  },
+  primaryButtonDisabled: {
+    opacity: 0.6,
   },
   primaryButtonText: {
     color: '#FFFFFF',

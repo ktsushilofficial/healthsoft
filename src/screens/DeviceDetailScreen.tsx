@@ -5,13 +5,17 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useBle } from '../bluetooth/BleProvider';
-import type { BleServiceSummary } from '../bluetooth/types';
+import type { BleGeoPoint, BleServiceSummary } from '../bluetooth/types';
 import { asciiBytes, s8, u8, u24le, u32le } from '../bluetooth/ev07bProtocol';
 import {
   encodeEv07bAlarmClock,
   encodeEv07bAuthorizedPhone,
   encodeEv07bAsciiSetting,
+  encodeEv07bFallDownAlert,
+  encodeEv07bGeoAlert,
+  encodeEv07bNoMotionAlert,
   encodeEv07bNoDisturb,
+  encodeEv07bTiltAlert,
   EV07B_ENABLE_CONTROL_FLAGS,
   EV07B_VOICE_PROMPT_FLAGS,
   EV07B_WEEKDAY_OPTIONS,
@@ -22,12 +26,22 @@ import {
 type RouteParams = {
   deviceId: string;
   deviceName?: string | null;
+  assignedImei?: string | null;
 };
 
 const WORKING_MODES = ['Normal', 'Power Save', 'Sleep'];
 const WORKING_MODE_CODES = [1, 2, 3];
 const ALARM_SLOT_OPTIONS = [0, 1, 2, 3];
 const SMS_URL_MAX_LENGTH = 40;
+const GEO_ALERT_DIRECTIONS = [
+  { value: 'out' as const, label: 'Exit Zone' },
+  { value: 'in' as const, label: 'Enter Zone' },
+];
+const GEO_ALERT_TYPES = [
+  { value: 'circle' as const, label: 'Circle' },
+  { value: 'polygon' as const, label: 'Polygon' },
+];
+const SHOW_ADDITIONAL_CONFIG_SECTIONS = false;
 
 function clampInt(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
@@ -64,10 +78,83 @@ function formatFlagCount(
   return `${enabled}/${definitions.length} enabled`;
 }
 
+function formatGeoCoordinate(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return '—';
+  return value.toFixed(5);
+}
+
+function formatGeoAlertSummary(identity: {
+  geoAlertEnabled?: boolean;
+  geoAlertDirection?: 'out' | 'in';
+  geoAlertType?: 'circle' | 'polygon';
+  geoAlertRadiusMeters?: number;
+  geoAlertPoints?: BleGeoPoint[];
+} | undefined): string {
+  if (!identity?.geoAlertType) return '—';
+  const firstPoint = identity.geoAlertPoints?.[0];
+  const state = identity.geoAlertEnabled ? 'On' : 'Off';
+  const direction = identity.geoAlertDirection === 'in' ? 'Enter' : 'Exit';
+  if (identity.geoAlertType === 'polygon') {
+    return `${state} • ${direction} • Polygon • ${identity.geoAlertPoints?.length ?? 0} points`;
+  }
+  return firstPoint
+    ? `${state} • ${direction} • ${identity.geoAlertRadiusMeters ?? 0}m • ${formatGeoCoordinate(firstPoint.latitude)}, ${formatGeoCoordinate(firstPoint.longitude)}`
+    : `${state} • ${direction} • Circle`;
+}
+
+function formatFallDownSummary(identity: {
+  fallDownAlertEnabled?: boolean;
+  fallDownAlertDial?: boolean;
+  fallDownAlertSensitivity?: number;
+} | undefined): string {
+  if (identity?.fallDownAlertSensitivity === undefined) return '—';
+  return `${identity.fallDownAlertEnabled ? 'On' : 'Off'} • Dial ${identity.fallDownAlertDial ? 'On' : 'Off'} • Sensitivity ${identity.fallDownAlertSensitivity}`;
+}
+
+function formatNoMotionSummary(identity: {
+  noMotionAlertEnabled?: boolean;
+  noMotionAlertDial?: boolean;
+  noMotionAlertStaticPeriodSec?: number;
+} | undefined): string {
+  if (identity?.noMotionAlertStaticPeriodSec === undefined) return '—';
+  return `${identity.noMotionAlertEnabled ? 'On' : 'Off'} • Dial ${identity.noMotionAlertDial ? 'On' : 'Off'} • ${identity.noMotionAlertStaticPeriodSec}s`;
+}
+
+function formatTiltSummary(identity: {
+  tiltAlertEnabled?: boolean;
+  tiltAlertDial?: boolean;
+  tiltAlertAngleDeg?: number;
+  tiltAlertDurationSec?: number;
+} | undefined): string {
+  if (identity?.tiltAlertAngleDeg === undefined || identity?.tiltAlertDurationSec === undefined) return '—';
+  return `${identity.tiltAlertEnabled ? 'On' : 'Off'} • Dial ${identity.tiltAlertDial ? 'On' : 'Off'} • ${identity.tiltAlertAngleDeg}deg • ${identity.tiltAlertDurationSec}s`;
+}
+
+function pointsToMultiline(points?: BleGeoPoint[]): string {
+  if (!points || points.length === 0) return '';
+  return points.map(point => `${point.latitude}, ${point.longitude}`).join('\n');
+}
+
+function parseGeoPointsInput(input: string): BleGeoPoint[] {
+  return input
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => {
+      const [latitudeRaw, longitudeRaw] = line.split(',').map(part => part.trim());
+      const latitude = Number(latitudeRaw);
+      const longitude = Number(longitudeRaw);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        throw new Error('Geo fence polygon points must use "latitude, longitude" on each line');
+      }
+      return { latitude, longitude };
+    });
+}
+
 const DeviceDetailScreen = () => {
   const navigation = useNavigation();
   const route = useRoute();
-  const { deviceId, deviceName } = (route.params as RouteParams) ?? {};
+  const { deviceId, deviceName, assignedImei } = (route.params as RouteParams) ?? {};
 
   const {
     connectionStates,
@@ -122,6 +209,25 @@ const DeviceDetailScreen = () => {
   const [ndStartMin, setNdStartMin] = useState('0');
   const [ndEndHour, setNdEndHour] = useState('7');
   const [ndEndMin, setNdEndMin] = useState('0');
+  // Safety alerts
+  const [fallDownAlertEnabled, setFallDownAlertEnabled] = useState(false);
+  const [fallDownAlertDial, setFallDownAlertDial] = useState(false);
+  const [fallDownAlertSensitivity, setFallDownAlertSensitivity] = useState('5');
+  const [noMotionAlertEnabled, setNoMotionAlertEnabled] = useState(false);
+  const [noMotionAlertDial, setNoMotionAlertDial] = useState(false);
+  const [noMotionAlertStaticPeriodSec, setNoMotionAlertStaticPeriodSec] = useState('300');
+  const [tiltAlertEnabled, setTiltAlertEnabled] = useState(false);
+  const [tiltAlertDial, setTiltAlertDial] = useState(false);
+  const [tiltAlertAngleDeg, setTiltAlertAngleDeg] = useState('45');
+  const [tiltAlertDurationSec, setTiltAlertDurationSec] = useState('30');
+  const [geoAlertEnabled, setGeoAlertEnabled] = useState(false);
+  const [geoAlertDirection, setGeoAlertDirection] = useState<'out' | 'in'>('out');
+  const [geoAlertType, setGeoAlertType] = useState<'circle' | 'polygon'>('circle');
+  const [geoAlertIndex, setGeoAlertIndex] = useState('0');
+  const [geoAlertRadiusMeters, setGeoAlertRadiusMeters] = useState('100');
+  const [geoAlertLatitude, setGeoAlertLatitude] = useState('');
+  const [geoAlertLongitude, setGeoAlertLongitude] = useState('');
+  const [geoAlertPointsInput, setGeoAlertPointsInput] = useState('');
   // Enable Control bitmask
   const [enableControl, setEnableControl] = useState(0);
   // Volumes
@@ -148,6 +254,7 @@ const DeviceDetailScreen = () => {
     reporting: false,
     audio: false,
     alarm: false,
+    alerts: false,
     features: false,
     gatt: false,
     data: false,
@@ -217,6 +324,24 @@ const DeviceDetailScreen = () => {
     initOnce('ndStartMin',      identity.noDisturbStart !== undefined ? String(identity.noDisturbStart % 60) : undefined, setNdStartMin);
     initOnce('ndEndHour',       identity.noDisturbEnd !== undefined ? String(Math.floor(identity.noDisturbEnd / 60)) : undefined, setNdEndHour);
     initOnce('ndEndMin',        identity.noDisturbEnd !== undefined ? String(identity.noDisturbEnd % 60) : undefined, setNdEndMin);
+    initOnce('fallDownAlertEnabled', identity.fallDownAlertEnabled, setFallDownAlertEnabled);
+    initOnce('fallDownAlertDial', identity.fallDownAlertDial, setFallDownAlertDial);
+    initOnce('fallDownAlertSensitivity', identity.fallDownAlertSensitivity !== undefined ? String(identity.fallDownAlertSensitivity) : undefined, setFallDownAlertSensitivity);
+    initOnce('noMotionAlertEnabled', identity.noMotionAlertEnabled, setNoMotionAlertEnabled);
+    initOnce('noMotionAlertDial', identity.noMotionAlertDial, setNoMotionAlertDial);
+    initOnce('noMotionAlertStaticPeriodSec', identity.noMotionAlertStaticPeriodSec !== undefined ? String(identity.noMotionAlertStaticPeriodSec) : undefined, setNoMotionAlertStaticPeriodSec);
+    initOnce('tiltAlertEnabled', identity.tiltAlertEnabled, setTiltAlertEnabled);
+    initOnce('tiltAlertDial', identity.tiltAlertDial, setTiltAlertDial);
+    initOnce('tiltAlertAngleDeg', identity.tiltAlertAngleDeg !== undefined ? String(identity.tiltAlertAngleDeg) : undefined, setTiltAlertAngleDeg);
+    initOnce('tiltAlertDurationSec', identity.tiltAlertDurationSec !== undefined ? String(identity.tiltAlertDurationSec) : undefined, setTiltAlertDurationSec);
+    initOnce('geoAlertEnabled', identity.geoAlertEnabled, setGeoAlertEnabled);
+    initOnce('geoAlertDirection', identity.geoAlertDirection, setGeoAlertDirection);
+    initOnce('geoAlertType', identity.geoAlertType, setGeoAlertType);
+    initOnce('geoAlertIndex', identity.geoAlertIndex !== undefined ? String(identity.geoAlertIndex) : undefined, setGeoAlertIndex);
+    initOnce('geoAlertRadiusMeters', identity.geoAlertRadiusMeters !== undefined ? String(identity.geoAlertRadiusMeters) : undefined, setGeoAlertRadiusMeters);
+    initOnce('geoAlertLatitude', identity.geoAlertPoints?.[0] ? String(identity.geoAlertPoints[0].latitude) : undefined, setGeoAlertLatitude);
+    initOnce('geoAlertLongitude', identity.geoAlertPoints?.[0] ? String(identity.geoAlertPoints[0].longitude) : undefined, setGeoAlertLongitude);
+    initOnce('geoAlertPointsInput', pointsToMultiline(identity.geoAlertPoints) || undefined, setGeoAlertPointsInput);
     initOnce('enableControl',   identity.enableControl,      setEnableControl);
     initOnce('ringtoneVol',     identity.ringtoneVolume !== undefined ? String(identity.ringtoneVolume) : undefined, setRingtoneVol);
     initOnce('micVol',          identity.micVolume !== undefined ? String(identity.micVolume) : undefined, setMicVol);
@@ -238,6 +363,7 @@ const DeviceDetailScreen = () => {
           // Writable config
           0x06, 0x07, 0x09, 0x0a, 0x0b, 0x0c, 0x0e, 0x0f,
           0x10, 0x11, 0x12, 0x13, 0x14, 0x16, 0x17, 0x18, 0x19,
+          0x51, 0x53, 0x55, 0x56,
           0x1a, 0x1b,
           // SOS + Network
           0x30, 0x40, 0x41, 0x42, 0x43, 0x44,
@@ -367,6 +493,75 @@ const DeviceDetailScreen = () => {
         }),
       });
 
+      // Fall / no-motion / tilt alerts
+      writes.push({
+        key: 0x53,
+        value: encodeEv07bNoMotionAlert({
+          enabled: noMotionAlertEnabled,
+          dial: noMotionAlertDial,
+          staticPeriodSec: clampInt(Number(noMotionAlertStaticPeriodSec), 60, 36000),
+        }),
+      });
+      writes.push({
+        key: 0x55,
+        value: encodeEv07bTiltAlert({
+          enabled: tiltAlertEnabled,
+          dial: tiltAlertDial,
+          angleDeg: clampInt(Number(tiltAlertAngleDeg), 30, 90),
+          durationSec: clampInt(Number(tiltAlertDurationSec), 10, 3600),
+        }),
+      });
+      writes.push({
+        key: 0x56,
+        value: encodeEv07bFallDownAlert({
+          enabled: fallDownAlertEnabled,
+          dial: fallDownAlertDial,
+          sensitivity: clampInt(Number(fallDownAlertSensitivity), 1, 9),
+        }),
+      });
+
+      // Geo fence (circle or polygon). We only send this block if the user or device already has geo data.
+      const shouldWriteGeoAlert =
+        geoAlertEnabled ||
+        geoAlertLatitude.trim().length > 0 ||
+        geoAlertLongitude.trim().length > 0 ||
+        geoAlertPointsInput.trim().length > 0 ||
+        !!identity?.geoAlertEnabled ||
+        !!identity?.geoAlertPoints?.length;
+      if (shouldWriteGeoAlert) {
+        let geoPoints: BleGeoPoint[];
+        if (geoAlertType === 'polygon') {
+          geoPoints = geoAlertPointsInput.trim()
+            ? parseGeoPointsInput(geoAlertPointsInput)
+            : (identity?.geoAlertPoints ?? []);
+          if (geoPoints.length < 3) {
+            throw new Error('Geo Fence polygon needs at least 3 points');
+          }
+        } else {
+          const latitude = Number(geoAlertLatitude);
+          const longitude = Number(geoAlertLongitude);
+          if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+            geoPoints = [{ latitude, longitude }];
+          } else if (identity?.geoAlertPoints?.[0]) {
+            geoPoints = [identity.geoAlertPoints[0]];
+          } else {
+            throw new Error('Geo Fence latitude and longitude are required');
+          }
+        }
+
+        writes.push({
+          key: 0x51,
+          value: encodeEv07bGeoAlert({
+            index: clampInt(Number(geoAlertIndex), 0, 15),
+            enabled: geoAlertEnabled,
+            direction: geoAlertDirection,
+            type: geoAlertType,
+            radiusMeters: clampInt(Number(geoAlertRadiusMeters), 0, 65535),
+            points: geoPoints,
+          }),
+        });
+      }
+
       writes.push({
         key: 0x0f,
         value: u32le(enableControl >>> 0),
@@ -425,6 +620,10 @@ const DeviceDetailScreen = () => {
     serverHostInput, serverPortInput, uploadIntervalInput,
     workingMode, alarmIndex, alarmEnabled, alarmHour, alarmMinute, alarmWorkdayMask, alarmDurationSec, alarmRing,
     noDisturbEnabled, ndStartHour, ndStartMin, ndEndHour, ndEndMin,
+    fallDownAlertEnabled, fallDownAlertDial, fallDownAlertSensitivity,
+    noMotionAlertEnabled, noMotionAlertDial, noMotionAlertStaticPeriodSec,
+    tiltAlertEnabled, tiltAlertDial, tiltAlertAngleDeg, tiltAlertDurationSec,
+    geoAlertEnabled, geoAlertDirection, geoAlertType, geoAlertIndex, geoAlertRadiusMeters, geoAlertLatitude, geoAlertLongitude, geoAlertPointsInput,
     enableControl, ringtoneVol, micVol, speakerVol,
     whitelistDevice, smsGpsUrl, smsWifiLbsUrl, voicePromptMask, mileageInput, identity,
   ]);
@@ -479,7 +678,7 @@ const DeviceDetailScreen = () => {
           expanded={expandedSections.identity}
           onToggle={() => toggleSection('identity')}
         >
-          <DetailRow label="IMEI" value={identity?.imei || '—'} />
+          <DetailRow label="IMEI" value={identity?.imei || assignedImei || '—'} />
           <DetailRow label="ICCID" value={identity?.iccid || '—'} />
           <DetailRow label="Serial" value={identity?.serialNumber || '—'} />
           <DetailRow label="Model" value={identity?.model || '—'} />
@@ -515,6 +714,10 @@ const DeviceDetailScreen = () => {
               ? `${identity.noDisturbEnabled ? 'On' : 'Off'} • ${formatTime(Math.floor(identity.noDisturbStart / 60), identity.noDisturbStart % 60)}-${formatTime(Math.floor(identity.noDisturbEnd / 60), identity.noDisturbEnd % 60)}`
               : '—'
           } />
+          <DetailRow label="Fall Alarm" value={formatFallDownSummary(identity)} />
+          <DetailRow label="No Motion" value={formatNoMotionSummary(identity)} />
+          <DetailRow label="Tilt Alarm" value={formatTiltSummary(identity)} />
+          <DetailRow label="Geo Fence" value={formatGeoAlertSummary(identity)} />
           <DetailRow label="Feature Flags" value={formatFlagCount(identity?.enableControl, EV07B_ENABLE_CONTROL_FLAGS)} />
           <DetailRow label="Voice Prompts" value={formatFlagCount(identity?.voicePromptMask, EV07B_VOICE_PROMPT_FLAGS)} />
           <DetailRow label="SMS GPS URL" value={identity?.smsGpsUrl || '—'} />
@@ -532,279 +735,398 @@ const DeviceDetailScreen = () => {
           <DetailRow label="Mileage" value={identity?.initMileage != null ? `${identity.initMileage}m` : '—'} />
         </CollapsibleSection>
 
-        {/* ── General Settings ── */}
+        {SHOW_ADDITIONAL_CONFIG_SECTIONS ? (
+          <>
+            {/* ── General Settings ── */}
+            <CollapsibleSection
+              title="General Settings"
+              icon="settings"
+              expanded={expandedSections.general}
+              onToggle={() => toggleSection('general')}
+            >
+              <Text style={styles.fieldLabel}>Device Name (max 19 chars)</Text>
+              <TextInput style={styles.input} value={deviceNameInput} onChangeText={setDeviceNameInput}
+                placeholder="EV07BA_xxxx" maxLength={19} />
+
+              <Text style={styles.fieldLabel}>Timezone (15-min units, e.g. 22 = +5:30)</Text>
+              <TextInput style={styles.input} value={timezoneInput} onChangeText={setTimezoneInput}
+                keyboardType="number-pad" placeholder="22" />
+
+              <Text style={styles.fieldLabel}>Working Mode</Text>
+              <View style={styles.modeRow}>
+                {WORKING_MODES.map((label, i) => (
+                  <TouchableOpacity
+                    key={i}
+                    style={[styles.modeChip, workingMode === i && styles.modeChipActive]}
+                    onPress={() => setWorkingMode(i)}
+                  >
+                    <Text style={[styles.modeChipText, workingMode === i && styles.modeChipTextActive]}>{label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.fieldLabel}>Initialize Mileage (meters)</Text>
+              <TextInput style={styles.input} value={mileageInput} onChangeText={setMileageInput}
+                keyboardType="number-pad" placeholder="0" />
+            </CollapsibleSection>
+
+            {/* ── SOS Numbers ── */}
+            <CollapsibleSection
+              title="SOS / Authorized Numbers"
+              icon="call"
+              expanded={expandedSections.sos}
+              onToggle={() => toggleSection('sos')}
+            >
+              <Text style={styles.groupLabel}>SOS Slot 1</Text>
+              <TextInput style={styles.input} value={sosNumber} onChangeText={setSosNumber}
+                placeholder="+919500001488" keyboardType="phone-pad" />
+              <Text style={styles.fieldLabel}>Slot ID (0–9)</Text>
+              <TextInput style={styles.input} value={sosSlot} onChangeText={setSosSlot}
+                keyboardType="number-pad" placeholder="0" maxLength={1} />
+
+              <View style={styles.divider} />
+              <Text style={styles.groupLabel}>SOS Slot 2</Text>
+              <TextInput style={styles.input} value={sosNumber2} onChangeText={setSosNumber2}
+                placeholder="+910000000000" keyboardType="phone-pad" />
+              <Text style={styles.fieldLabel}>Slot ID</Text>
+              <TextInput style={styles.input} value={sosSlot2} onChangeText={setSosSlot2}
+                keyboardType="number-pad" placeholder="1" maxLength={1} />
+
+              <View style={styles.divider} />
+              <Text style={styles.groupLabel}>SOS Slot 3</Text>
+              <TextInput style={styles.input} value={sosNumber3} onChangeText={setSosNumber3}
+                placeholder="+910000000000" keyboardType="phone-pad" />
+              <Text style={styles.fieldLabel}>Slot ID</Text>
+              <TextInput style={styles.input} value={sosSlot3} onChangeText={setSosSlot3}
+                keyboardType="number-pad" placeholder="2" maxLength={1} />
+            </CollapsibleSection>
+
+            {/* ── Cellular / APN ── */}
+            <CollapsibleSection
+              title="Cellular / APN"
+              icon="cellular"
+              expanded={expandedSections.cellular}
+              onToggle={() => toggleSection('cellular')}
+            >
+              <Text style={styles.fieldLabel}>APN</Text>
+              <TextInput style={styles.input} value={apnInput} onChangeText={setApnInput}
+                placeholder="airtelfun.com" autoCapitalize="none" autoCorrect={false} />
+              <Text style={styles.fieldLabel}>APN Username</Text>
+              <TextInput style={styles.input} value={apnUserInput} onChangeText={setApnUserInput}
+                placeholder="(leave empty if none)" autoCapitalize="none" autoCorrect={false} />
+              <Text style={styles.fieldLabel}>APN Password</Text>
+              <TextInput style={styles.input} value={apnPassInput} onChangeText={setApnPassInput}
+                placeholder="(leave empty if none)" autoCapitalize="none" autoCorrect={false} secureTextEntry />
+            </CollapsibleSection>
+
+            {/* ── Tracking Server ── */}
+            <CollapsibleSection
+              title="Tracking Server"
+              icon="cloud-upload"
+              expanded={expandedSections.server}
+              onToggle={() => toggleSection('server')}
+            >
+              <Text style={styles.fieldLabel}>Server Address</Text>
+              <TextInput style={styles.input} value={serverHostInput} onChangeText={setServerHostInput}
+                placeholder="tracking.example.com" autoCapitalize="none" autoCorrect={false} />
+              <Text style={styles.fieldLabel}>Server Port</Text>
+              <TextInput style={styles.input} value={serverPortInput} onChangeText={setServerPortInput}
+                placeholder="5001" keyboardType="number-pad" maxLength={5} />
+            </CollapsibleSection>
+
+            {/* ── Reporting ── */}
+            <CollapsibleSection
+              title="Reporting"
+              icon="timer"
+              expanded={expandedSections.reporting}
+              onToggle={() => toggleSection('reporting')}
+            >
+              <Text style={styles.fieldLabel}>Auto Upload Interval (seconds, 0 = unchanged)</Text>
+              <TextInput style={styles.input} value={uploadIntervalInput} onChangeText={setUploadIntervalInput}
+                placeholder="60" keyboardType="number-pad" />
+            </CollapsibleSection>
+
+            {/* ── Audio / Volume ── */}
+            <CollapsibleSection
+              title="Audio & Volume"
+              icon="volume-high"
+              expanded={expandedSections.audio}
+              onToggle={() => toggleSection('audio')}
+            >
+              <Text style={styles.fieldLabel}>Ring-Tone Volume (0–100)</Text>
+              <TextInput style={styles.input} value={ringtoneVol} onChangeText={setRingtoneVol}
+                keyboardType="number-pad" placeholder="100" maxLength={3} />
+              <Text style={styles.fieldLabel}>Mic Volume (0–15)</Text>
+              <TextInput style={styles.input} value={micVol} onChangeText={setMicVol}
+                keyboardType="number-pad" placeholder="10" maxLength={2} />
+              <Text style={styles.fieldLabel}>Speaker Volume (0–100)</Text>
+              <TextInput style={styles.input} value={speakerVol} onChangeText={setSpeakerVol}
+                keyboardType="number-pad" placeholder="100" maxLength={3} />
+            </CollapsibleSection>
+
+            {/* ── Alarm & No Disturb ── */}
+            <CollapsibleSection
+              title="Alarm & Do Not Disturb"
+              icon="alarm"
+              expanded={expandedSections.alarm}
+              onToggle={() => toggleSection('alarm')}
+            >
+              <Text style={styles.groupLabel}>Alarm Clock</Text>
+              <ToggleRow label="Alarm Enabled" value={alarmEnabled} onValueChange={setAlarmEnabled} />
+              <Text style={styles.fieldLabel}>Alarm Slot</Text>
+              <View style={styles.modeRow}>
+                {ALARM_SLOT_OPTIONS.map(slot => (
+                  <TouchableOpacity
+                    key={slot}
+                    style={[styles.modeChip, alarmIndex === slot && styles.modeChipActive]}
+                    onPress={() => setAlarmIndex(slot)}
+                  >
+                    <Text style={[styles.modeChipText, alarmIndex === slot && styles.modeChipTextActive]}>{slot}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <View style={styles.timeRow}>
+                <View style={styles.timeField}>
+                  <Text style={styles.fieldLabel}>Hour (0–23)</Text>
+                  <TextInput style={styles.input} value={alarmHour} onChangeText={setAlarmHour}
+                    keyboardType="number-pad" placeholder="8" maxLength={2} />
+                </View>
+                <View style={styles.timeField}>
+                  <Text style={styles.fieldLabel}>Minute (0–59)</Text>
+                  <TextInput style={styles.input} value={alarmMinute} onChangeText={setAlarmMinute}
+                    keyboardType="number-pad" placeholder="0" maxLength={2} />
+                </View>
+              </View>
+              <Text style={styles.fieldLabel}>Repeat Days</Text>
+              <View style={styles.weekdayRow}>
+                {EV07B_WEEKDAY_OPTIONS.map(option => {
+                  const isActive = (alarmWorkdayMask & (1 << option.bit)) !== 0;
+                  return (
+                    <TouchableOpacity
+                      key={option.key}
+                      style={[styles.weekdayChip, isActive && styles.weekdayChipActive]}
+                      onPress={() => toggleAlarmWorkdayBit(option.bit)}
+                    >
+                      <Text style={[styles.weekdayChipText, isActive && styles.weekdayChipTextActive]}>
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              <Text style={styles.helperText}>
+                If no day is selected, the app saves this as an everyday alarm so the enable flag sticks on device firmware.
+              </Text>
+              <View style={styles.timeRow}>
+                <View style={styles.timeField}>
+                  <Text style={styles.fieldLabel}>Reminder Duration (1–120 sec)</Text>
+                  <TextInput style={styles.input} value={alarmDurationSec} onChangeText={setAlarmDurationSec}
+                    keyboardType="number-pad" placeholder="30" maxLength={3} />
+                </View>
+                <View style={styles.timeField}>
+                  <Text style={styles.fieldLabel}>Ringtone (1–10)</Text>
+                  <TextInput style={styles.input} value={alarmRing} onChangeText={setAlarmRing}
+                    keyboardType="number-pad" placeholder="1" maxLength={2} />
+                </View>
+              </View>
+
+              <View style={styles.divider} />
+              <Text style={styles.groupLabel}>Do Not Disturb</Text>
+              <ToggleRow label="Enabled" value={noDisturbEnabled} onValueChange={setNoDisturbEnabled} />
+              <View style={styles.timeRow}>
+                <View style={styles.timeField}>
+                  <Text style={styles.fieldLabel}>Start Hour</Text>
+                  <TextInput style={styles.input} value={ndStartHour} onChangeText={setNdStartHour}
+                    keyboardType="number-pad" placeholder="22" maxLength={2} />
+                </View>
+                <View style={styles.timeField}>
+                  <Text style={styles.fieldLabel}>Start Min</Text>
+                  <TextInput style={styles.input} value={ndStartMin} onChangeText={setNdStartMin}
+                    keyboardType="number-pad" placeholder="0" maxLength={2} />
+                </View>
+              </View>
+              <View style={styles.timeRow}>
+                <View style={styles.timeField}>
+                  <Text style={styles.fieldLabel}>End Hour</Text>
+                  <TextInput style={styles.input} value={ndEndHour} onChangeText={setNdEndHour}
+                    keyboardType="number-pad" placeholder="7" maxLength={2} />
+                </View>
+                <View style={styles.timeField}>
+                  <Text style={styles.fieldLabel}>End Min</Text>
+                  <TextInput style={styles.input} value={ndEndMin} onChangeText={setNdEndMin}
+                    keyboardType="number-pad" placeholder="0" maxLength={2} />
+                </View>
+              </View>
+            </CollapsibleSection>
+          </>
+        ) : null}
+
+        {/* ── Safety Alerts ── */}
         <CollapsibleSection
-          title="General Settings"
-          icon="settings"
-          expanded={expandedSections.general}
-          onToggle={() => toggleSection('general')}
+          title="Safety Alerts"
+          icon="warning"
+          expanded={expandedSections.alerts}
+          onToggle={() => toggleSection('alerts')}
         >
-          <Text style={styles.fieldLabel}>Device Name (max 19 chars)</Text>
-          <TextInput style={styles.input} value={deviceNameInput} onChangeText={setDeviceNameInput}
-            placeholder="EV07BA_xxxx" maxLength={19} />
+          <Text style={styles.groupLabel}>Fall Alarm</Text>
+          <ToggleRow label="Enabled" value={fallDownAlertEnabled} onValueChange={setFallDownAlertEnabled} />
+          <ToggleRow label="Dial Authorized Number" value={fallDownAlertDial} onValueChange={setFallDownAlertDial} />
+          <Text style={styles.fieldLabel}>Sensitivity (1-9)</Text>
+          <TextInput style={styles.input} value={fallDownAlertSensitivity} onChangeText={setFallDownAlertSensitivity}
+            keyboardType="number-pad" placeholder="5" maxLength={1} />
 
-          <Text style={styles.fieldLabel}>Timezone (15-min units, e.g. 22 = +5:30)</Text>
-          <TextInput style={styles.input} value={timezoneInput} onChangeText={setTimezoneInput}
-            keyboardType="number-pad" placeholder="22" />
+          <View style={styles.divider} />
+          <Text style={styles.groupLabel}>No Motion Alarm</Text>
+          <ToggleRow label="Enabled" value={noMotionAlertEnabled} onValueChange={setNoMotionAlertEnabled} />
+          <ToggleRow label="Dial Authorized Number" value={noMotionAlertDial} onValueChange={setNoMotionAlertDial} />
+          <Text style={styles.fieldLabel}>Static Period (60-36000 sec)</Text>
+          <TextInput style={styles.input} value={noMotionAlertStaticPeriodSec} onChangeText={setNoMotionAlertStaticPeriodSec}
+            keyboardType="number-pad" placeholder="300" maxLength={5} />
 
-          <Text style={styles.fieldLabel}>Working Mode</Text>
+          <View style={styles.divider} />
+          <Text style={styles.groupLabel}>Tilt Alarm</Text>
+          <ToggleRow label="Enabled" value={tiltAlertEnabled} onValueChange={setTiltAlertEnabled} />
+          <ToggleRow label="Dial Authorized Number" value={tiltAlertDial} onValueChange={setTiltAlertDial} />
+          <View style={styles.timeRow}>
+            <View style={styles.timeField}>
+              <Text style={styles.fieldLabel}>Angle (30-90 deg)</Text>
+              <TextInput style={styles.input} value={tiltAlertAngleDeg} onChangeText={setTiltAlertAngleDeg}
+                keyboardType="number-pad" placeholder="45" maxLength={2} />
+            </View>
+            <View style={styles.timeField}>
+              <Text style={styles.fieldLabel}>Duration (10-3600 sec)</Text>
+              <TextInput style={styles.input} value={tiltAlertDurationSec} onChangeText={setTiltAlertDurationSec}
+                keyboardType="number-pad" placeholder="30" maxLength={4} />
+            </View>
+          </View>
+
+          <View style={styles.divider} />
+          <Text style={styles.groupLabel}>Geo Fence</Text>
+          <ToggleRow label="Enabled" value={geoAlertEnabled} onValueChange={setGeoAlertEnabled} />
+          <Text style={styles.fieldLabel}>Fence Slot (0-15)</Text>
+          <TextInput style={styles.input} value={geoAlertIndex} onChangeText={setGeoAlertIndex}
+            keyboardType="number-pad" placeholder="0" maxLength={2} />
+
+          <Text style={styles.fieldLabel}>Direction</Text>
           <View style={styles.modeRow}>
-            {WORKING_MODES.map((label, i) => (
+            {GEO_ALERT_DIRECTIONS.map(option => (
               <TouchableOpacity
-                key={i}
-                style={[styles.modeChip, workingMode === i && styles.modeChipActive]}
-                onPress={() => setWorkingMode(i)}
+                key={option.value}
+                style={[styles.modeChip, geoAlertDirection === option.value && styles.modeChipActive]}
+                onPress={() => setGeoAlertDirection(option.value)}
               >
-                <Text style={[styles.modeChipText, workingMode === i && styles.modeChipTextActive]}>{label}</Text>
+                <Text style={[styles.modeChipText, geoAlertDirection === option.value && styles.modeChipTextActive]}>
+                  {option.label}
+                </Text>
               </TouchableOpacity>
             ))}
           </View>
 
-          <Text style={styles.fieldLabel}>Initialize Mileage (meters)</Text>
-          <TextInput style={styles.input} value={mileageInput} onChangeText={setMileageInput}
-            keyboardType="number-pad" placeholder="0" />
-        </CollapsibleSection>
-
-        {/* ── SOS Numbers ── */}
-        <CollapsibleSection
-          title="SOS / Authorized Numbers"
-          icon="call"
-          expanded={expandedSections.sos}
-          onToggle={() => toggleSection('sos')}
-        >
-          <Text style={styles.groupLabel}>SOS Slot 1</Text>
-          <TextInput style={styles.input} value={sosNumber} onChangeText={setSosNumber}
-            placeholder="+919500001488" keyboardType="phone-pad" />
-          <Text style={styles.fieldLabel}>Slot ID (0–9)</Text>
-          <TextInput style={styles.input} value={sosSlot} onChangeText={setSosSlot}
-            keyboardType="number-pad" placeholder="0" maxLength={1} />
-
-          <View style={styles.divider} />
-          <Text style={styles.groupLabel}>SOS Slot 2</Text>
-          <TextInput style={styles.input} value={sosNumber2} onChangeText={setSosNumber2}
-            placeholder="+910000000000" keyboardType="phone-pad" />
-          <Text style={styles.fieldLabel}>Slot ID</Text>
-          <TextInput style={styles.input} value={sosSlot2} onChangeText={setSosSlot2}
-            keyboardType="number-pad" placeholder="1" maxLength={1} />
-
-          <View style={styles.divider} />
-          <Text style={styles.groupLabel}>SOS Slot 3</Text>
-          <TextInput style={styles.input} value={sosNumber3} onChangeText={setSosNumber3}
-            placeholder="+910000000000" keyboardType="phone-pad" />
-          <Text style={styles.fieldLabel}>Slot ID</Text>
-          <TextInput style={styles.input} value={sosSlot3} onChangeText={setSosSlot3}
-            keyboardType="number-pad" placeholder="2" maxLength={1} />
-        </CollapsibleSection>
-
-        {/* ── Cellular / APN ── */}
-        <CollapsibleSection
-          title="Cellular / APN"
-          icon="cellular"
-          expanded={expandedSections.cellular}
-          onToggle={() => toggleSection('cellular')}
-        >
-          <Text style={styles.fieldLabel}>APN</Text>
-          <TextInput style={styles.input} value={apnInput} onChangeText={setApnInput}
-            placeholder="airtelfun.com" autoCapitalize="none" autoCorrect={false} />
-          <Text style={styles.fieldLabel}>APN Username</Text>
-          <TextInput style={styles.input} value={apnUserInput} onChangeText={setApnUserInput}
-            placeholder="(leave empty if none)" autoCapitalize="none" autoCorrect={false} />
-          <Text style={styles.fieldLabel}>APN Password</Text>
-          <TextInput style={styles.input} value={apnPassInput} onChangeText={setApnPassInput}
-            placeholder="(leave empty if none)" autoCapitalize="none" autoCorrect={false} secureTextEntry />
-        </CollapsibleSection>
-
-        {/* ── Tracking Server ── */}
-        <CollapsibleSection
-          title="Tracking Server"
-          icon="cloud-upload"
-          expanded={expandedSections.server}
-          onToggle={() => toggleSection('server')}
-        >
-          <Text style={styles.fieldLabel}>Server Address</Text>
-          <TextInput style={styles.input} value={serverHostInput} onChangeText={setServerHostInput}
-            placeholder="tracking.example.com" autoCapitalize="none" autoCorrect={false} />
-          <Text style={styles.fieldLabel}>Server Port</Text>
-          <TextInput style={styles.input} value={serverPortInput} onChangeText={setServerPortInput}
-            placeholder="5001" keyboardType="number-pad" maxLength={5} />
-        </CollapsibleSection>
-
-        {/* ── Reporting ── */}
-        <CollapsibleSection
-          title="Reporting"
-          icon="timer"
-          expanded={expandedSections.reporting}
-          onToggle={() => toggleSection('reporting')}
-        >
-          <Text style={styles.fieldLabel}>Auto Upload Interval (seconds, 0 = unchanged)</Text>
-          <TextInput style={styles.input} value={uploadIntervalInput} onChangeText={setUploadIntervalInput}
-            placeholder="60" keyboardType="number-pad" />
-        </CollapsibleSection>
-
-        {/* ── Audio / Volume ── */}
-        <CollapsibleSection
-          title="Audio & Volume"
-          icon="volume-high"
-          expanded={expandedSections.audio}
-          onToggle={() => toggleSection('audio')}
-        >
-          <Text style={styles.fieldLabel}>Ring-Tone Volume (0–100)</Text>
-          <TextInput style={styles.input} value={ringtoneVol} onChangeText={setRingtoneVol}
-            keyboardType="number-pad" placeholder="100" maxLength={3} />
-          <Text style={styles.fieldLabel}>Mic Volume (0–15)</Text>
-          <TextInput style={styles.input} value={micVol} onChangeText={setMicVol}
-            keyboardType="number-pad" placeholder="10" maxLength={2} />
-          <Text style={styles.fieldLabel}>Speaker Volume (0–100)</Text>
-          <TextInput style={styles.input} value={speakerVol} onChangeText={setSpeakerVol}
-            keyboardType="number-pad" placeholder="100" maxLength={3} />
-        </CollapsibleSection>
-
-        {/* ── Alarm & No Disturb ── */}
-        <CollapsibleSection
-          title="Alarm & Do Not Disturb"
-          icon="alarm"
-          expanded={expandedSections.alarm}
-          onToggle={() => toggleSection('alarm')}
-        >
-          <Text style={styles.groupLabel}>Alarm Clock</Text>
-          <ToggleRow label="Alarm Enabled" value={alarmEnabled} onValueChange={setAlarmEnabled} />
-          <Text style={styles.fieldLabel}>Alarm Slot</Text>
+          <Text style={styles.fieldLabel}>Shape</Text>
           <View style={styles.modeRow}>
-            {ALARM_SLOT_OPTIONS.map(slot => (
+            {GEO_ALERT_TYPES.map(option => (
               <TouchableOpacity
-                key={slot}
-                style={[styles.modeChip, alarmIndex === slot && styles.modeChipActive]}
-                onPress={() => setAlarmIndex(slot)}
+                key={option.value}
+                style={[styles.modeChip, geoAlertType === option.value && styles.modeChipActive]}
+                onPress={() => setGeoAlertType(option.value)}
               >
-                <Text style={[styles.modeChipText, alarmIndex === slot && styles.modeChipTextActive]}>{slot}</Text>
+                <Text style={[styles.modeChipText, geoAlertType === option.value && styles.modeChipTextActive]}>
+                  {option.label}
+                </Text>
               </TouchableOpacity>
             ))}
           </View>
-          <View style={styles.timeRow}>
-            <View style={styles.timeField}>
-              <Text style={styles.fieldLabel}>Hour (0–23)</Text>
-              <TextInput style={styles.input} value={alarmHour} onChangeText={setAlarmHour}
-                keyboardType="number-pad" placeholder="8" maxLength={2} />
-            </View>
-            <View style={styles.timeField}>
-              <Text style={styles.fieldLabel}>Minute (0–59)</Text>
-              <TextInput style={styles.input} value={alarmMinute} onChangeText={setAlarmMinute}
-                keyboardType="number-pad" placeholder="0" maxLength={2} />
-            </View>
-          </View>
-          <Text style={styles.fieldLabel}>Repeat Days</Text>
-          <View style={styles.weekdayRow}>
-            {EV07B_WEEKDAY_OPTIONS.map(option => {
-              const isActive = (alarmWorkdayMask & (1 << option.bit)) !== 0;
-              return (
-                <TouchableOpacity
-                  key={option.key}
-                  style={[styles.weekdayChip, isActive && styles.weekdayChipActive]}
-                  onPress={() => toggleAlarmWorkdayBit(option.bit)}
-                >
-                  <Text style={[styles.weekdayChipText, isActive && styles.weekdayChipTextActive]}>
-                    {option.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-          <Text style={styles.helperText}>
-            If no day is selected, the app saves this as an everyday alarm so the enable flag sticks on device firmware.
-          </Text>
-          <View style={styles.timeRow}>
-            <View style={styles.timeField}>
-              <Text style={styles.fieldLabel}>Reminder Duration (1–120 sec)</Text>
-              <TextInput style={styles.input} value={alarmDurationSec} onChangeText={setAlarmDurationSec}
-                keyboardType="number-pad" placeholder="30" maxLength={3} />
-            </View>
-            <View style={styles.timeField}>
-              <Text style={styles.fieldLabel}>Ringtone (1–10)</Text>
-              <TextInput style={styles.input} value={alarmRing} onChangeText={setAlarmRing}
-                keyboardType="number-pad" placeholder="1" maxLength={2} />
-            </View>
-          </View>
 
-          <View style={styles.divider} />
-          <Text style={styles.groupLabel}>Do Not Disturb</Text>
-          <ToggleRow label="Enabled" value={noDisturbEnabled} onValueChange={setNoDisturbEnabled} />
-          <View style={styles.timeRow}>
-            <View style={styles.timeField}>
-              <Text style={styles.fieldLabel}>Start Hour</Text>
-              <TextInput style={styles.input} value={ndStartHour} onChangeText={setNdStartHour}
-                keyboardType="number-pad" placeholder="22" maxLength={2} />
-            </View>
-            <View style={styles.timeField}>
-              <Text style={styles.fieldLabel}>Start Min</Text>
-              <TextInput style={styles.input} value={ndStartMin} onChangeText={setNdStartMin}
-                keyboardType="number-pad" placeholder="0" maxLength={2} />
-            </View>
-          </View>
-          <View style={styles.timeRow}>
-            <View style={styles.timeField}>
-              <Text style={styles.fieldLabel}>End Hour</Text>
-              <TextInput style={styles.input} value={ndEndHour} onChangeText={setNdEndHour}
-                keyboardType="number-pad" placeholder="7" maxLength={2} />
-            </View>
-            <View style={styles.timeField}>
-              <Text style={styles.fieldLabel}>End Min</Text>
-              <TextInput style={styles.input} value={ndEndMin} onChangeText={setNdEndMin}
-                keyboardType="number-pad" placeholder="0" maxLength={2} />
-            </View>
-          </View>
+          {geoAlertType === 'circle' ? (
+            <>
+              <Text style={styles.fieldLabel}>Radius (meters)</Text>
+              <TextInput style={styles.input} value={geoAlertRadiusMeters} onChangeText={setGeoAlertRadiusMeters}
+                keyboardType="number-pad" placeholder="100" maxLength={5} />
+              <View style={styles.timeRow}>
+                <View style={styles.timeField}>
+                  <Text style={styles.fieldLabel}>Latitude</Text>
+                  <TextInput style={styles.input} value={geoAlertLatitude} onChangeText={setGeoAlertLatitude}
+                    keyboardType="decimal-pad" placeholder="12.97160" />
+                </View>
+                <View style={styles.timeField}>
+                  <Text style={styles.fieldLabel}>Longitude</Text>
+                  <TextInput style={styles.input} value={geoAlertLongitude} onChangeText={setGeoAlertLongitude}
+                    keyboardType="decimal-pad" placeholder="77.59460" />
+                </View>
+              </View>
+            </>
+          ) : (
+            <>
+              <Text style={styles.fieldLabel}>Polygon Points</Text>
+              <TextInput
+                style={[styles.input, styles.multilineInput]}
+                value={geoAlertPointsInput}
+                onChangeText={setGeoAlertPointsInput}
+                placeholder={'12.97160, 77.59460\n12.97210, 77.59520\n12.97080, 77.59590'}
+                autoCapitalize="none"
+                autoCorrect={false}
+                multiline
+                textAlignVertical="top"
+              />
+              <Text style={styles.helperText}>
+                Enter one `latitude, longitude` pair per line. Polygon fences need at least 3 points.
+              </Text>
+            </>
+          )}
         </CollapsibleSection>
 
-        {/* ── Feature Toggles & Enable Control ── */}
-        <CollapsibleSection
-          title="Feature Toggles"
-          icon="toggle"
-          expanded={expandedSections.features}
-          onToggle={() => toggleSection('features')}
-        >
-          <Text style={styles.groupLabel}>Enable Control Flags</Text>
-          <Text style={styles.helperText}>
-            These toggles are stored in the device&apos;s 32-bit enable-control mask and now round-trip through Sync Info.
-          </Text>
-          {EV07B_ENABLE_CONTROL_FLAGS.map(flag => (
-            <ToggleRow
-              key={flag.key}
-              label={`${flag.label} (bit ${flag.bit})`}
-              value={hasEv07bFlag(enableControl, flag.bit)}
-              onValueChange={() => toggleCtrlBit(flag.bit)}
-            />
-          ))}
+        {SHOW_ADDITIONAL_CONFIG_SECTIONS ? (
+          <CollapsibleSection
+            title="Feature Toggles"
+            icon="toggle"
+            expanded={expandedSections.features}
+            onToggle={() => toggleSection('features')}
+          >
+            <Text style={styles.groupLabel}>Enable Control Flags</Text>
+            <Text style={styles.helperText}>
+              These toggles are stored in the device&apos;s 32-bit enable-control mask and now round-trip through Sync Info.
+            </Text>
+            {EV07B_ENABLE_CONTROL_FLAGS.map(flag => (
+              <ToggleRow
+                key={flag.key}
+                label={`${flag.label} (bit ${flag.bit})`}
+                value={hasEv07bFlag(enableControl, flag.bit)}
+                onValueChange={() => toggleCtrlBit(flag.bit)}
+              />
+            ))}
 
-          <View style={styles.divider} />
-          <Text style={styles.groupLabel}>SMS Reply URLs</Text>
-          <Text style={styles.helperText}>
-            Leave a field blank if you want Save Config to clear that reply template. Device limit is 40 ASCII characters.
-          </Text>
-          <Text style={styles.fieldLabel}>GPS SMS URL</Text>
-          <TextInput style={styles.input} value={smsGpsUrl} onChangeText={setSmsGpsUrl}
-            placeholder="https://maps.example/gps" autoCapitalize="none" autoCorrect={false} maxLength={SMS_URL_MAX_LENGTH} />
-          <Text style={styles.fieldLabel}>WiFi/LBS SMS URL</Text>
-          <TextInput style={styles.input} value={smsWifiLbsUrl} onChangeText={setSmsWifiLbsUrl}
-            placeholder="https://maps.example/lbs" autoCapitalize="none" autoCorrect={false} maxLength={SMS_URL_MAX_LENGTH} />
+            <View style={styles.divider} />
+            <Text style={styles.groupLabel}>SMS Reply URLs</Text>
+            <Text style={styles.helperText}>
+              Leave a field blank if you want Save Config to clear that reply template. Device limit is 40 ASCII characters.
+            </Text>
+            <Text style={styles.fieldLabel}>GPS SMS URL</Text>
+            <TextInput style={styles.input} value={smsGpsUrl} onChangeText={setSmsGpsUrl}
+              placeholder="https://maps.example/gps" autoCapitalize="none" autoCorrect={false} maxLength={SMS_URL_MAX_LENGTH} />
+            <Text style={styles.fieldLabel}>WiFi/LBS SMS URL</Text>
+            <TextInput style={styles.input} value={smsWifiLbsUrl} onChangeText={setSmsWifiLbsUrl}
+              placeholder="https://maps.example/lbs" autoCapitalize="none" autoCorrect={false} maxLength={SMS_URL_MAX_LENGTH} />
 
-          <View style={styles.divider} />
-          <Text style={styles.groupLabel}>Voice Prompt Flags</Text>
-          <Text style={styles.helperText}>
-            These prompts are stored in key 0x19 as a separate 32-bit mask.
-          </Text>
-          {EV07B_VOICE_PROMPT_FLAGS.map(flag => (
-            <ToggleRow
-              key={flag.key}
-              label={`${flag.label} (bit ${flag.bit})`}
-              value={hasEv07bFlag(voicePromptMask, flag.bit)}
-              onValueChange={() => toggleVoicePromptBit(flag.bit)}
-            />
-          ))}
+            <View style={styles.divider} />
+            <Text style={styles.groupLabel}>Voice Prompt Flags</Text>
+            <Text style={styles.helperText}>
+              These prompts are stored in key 0x19 as a separate 32-bit mask.
+            </Text>
+            {EV07B_VOICE_PROMPT_FLAGS.map(flag => (
+              <ToggleRow
+                key={flag.key}
+                label={`${flag.label} (bit ${flag.bit})`}
+                value={hasEv07bFlag(voicePromptMask, flag.bit)}
+                onValueChange={() => toggleVoicePromptBit(flag.bit)}
+              />
+            ))}
 
-          <View style={styles.divider} />
-          <Text style={styles.fieldLabel}>Whitelist BLE Device MAC</Text>
-          <TextInput style={styles.input} value={whitelistDevice} onChangeText={setWhitelistDevice}
-            placeholder="AA:BB:CC:DD:EE:FF" autoCapitalize="characters" maxLength={17} />
-        </CollapsibleSection>
+            <View style={styles.divider} />
+            <Text style={styles.fieldLabel}>Whitelist BLE Device MAC</Text>
+            <TextInput style={styles.input} value={whitelistDevice} onChangeText={setWhitelistDevice}
+              placeholder="AA:BB:CC:DD:EE:FF" autoCapitalize="characters" maxLength={17} />
+          </CollapsibleSection>
+        ) : null}
 
         {/* ── GATT Services ── */}
         <CollapsibleSection
@@ -1122,6 +1444,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#2E2A27',
     backgroundColor: '#FAFAF8',
+  },
+  multilineInput: {
+    minHeight: 92,
+    paddingTop: 10,
   },
 
   /* Mode chips */

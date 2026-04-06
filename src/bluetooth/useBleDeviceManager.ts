@@ -17,8 +17,12 @@ import {
   decodeEv07bAlarmClock,
   decodeEv07bAsciiSetting,
   decodeEv07bAuthorizedPhone,
+  decodeEv07bFallDownAlert,
   decodeEv07bFlagMask,
+  decodeEv07bGeoAlert,
+  decodeEv07bNoMotionAlert,
   decodeEv07bNoDisturb,
+  decodeEv07bTiltAlert,
   hasEv07bFlag,
 } from './ev07bConfigCodec';
 
@@ -389,6 +393,51 @@ export function useBleDeviceManager() {
       const voicePromptMask = decodeEv07bFlagMask(keys[0x19]);
       if (voicePromptMask !== null) {
         nextIdentity.voicePromptMask = voicePromptMask;
+        changed = true;
+      }
+
+      // GEO Alert (key 0x51) — keep the first enabled fence, or the first decoded one
+      const geoAlertBlocks = (blocks ?? []).filter(block => block.key === 0x51);
+      const geoAlertCandidates = geoAlertBlocks.length
+        ? geoAlertBlocks.map(block => decodeEv07bGeoAlert(block.value)).filter(Boolean)
+        : [decodeEv07bGeoAlert(keys[0x51])].filter(Boolean);
+      const geoAlert = (geoAlertCandidates.find(candidate => candidate?.enabled) ??
+        geoAlertCandidates[0]) ?? null;
+      if (geoAlert) {
+        nextIdentity.geoAlertIndex = geoAlert.index;
+        nextIdentity.geoAlertEnabled = geoAlert.enabled;
+        nextIdentity.geoAlertDirection = geoAlert.direction;
+        nextIdentity.geoAlertType = geoAlert.type;
+        nextIdentity.geoAlertRadiusMeters = geoAlert.radiusMeters;
+        nextIdentity.geoAlertPoints = geoAlert.points;
+        changed = true;
+      }
+
+      // No-Motion Alert (key 0x53)
+      const noMotionAlert = decodeEv07bNoMotionAlert(keys[0x53]);
+      if (noMotionAlert) {
+        nextIdentity.noMotionAlertEnabled = noMotionAlert.enabled;
+        nextIdentity.noMotionAlertDial = noMotionAlert.dial;
+        nextIdentity.noMotionAlertStaticPeriodSec = noMotionAlert.staticPeriodSec;
+        changed = true;
+      }
+
+      // Tilt Alert (key 0x55)
+      const tiltAlert = decodeEv07bTiltAlert(keys[0x55]);
+      if (tiltAlert) {
+        nextIdentity.tiltAlertEnabled = tiltAlert.enabled;
+        nextIdentity.tiltAlertDial = tiltAlert.dial;
+        nextIdentity.tiltAlertAngleDeg = tiltAlert.angleDeg;
+        nextIdentity.tiltAlertDurationSec = tiltAlert.durationSec;
+        changed = true;
+      }
+
+      // Fall-Down Alert (key 0x56)
+      const fallDownAlert = decodeEv07bFallDownAlert(keys[0x56]);
+      if (fallDownAlert) {
+        nextIdentity.fallDownAlertEnabled = fallDownAlert.enabled;
+        nextIdentity.fallDownAlertDial = fallDownAlert.dial;
+        nextIdentity.fallDownAlertSensitivity = fallDownAlert.sensitivity;
         changed = true;
       }
 

@@ -14,6 +14,11 @@ export interface BleDiscoveredDevice {
   serviceUUIDs?: string[] | null;
 }
 
+export interface BleGeoPoint {
+  latitude: number;
+  longitude: number;
+}
+
 export interface BleDeviceIdentity {
   moduleNumber?: string;
   imei?: string;
@@ -66,6 +71,22 @@ export interface BleDeviceIdentity {
   smsGpsUrl?: string;        // 0x17: GPS SMS reply URL template
   smsWifiLbsUrl?: string;    // 0x18: WiFi/LBS SMS reply URL template
   voicePromptMask?: number;  // 0x19: 32-bit voice prompt bitmask
+  geoAlertIndex?: number;    // 0x51: geo fence slot index
+  geoAlertEnabled?: boolean; // 0x51: geo fence enabled flag
+  geoAlertDirection?: 'out' | 'in'; // 0x51: exit or enter trigger
+  geoAlertType?: 'circle' | 'polygon'; // 0x51: circle or polygon fence
+  geoAlertRadiusMeters?: number; // 0x51: circle radius in meters
+  geoAlertPoints?: BleGeoPoint[]; // 0x51: one center point or polygon points
+  noMotionAlertEnabled?: boolean; // 0x53: no-motion alert enabled
+  noMotionAlertDial?: boolean; // 0x53: dial on alert
+  noMotionAlertStaticPeriodSec?: number; // 0x53: static period threshold
+  tiltAlertEnabled?: boolean; // 0x55: tilt alert enabled
+  tiltAlertDial?: boolean; // 0x55: dial on alert
+  tiltAlertAngleDeg?: number; // 0x55: angle threshold in degrees
+  tiltAlertDurationSec?: number; // 0x55: duration threshold in seconds
+  fallDownAlertEnabled?: boolean; // 0x56: fall-down alert enabled
+  fallDownAlertDial?: boolean; // 0x56: dial on alert
+  fallDownAlertSensitivity?: number; // 0x56: sensitivity level 1-9
   initMileage?: number;      // 0x09: initial mileage in meters (u32le)
 }
 

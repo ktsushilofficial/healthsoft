@@ -4,6 +4,7 @@ import { Platform } from 'react-native';
 import axios, { Method } from 'axios';
 import * as Keychain from 'react-native-keychain';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
+import { extractSeniorAssignedDevices, type SeniorAssignedDevice } from '../utils/deviceAssignments';
 
 const API_BASE_URL = 'http://seniorcare.healthsoftcare.in';
 const TOKEN_STORAGE_SERVICE = 'healthsoft.auth.tokens';
@@ -79,6 +80,7 @@ interface AuthContextType {
   selectedSenior: Senior | null;
   getMySeniors: () => Promise<Senior[]>;
   selectSenior: (seniorId: string) => Promise<void>;
+  getAssignedDevicesForSenior: (seniorId: string) => Promise<SeniorAssignedDevice[]>;
 }
 
 interface SignupData {
@@ -803,13 +805,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       // Ignore
     }
 
-    if (snapshotTokens?.accessToken && snapshotTokens.tokenType) {
+    if (snapshotTokens?.refreshToken && snapshotTokens.tokenType) {
       apiClient
         .request<void>({
           url: '/api/v1/auth/logout',
           method: 'POST',
+          data: {
+            refreshToken: snapshotTokens.refreshToken,
+          },
           headers: {
-            Authorization: `${snapshotTokens.tokenType} ${snapshotTokens.accessToken}`,
+            Authorization: `${snapshotTokens.tokenType} ${snapshotTokens.refreshToken}`,
           },
         })
         .catch(() => {
@@ -929,6 +934,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const isCaretaker = user?.role === CARETAKER_ROLE || user?.role === GUARDIAN_ROLE;
 
+  const getAssignedDevicesForSenior = useCallback(async (seniorId: string): Promise<SeniorAssignedDevice[]> => {
+    const trimmedSeniorId = seniorId.trim();
+    if (!trimmedSeniorId) {
+      throw new Error('Senior ID is required to fetch devices.');
+    }
+
+    try {
+      const payload = await authorizedRequest<unknown>(
+        `/devices/assignments/seniors/${trimmedSeniorId}/devices`,
+        'GET',
+        undefined,
+        { Accept: '*/*' },
+      );
+      return extractSeniorAssignedDevices(payload);
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+    // authorizedRequest is stable (reads from refs internally)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Clear seniors cache when user is not a caretaker/guardian
   useEffect(() => {
     if (user && !(user.role === CARETAKER_ROLE || user.role === GUARDIAN_ROLE)) {
@@ -964,11 +990,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       selectedSenior,
       getMySeniors,
       selectSenior,
+      getAssignedDevicesForSenior,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       user, isAuthenticated, isInitializing, isCaretaker, authMethod,
-      seniors, selectedSenior, refreshUserProfile, getMySeniors,
+      seniors, selectedSenior, refreshUserProfile, getMySeniors, getAssignedDevicesForSenior,
     ],
   );
 
