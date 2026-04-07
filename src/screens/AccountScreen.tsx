@@ -9,6 +9,9 @@ import {
   Alert,
   ActivityIndicator,
   TextInput,
+  PermissionsAndroid,
+  Platform,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -63,6 +66,36 @@ const normalizeCountryCode = (value: string): string => {
 const normalizePhoneNumber = (value: string): string =>
   value.replace(/[^\d]/g, '').slice(0, 15);
 
+type BluetoothPermissionState =
+  | 'checking'
+  | 'granted'
+  | 'denied'
+  | 'blocked'
+  | 'unavailable';
+
+const getBluetoothPermissions = () =>
+  Number(Platform.Version) >= 31
+    ? ([
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+      ] as const)
+    : ([PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION] as const);
+
+const resolveBluetoothPermissionLabel = (state: BluetoothPermissionState): string => {
+  switch (state) {
+    case 'granted':
+      return 'Permission granted';
+    case 'blocked':
+      return 'Permission blocked';
+    case 'denied':
+      return 'Permission not granted';
+    case 'checking':
+      return 'Checking permission...';
+    default:
+      return 'Not required on this device';
+  }
+};
+
 const AccountScreen = () => {
   const navigation = useNavigation<any>();
   const { user, refreshUserProfile, updateProfile, logout, authMethod } = useAuth();
@@ -70,7 +103,10 @@ const AccountScreen = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isRequestingBluetoothPermission, setIsRequestingBluetoothPermission] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [bluetoothPermissionState, setBluetoothPermissionState] =
+    useState<BluetoothPermissionState>('checking');
   const [form, setForm] = useState({
     firstName: '',
     lastName: '',
@@ -108,6 +144,61 @@ const AccountScreen = () => {
       setIsLoading(false);
     }
   };
+
+  const refreshBluetoothPermissionState = useCallback(async () => {
+    if (Platform.OS !== 'android') {
+      setBluetoothPermissionState('unavailable');
+      return;
+    }
+
+    try {
+      const statuses = await Promise.all(
+        getBluetoothPermissions().map(permission => PermissionsAndroid.check(permission)),
+      );
+      setBluetoothPermissionState(statuses.every(Boolean) ? 'granted' : 'denied');
+    } catch {
+      setBluetoothPermissionState('denied');
+    }
+  }, []);
+
+  const handleBluetoothPermissionPress = useCallback(async () => {
+    if (Platform.OS !== 'android') {
+      setBluetoothPermissionState('unavailable');
+      return;
+    }
+
+    if (bluetoothPermissionState === 'blocked') {
+      await Linking.openSettings();
+      return;
+    }
+
+    setIsRequestingBluetoothPermission(true);
+    try {
+      const result = await PermissionsAndroid.requestMultiple(getBluetoothPermissions() as any);
+      const values = Object.values(result);
+      const allGranted = values.every(value => value === PermissionsAndroid.RESULTS.GRANTED);
+      const blocked = values.some(value => value === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN);
+
+      if (allGranted) {
+        setBluetoothPermissionState('granted');
+        Alert.alert('Bluetooth Permission', 'Bluetooth permission granted.');
+      } else if (blocked) {
+        setBluetoothPermissionState('blocked');
+        Alert.alert(
+          'Bluetooth Permission',
+          'Bluetooth permission is blocked. Please enable it from app settings.',
+        );
+      } else {
+        setBluetoothPermissionState('denied');
+        Alert.alert('Bluetooth Permission', 'Bluetooth permission was not granted.');
+      }
+    } catch {
+      setBluetoothPermissionState('denied');
+      Alert.alert('Bluetooth Permission', 'Unable to request Bluetooth permission right now.');
+    } finally {
+      setIsRequestingBluetoothPermission(false);
+    }
+  }, [bluetoothPermissionState]);
 
 
   const handleSaveProfile = useCallback(async () => {
@@ -183,6 +274,9 @@ const AccountScreen = () => {
   useEffect(() => {
     loadProfile().catch(() => {
       // Errors are already handled in loadProfile.
+    });
+    refreshBluetoothPermissionState().catch(() => {
+      setBluetoothPermissionState('denied');
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -350,6 +444,53 @@ const AccountScreen = () => {
           <Text style={styles.infoValue}>{formatLastLogin(user?.last_login_at)}</Text>
         </View>
 
+        <View style={styles.permissionCard}>
+          <View style={styles.permissionHeader}>
+            <View>
+              <Text style={styles.permissionTitle}>Bluetooth Permission</Text>
+              <Text
+                style={[
+                  styles.permissionStatus,
+                  bluetoothPermissionState === 'granted'
+                    ? styles.permissionGranted
+                    : bluetoothPermissionState === 'blocked'
+                      ? styles.permissionBlocked
+                      : styles.permissionDenied,
+                ]}>
+                {resolveBluetoothPermissionLabel(bluetoothPermissionState)}
+              </Text>
+            </View>
+            <Icon
+              name={bluetoothPermissionState === 'granted' ? 'checkmark-circle' : 'bluetooth'}
+              size={22}
+              color={bluetoothPermissionState === 'granted' ? '#2E7D32' : '#FF9500'}
+            />
+          </View>
+          <Text style={styles.permissionHelpText}>
+            If Bluetooth access was denied earlier, you can retry it here before scanning devices.
+          </Text>
+          <TouchableOpacity
+            style={[
+              styles.permissionButton,
+              bluetoothPermissionState === 'granted' && styles.permissionButtonGranted,
+              isRequestingBluetoothPermission && styles.buttonDisabled,
+            ]}
+            onPress={handleBluetoothPermissionPress}
+            disabled={isRequestingBluetoothPermission}>
+            {isRequestingBluetoothPermission ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <Text style={styles.permissionButtonText}>
+                {bluetoothPermissionState === 'granted'
+                  ? 'Permission Granted'
+                  : bluetoothPermissionState === 'blocked'
+                    ? 'Open Settings'
+                    : 'Allow Bluetooth'}
+              </Text>
+            )}
+          </TouchableOpacity>
+        </View>
+
         {isEditing ? (
           <View style={styles.editButtonsRow}>
             <TouchableOpacity
@@ -464,6 +605,58 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontSize: 14,
     color: '#666',
+  },
+  permissionCard: {
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 16,
+    marginTop: 12,
+    padding: 16,
+    borderRadius: 12,
+  },
+  permissionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  permissionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#333333',
+  },
+  permissionStatus: {
+    marginTop: 4,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  permissionGranted: {
+    color: '#2E7D32',
+  },
+  permissionDenied: {
+    color: '#C77700',
+  },
+  permissionBlocked: {
+    color: '#C62828',
+  },
+  permissionHelpText: {
+    marginTop: 10,
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#666666',
+  },
+  permissionButton: {
+    marginTop: 14,
+    backgroundColor: '#FF9500',
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  permissionButtonGranted: {
+    backgroundColor: '#2E7D32',
+  },
+  permissionButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
   },
   infoRow: {
     backgroundColor: '#FFFFFF',
