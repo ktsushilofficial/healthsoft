@@ -20,6 +20,14 @@ function displayImei(device: SeniorAssignedDevice): string {
   return device.imei ?? device.serialNumber ?? device.deviceIdentifier ?? '—';
 }
 
+/** Use friendly name when present; otherwise show IMEI / ID as the title. */
+function displayDeviceTitle(device: SeniorAssignedDevice): string {
+  const name = device.name?.trim();
+  if (name) return name;
+  const fallback = displayImei(device);
+  return fallback !== '—' ? fallback : 'Unknown device';
+}
+
 const AssignedDevicesScreen = () => {
   const navigation = useNavigation();
   const { user, isCaretaker, selectedSenior, getAssignedDevicesForSenior } = useAuth();
@@ -130,7 +138,7 @@ const AssignedDevicesScreen = () => {
             <View style={styles.deviceCardHeader}>
               <Icon name="hardware-chip-outline" size={22} color="#F28C28" />
               <Text style={styles.deviceName} numberOfLines={2}>
-                {device.name ?? 'Unnamed device'}
+                {displayDeviceTitle(device)}
               </Text>
             </View>
 

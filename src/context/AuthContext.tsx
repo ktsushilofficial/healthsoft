@@ -170,6 +170,21 @@ const getErrorMessage = (error: unknown): string => {
   return 'Unexpected request error.';
 };
 
+const maskTokenForLog = (token?: string | null): string => {
+  if (!token) {
+    return 'missing';
+  }
+
+  if (token.length <= 12) {
+    return `${token.slice(0, 4)}...${token.slice(-4)}`;
+  }
+
+  return `${token.slice(0, 8)}...${token.slice(-6)}`;
+};
+
+const formatTokenForLog = (token?: string | null): string =>
+  __DEV__ ? token ?? 'missing' : maskTokenForLog(token);
+
 const extractTokens = (
   raw: Partial<UserData>,
   fallback?: AuthTokens | null,
@@ -316,6 +331,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       ...extraHeaders,
     };
 
+    if (authTokens?.accessToken && authTokens?.tokenType) {
+      console.log(
+        `[API Auth] ${method} ${path} using ${authTokens.tokenType} ${formatTokenForLog(authTokens.accessToken)}`,
+      );
+    }
+
     console.log(`[API Request] ${method} ${API_BASE_URL}${path}`, data ? JSON.stringify(data, null, 2) : '');
 
     try {
@@ -391,6 +412,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       try {
+        console.log(
+          `[API Auth] POST /api/v1/auth/refresh using ${currentTokens.tokenType} ${formatTokenForLog(currentTokens.accessToken)}`,
+        );
         const refreshResponse = await apiClient.request<Partial<UserData>>({
           url: '/api/v1/auth/refresh',
           method: 'POST',
@@ -812,6 +836,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     if (snapshotTokens?.refreshToken && snapshotTokens.tokenType) {
+      console.log(
+        `[API Auth] POST /api/v1/auth/logout using ${snapshotTokens.tokenType} ${formatTokenForLog(snapshotTokens.refreshToken)}`,
+      );
       apiClient
         .request<void>({
           url: '/api/v1/auth/logout',
