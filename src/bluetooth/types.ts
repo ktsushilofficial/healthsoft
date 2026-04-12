@@ -35,9 +35,9 @@ export interface BleDeviceIdentity {
   batteryVoltage?: number; // mV
   sosNumber?: string;
   sosSlot?: number;
-  sosNumber2?: string;  // SOS slot 1 (key 0x31)
+  sosNumber2?: string;  // authorized number slot 1
   sosSlot2?: number;
-  sosNumber3?: string;  // SOS slot 2 (key 0x32)
+  sosNumber3?: string;  // authorized number slot 2
   sosSlot3?: number;
   timezone?: number; // 15-min units
   apn?: string;

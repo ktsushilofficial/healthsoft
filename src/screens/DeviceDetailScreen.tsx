@@ -41,7 +41,6 @@ const GEO_ALERT_TYPES = [
   { value: 'circle' as const, label: 'Circle' },
   { value: 'polygon' as const, label: 'Polygon' },
 ];
-const SHOW_ADDITIONAL_CONFIG_SECTIONS = false;
 
 function clampInt(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
@@ -255,7 +254,10 @@ const DeviceDetailScreen = () => {
     audio: false,
     alarm: false,
     alerts: false,
-    features: false,
+    featureFlags: false,
+    smsTemplates: false,
+    voicePrompts: false,
+    bluetoothAccess: false,
     gatt: false,
     data: false,
     log: false,
@@ -366,7 +368,7 @@ const DeviceDetailScreen = () => {
           0x51, 0x53, 0x55, 0x56,
           0x1a, 0x1b,
           // SOS + Network
-          0x30, 0x40, 0x41, 0x42, 0x43, 0x44,
+          0x30, 0x30, 0x30, 0x40, 0x41, 0x42, 0x43, 0x44,
         ],
       });
       setStatusMsg(`Synced (seq ${resp.seqId})`);
@@ -376,12 +378,13 @@ const DeviceDetailScreen = () => {
   }, [deviceId, sendEv07bConfig]);
 
   const runSave = useCallback(async () => {
+    let savedSosNumbers = false;
     try {
       setStatusMsg('Saving…');
       const writes: { key: number; value: Uint8Array }[] = [];
       const phoneWrites: { key: number; value: Uint8Array }[] = [];
       const pushAuthorizedNumber = (numberValue: string, slotValue: string, fallbackSlot: number) => {
-        const digits = numberValue.replace(/[^0-9+]/g, '').slice(0, 20);
+        const digits = numberValue.replace(/[^0-9]/g, '').slice(0, 20);
         if (!digits) return;
         const parsedSlot = Number(slotValue);
         const slot = Number.isFinite(parsedSlot) ? clampInt(parsedSlot, 0, 9) : fallbackSlot;
@@ -391,8 +394,8 @@ const DeviceDetailScreen = () => {
             slot,
             enabled: true,
             acceptSms: true,
-            noSimDialing: true,
-            acceptPhoneCall: false,
+            noSimDialing: false,
+            acceptPhoneCall: true,
             number: digits,
           }),
         });
@@ -605,13 +608,39 @@ const DeviceDetailScreen = () => {
         }
       }
 
-      let resp = await sendEv07bConfig(deviceId, { writeBlocks: writes });
-      for (const phoneWrite of phoneWrites) {
-        resp = await sendEv07bConfig(deviceId, { writeBlocks: [phoneWrite] });
+      let lastSeqId: number | null = null;
+
+      if (phoneWrites.length > 0) {
+        const sosResp = await sendEv07bConfig(deviceId, { writeBlocks: phoneWrites });
+        lastSeqId = sosResp.seqId;
+        savedSosNumbers = true;
+
+        try {
+          const sosSyncResp = await sendEv07bConfig(deviceId, {
+            readKeys: [0x30, 0x30, 0x30],
+          });
+          lastSeqId = sosSyncResp.seqId;
+        } catch {
+          // Keep the save successful even if the device does not echo all SOS slots on refresh.
+        }
       }
-      setStatusMsg(`Saved (seq ${resp.seqId})`);
+
+      if (writes.length > 0) {
+        const resp = await sendEv07bConfig(deviceId, { writeBlocks: writes });
+        lastSeqId = resp.seqId;
+      }
+
+      if (savedSosNumbers && writes.length === 0) {
+        setStatusMsg(`SOS numbers saved${lastSeqId != null ? ` (seq ${lastSeqId})` : ''}`);
+      } else {
+        setStatusMsg(`Saved${lastSeqId != null ? ` (seq ${lastSeqId})` : ''}`);
+      }
     } catch (e: any) {
-      setStatusMsg(e.message || 'Save failed');
+      if (savedSosNumbers) {
+        setStatusMsg(`SOS numbers saved, but other settings failed: ${e.message || 'Save failed'}`);
+      } else {
+        setStatusMsg(e.message || 'Save failed');
+      }
     }
   }, [
     deviceId, deviceNameInput, sendEv07bConfig, sosNumber, sosSlot,
@@ -735,231 +764,230 @@ const DeviceDetailScreen = () => {
           <DetailRow label="Mileage" value={identity?.initMileage != null ? `${identity.initMileage}m` : '—'} />
         </CollapsibleSection>
 
-        {SHOW_ADDITIONAL_CONFIG_SECTIONS ? (
-          <>
-            {/* ── General Settings ── */}
-            <CollapsibleSection
-              title="General Settings"
-              icon="settings"
-              expanded={expandedSections.general}
-              onToggle={() => toggleSection('general')}
-            >
-              <Text style={styles.fieldLabel}>Device Name (max 19 chars)</Text>
-              <TextInput style={styles.input} value={deviceNameInput} onChangeText={setDeviceNameInput}
-                placeholder="EV07BA_xxxx" maxLength={19} />
+        {/* ── General Settings ── */}
+        <CollapsibleSection
+          title="General Settings"
+          icon="settings"
+          expanded={expandedSections.general}
+          onToggle={() => toggleSection('general')}
+        >
+          <Text style={styles.fieldLabel}>Device Name (max 19 chars)</Text>
+          <TextInput style={styles.input} value={deviceNameInput} onChangeText={setDeviceNameInput}
+            placeholder="EV07BA_xxxx" maxLength={19} />
 
-              <Text style={styles.fieldLabel}>Timezone (15-min units, e.g. 22 = +5:30)</Text>
-              <TextInput style={styles.input} value={timezoneInput} onChangeText={setTimezoneInput}
-                keyboardType="number-pad" placeholder="22" />
+          <Text style={styles.fieldLabel}>Timezone (15-min units, e.g. 22 = +5:30)</Text>
+          <TextInput style={styles.input} value={timezoneInput} onChangeText={setTimezoneInput}
+            keyboardType="number-pad" placeholder="22" />
 
-              <Text style={styles.fieldLabel}>Working Mode</Text>
-              <View style={styles.modeRow}>
-                {WORKING_MODES.map((label, i) => (
-                  <TouchableOpacity
-                    key={i}
-                    style={[styles.modeChip, workingMode === i && styles.modeChipActive]}
-                    onPress={() => setWorkingMode(i)}
-                  >
-                    <Text style={[styles.modeChipText, workingMode === i && styles.modeChipTextActive]}>{label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+          <Text style={styles.fieldLabel}>Working Mode</Text>
+          <View style={styles.modeRow}>
+            {WORKING_MODES.map((label, i) => (
+              <TouchableOpacity
+                key={i}
+                style={[styles.modeChip, workingMode === i && styles.modeChipActive]}
+                onPress={() => setWorkingMode(i)}
+              >
+                <Text style={[styles.modeChipText, workingMode === i && styles.modeChipTextActive]}>{label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
 
-              <Text style={styles.fieldLabel}>Initialize Mileage (meters)</Text>
-              <TextInput style={styles.input} value={mileageInput} onChangeText={setMileageInput}
-                keyboardType="number-pad" placeholder="0" />
-            </CollapsibleSection>
+          <Text style={styles.fieldLabel}>Initialize Mileage (meters)</Text>
+          <TextInput style={styles.input} value={mileageInput} onChangeText={setMileageInput}
+            keyboardType="number-pad" placeholder="0" />
+        </CollapsibleSection>
 
-            {/* ── SOS Numbers ── */}
-            <CollapsibleSection
-              title="SOS / Authorized Numbers"
-              icon="call"
-              expanded={expandedSections.sos}
-              onToggle={() => toggleSection('sos')}
-            >
-              <Text style={styles.groupLabel}>SOS Slot 1</Text>
-              <TextInput style={styles.input} value={sosNumber} onChangeText={setSosNumber}
-                placeholder="+919500001488" keyboardType="phone-pad" />
-              <Text style={styles.fieldLabel}>Slot ID (0–9)</Text>
-              <TextInput style={styles.input} value={sosSlot} onChangeText={setSosSlot}
-                keyboardType="number-pad" placeholder="0" maxLength={1} />
+        {/* ── SOS Numbers ── */}
+        <CollapsibleSection
+          title="SOS / Authorized Numbers"
+          icon="call"
+          expanded={expandedSections.sos}
+          onToggle={() => toggleSection('sos')}
+        >
+          <Text style={styles.helperText}>
+            Enter digits only, including country code. Example: `919500001488`
+          </Text>
+          <Text style={styles.groupLabel}>SOS Slot 1</Text>
+          <TextInput style={styles.input} value={sosNumber} onChangeText={setSosNumber}
+            placeholder="919500001488" keyboardType="phone-pad" />
+          <Text style={styles.fieldLabel}>Slot ID (0–9)</Text>
+          <TextInput style={styles.input} value={sosSlot} onChangeText={setSosSlot}
+            keyboardType="number-pad" placeholder="0" maxLength={1} />
 
-              <View style={styles.divider} />
-              <Text style={styles.groupLabel}>SOS Slot 2</Text>
-              <TextInput style={styles.input} value={sosNumber2} onChangeText={setSosNumber2}
-                placeholder="+910000000000" keyboardType="phone-pad" />
-              <Text style={styles.fieldLabel}>Slot ID</Text>
-              <TextInput style={styles.input} value={sosSlot2} onChangeText={setSosSlot2}
-                keyboardType="number-pad" placeholder="1" maxLength={1} />
+          <View style={styles.divider} />
+          <Text style={styles.groupLabel}>SOS Slot 2</Text>
+          <TextInput style={styles.input} value={sosNumber2} onChangeText={setSosNumber2}
+            placeholder="910000000000" keyboardType="phone-pad" />
+          <Text style={styles.fieldLabel}>Slot ID</Text>
+          <TextInput style={styles.input} value={sosSlot2} onChangeText={setSosSlot2}
+            keyboardType="number-pad" placeholder="1" maxLength={1} />
 
-              <View style={styles.divider} />
-              <Text style={styles.groupLabel}>SOS Slot 3</Text>
-              <TextInput style={styles.input} value={sosNumber3} onChangeText={setSosNumber3}
-                placeholder="+910000000000" keyboardType="phone-pad" />
-              <Text style={styles.fieldLabel}>Slot ID</Text>
-              <TextInput style={styles.input} value={sosSlot3} onChangeText={setSosSlot3}
-                keyboardType="number-pad" placeholder="2" maxLength={1} />
-            </CollapsibleSection>
+          <View style={styles.divider} />
+          <Text style={styles.groupLabel}>SOS Slot 3</Text>
+          <TextInput style={styles.input} value={sosNumber3} onChangeText={setSosNumber3}
+            placeholder="910000000000" keyboardType="phone-pad" />
+          <Text style={styles.fieldLabel}>Slot ID</Text>
+          <TextInput style={styles.input} value={sosSlot3} onChangeText={setSosSlot3}
+            keyboardType="number-pad" placeholder="2" maxLength={1} />
+        </CollapsibleSection>
 
-            {/* ── Cellular / APN ── */}
-            <CollapsibleSection
-              title="Cellular / APN"
-              icon="cellular"
-              expanded={expandedSections.cellular}
-              onToggle={() => toggleSection('cellular')}
-            >
-              <Text style={styles.fieldLabel}>APN</Text>
-              <TextInput style={styles.input} value={apnInput} onChangeText={setApnInput}
-                placeholder="airtelfun.com" autoCapitalize="none" autoCorrect={false} />
-              <Text style={styles.fieldLabel}>APN Username</Text>
-              <TextInput style={styles.input} value={apnUserInput} onChangeText={setApnUserInput}
-                placeholder="(leave empty if none)" autoCapitalize="none" autoCorrect={false} />
-              <Text style={styles.fieldLabel}>APN Password</Text>
-              <TextInput style={styles.input} value={apnPassInput} onChangeText={setApnPassInput}
-                placeholder="(leave empty if none)" autoCapitalize="none" autoCorrect={false} secureTextEntry />
-            </CollapsibleSection>
+        {/* ── Cellular / APN ── */}
+        <CollapsibleSection
+          title="Cellular / APN"
+          icon="cellular"
+          expanded={expandedSections.cellular}
+          onToggle={() => toggleSection('cellular')}
+        >
+          <Text style={styles.fieldLabel}>APN</Text>
+          <TextInput style={styles.input} value={apnInput} onChangeText={setApnInput}
+            placeholder="airtelfun.com" autoCapitalize="none" autoCorrect={false} />
+          <Text style={styles.fieldLabel}>APN Username</Text>
+          <TextInput style={styles.input} value={apnUserInput} onChangeText={setApnUserInput}
+            placeholder="(leave empty if none)" autoCapitalize="none" autoCorrect={false} />
+          <Text style={styles.fieldLabel}>APN Password</Text>
+          <TextInput style={styles.input} value={apnPassInput} onChangeText={setApnPassInput}
+            placeholder="(leave empty if none)" autoCapitalize="none" autoCorrect={false} secureTextEntry />
+        </CollapsibleSection>
 
-            {/* ── Tracking Server ── */}
-            <CollapsibleSection
-              title="Tracking Server"
-              icon="cloud-upload"
-              expanded={expandedSections.server}
-              onToggle={() => toggleSection('server')}
-            >
-              <Text style={styles.fieldLabel}>Server Address</Text>
-              <TextInput style={styles.input} value={serverHostInput} onChangeText={setServerHostInput}
-                placeholder="tracking.example.com" autoCapitalize="none" autoCorrect={false} />
-              <Text style={styles.fieldLabel}>Server Port</Text>
-              <TextInput style={styles.input} value={serverPortInput} onChangeText={setServerPortInput}
-                placeholder="5001" keyboardType="number-pad" maxLength={5} />
-            </CollapsibleSection>
+        {/* ── Tracking Server ── */}
+        <CollapsibleSection
+          title="Tracking Server"
+          icon="cloud-upload"
+          expanded={expandedSections.server}
+          onToggle={() => toggleSection('server')}
+        >
+          <Text style={styles.fieldLabel}>Server Address</Text>
+          <TextInput style={styles.input} value={serverHostInput} onChangeText={setServerHostInput}
+            placeholder="tracking.example.com" autoCapitalize="none" autoCorrect={false} />
+          <Text style={styles.fieldLabel}>Server Port</Text>
+          <TextInput style={styles.input} value={serverPortInput} onChangeText={setServerPortInput}
+            placeholder="5001" keyboardType="number-pad" maxLength={5} />
+        </CollapsibleSection>
 
-            {/* ── Reporting ── */}
-            <CollapsibleSection
-              title="Reporting"
-              icon="timer"
-              expanded={expandedSections.reporting}
-              onToggle={() => toggleSection('reporting')}
-            >
-              <Text style={styles.fieldLabel}>Auto Upload Interval (seconds, 0 = unchanged)</Text>
-              <TextInput style={styles.input} value={uploadIntervalInput} onChangeText={setUploadIntervalInput}
-                placeholder="60" keyboardType="number-pad" />
-            </CollapsibleSection>
+        {/* ── Reporting ── */}
+        <CollapsibleSection
+          title="Reporting"
+          icon="timer"
+          expanded={expandedSections.reporting}
+          onToggle={() => toggleSection('reporting')}
+        >
+          <Text style={styles.fieldLabel}>Auto Upload Interval (seconds, 0 = unchanged)</Text>
+          <TextInput style={styles.input} value={uploadIntervalInput} onChangeText={setUploadIntervalInput}
+            placeholder="60" keyboardType="number-pad" />
+        </CollapsibleSection>
 
-            {/* ── Audio / Volume ── */}
-            <CollapsibleSection
-              title="Audio & Volume"
-              icon="volume-high"
-              expanded={expandedSections.audio}
-              onToggle={() => toggleSection('audio')}
-            >
-              <Text style={styles.fieldLabel}>Ring-Tone Volume (0–100)</Text>
-              <TextInput style={styles.input} value={ringtoneVol} onChangeText={setRingtoneVol}
-                keyboardType="number-pad" placeholder="100" maxLength={3} />
-              <Text style={styles.fieldLabel}>Mic Volume (0–15)</Text>
-              <TextInput style={styles.input} value={micVol} onChangeText={setMicVol}
-                keyboardType="number-pad" placeholder="10" maxLength={2} />
-              <Text style={styles.fieldLabel}>Speaker Volume (0–100)</Text>
-              <TextInput style={styles.input} value={speakerVol} onChangeText={setSpeakerVol}
-                keyboardType="number-pad" placeholder="100" maxLength={3} />
-            </CollapsibleSection>
+        {/* ── Audio / Volume ── */}
+        <CollapsibleSection
+          title="Audio & Volume"
+          icon="volume-high"
+          expanded={expandedSections.audio}
+          onToggle={() => toggleSection('audio')}
+        >
+          <Text style={styles.fieldLabel}>Ring-Tone Volume (0–100)</Text>
+          <TextInput style={styles.input} value={ringtoneVol} onChangeText={setRingtoneVol}
+            keyboardType="number-pad" placeholder="100" maxLength={3} />
+          <Text style={styles.fieldLabel}>Mic Volume (0–15)</Text>
+          <TextInput style={styles.input} value={micVol} onChangeText={setMicVol}
+            keyboardType="number-pad" placeholder="10" maxLength={2} />
+          <Text style={styles.fieldLabel}>Speaker Volume (0–100)</Text>
+          <TextInput style={styles.input} value={speakerVol} onChangeText={setSpeakerVol}
+            keyboardType="number-pad" placeholder="100" maxLength={3} />
+        </CollapsibleSection>
 
-            {/* ── Alarm & No Disturb ── */}
-            <CollapsibleSection
-              title="Alarm & Do Not Disturb"
-              icon="alarm"
-              expanded={expandedSections.alarm}
-              onToggle={() => toggleSection('alarm')}
-            >
-              <Text style={styles.groupLabel}>Alarm Clock</Text>
-              <ToggleRow label="Alarm Enabled" value={alarmEnabled} onValueChange={setAlarmEnabled} />
-              <Text style={styles.fieldLabel}>Alarm Slot</Text>
-              <View style={styles.modeRow}>
-                {ALARM_SLOT_OPTIONS.map(slot => (
-                  <TouchableOpacity
-                    key={slot}
-                    style={[styles.modeChip, alarmIndex === slot && styles.modeChipActive]}
-                    onPress={() => setAlarmIndex(slot)}
-                  >
-                    <Text style={[styles.modeChipText, alarmIndex === slot && styles.modeChipTextActive]}>{slot}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              <View style={styles.timeRow}>
-                <View style={styles.timeField}>
-                  <Text style={styles.fieldLabel}>Hour (0–23)</Text>
-                  <TextInput style={styles.input} value={alarmHour} onChangeText={setAlarmHour}
-                    keyboardType="number-pad" placeholder="8" maxLength={2} />
-                </View>
-                <View style={styles.timeField}>
-                  <Text style={styles.fieldLabel}>Minute (0–59)</Text>
-                  <TextInput style={styles.input} value={alarmMinute} onChangeText={setAlarmMinute}
-                    keyboardType="number-pad" placeholder="0" maxLength={2} />
-                </View>
-              </View>
-              <Text style={styles.fieldLabel}>Repeat Days</Text>
-              <View style={styles.weekdayRow}>
-                {EV07B_WEEKDAY_OPTIONS.map(option => {
-                  const isActive = (alarmWorkdayMask & (1 << option.bit)) !== 0;
-                  return (
-                    <TouchableOpacity
-                      key={option.key}
-                      style={[styles.weekdayChip, isActive && styles.weekdayChipActive]}
-                      onPress={() => toggleAlarmWorkdayBit(option.bit)}
-                    >
-                      <Text style={[styles.weekdayChipText, isActive && styles.weekdayChipTextActive]}>
-                        {option.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-              <Text style={styles.helperText}>
-                If no day is selected, the app saves this as an everyday alarm so the enable flag sticks on device firmware.
-              </Text>
-              <View style={styles.timeRow}>
-                <View style={styles.timeField}>
-                  <Text style={styles.fieldLabel}>Reminder Duration (1–120 sec)</Text>
-                  <TextInput style={styles.input} value={alarmDurationSec} onChangeText={setAlarmDurationSec}
-                    keyboardType="number-pad" placeholder="30" maxLength={3} />
-                </View>
-                <View style={styles.timeField}>
-                  <Text style={styles.fieldLabel}>Ringtone (1–10)</Text>
-                  <TextInput style={styles.input} value={alarmRing} onChangeText={setAlarmRing}
-                    keyboardType="number-pad" placeholder="1" maxLength={2} />
-                </View>
-              </View>
+        {/* ── Alarm & No Disturb ── */}
+        <CollapsibleSection
+          title="Alarm & Do Not Disturb"
+          icon="alarm"
+          expanded={expandedSections.alarm}
+          onToggle={() => toggleSection('alarm')}
+        >
+          <Text style={styles.groupLabel}>Alarm Clock</Text>
+          <ToggleRow label="Alarm Enabled" value={alarmEnabled} onValueChange={setAlarmEnabled} />
+          <Text style={styles.fieldLabel}>Alarm Slot</Text>
+          <View style={styles.modeRow}>
+            {ALARM_SLOT_OPTIONS.map(slot => (
+              <TouchableOpacity
+                key={slot}
+                style={[styles.modeChip, alarmIndex === slot && styles.modeChipActive]}
+                onPress={() => setAlarmIndex(slot)}
+              >
+                <Text style={[styles.modeChipText, alarmIndex === slot && styles.modeChipTextActive]}>{slot}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <View style={styles.timeRow}>
+            <View style={styles.timeField}>
+              <Text style={styles.fieldLabel}>Hour (0–23)</Text>
+              <TextInput style={styles.input} value={alarmHour} onChangeText={setAlarmHour}
+                keyboardType="number-pad" placeholder="8" maxLength={2} />
+            </View>
+            <View style={styles.timeField}>
+              <Text style={styles.fieldLabel}>Minute (0–59)</Text>
+              <TextInput style={styles.input} value={alarmMinute} onChangeText={setAlarmMinute}
+                keyboardType="number-pad" placeholder="0" maxLength={2} />
+            </View>
+          </View>
+          <Text style={styles.fieldLabel}>Repeat Days</Text>
+          <View style={styles.weekdayRow}>
+            {EV07B_WEEKDAY_OPTIONS.map(option => {
+              const isActive = (alarmWorkdayMask & (1 << option.bit)) !== 0;
+              return (
+                <TouchableOpacity
+                  key={option.key}
+                  style={[styles.weekdayChip, isActive && styles.weekdayChipActive]}
+                  onPress={() => toggleAlarmWorkdayBit(option.bit)}
+                >
+                  <Text style={[styles.weekdayChipText, isActive && styles.weekdayChipTextActive]}>
+                    {option.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <Text style={styles.helperText}>
+            If no day is selected, the app saves this as an everyday alarm so the enable flag sticks on device firmware.
+          </Text>
+          <View style={styles.timeRow}>
+            <View style={styles.timeField}>
+              <Text style={styles.fieldLabel}>Reminder Duration (1–120 sec)</Text>
+              <TextInput style={styles.input} value={alarmDurationSec} onChangeText={setAlarmDurationSec}
+                keyboardType="number-pad" placeholder="30" maxLength={3} />
+            </View>
+            <View style={styles.timeField}>
+              <Text style={styles.fieldLabel}>Ringtone (1–10)</Text>
+              <TextInput style={styles.input} value={alarmRing} onChangeText={setAlarmRing}
+                keyboardType="number-pad" placeholder="1" maxLength={2} />
+            </View>
+          </View>
 
-              <View style={styles.divider} />
-              <Text style={styles.groupLabel}>Do Not Disturb</Text>
-              <ToggleRow label="Enabled" value={noDisturbEnabled} onValueChange={setNoDisturbEnabled} />
-              <View style={styles.timeRow}>
-                <View style={styles.timeField}>
-                  <Text style={styles.fieldLabel}>Start Hour</Text>
-                  <TextInput style={styles.input} value={ndStartHour} onChangeText={setNdStartHour}
-                    keyboardType="number-pad" placeholder="22" maxLength={2} />
-                </View>
-                <View style={styles.timeField}>
-                  <Text style={styles.fieldLabel}>Start Min</Text>
-                  <TextInput style={styles.input} value={ndStartMin} onChangeText={setNdStartMin}
-                    keyboardType="number-pad" placeholder="0" maxLength={2} />
-                </View>
-              </View>
-              <View style={styles.timeRow}>
-                <View style={styles.timeField}>
-                  <Text style={styles.fieldLabel}>End Hour</Text>
-                  <TextInput style={styles.input} value={ndEndHour} onChangeText={setNdEndHour}
-                    keyboardType="number-pad" placeholder="7" maxLength={2} />
-                </View>
-                <View style={styles.timeField}>
-                  <Text style={styles.fieldLabel}>End Min</Text>
-                  <TextInput style={styles.input} value={ndEndMin} onChangeText={setNdEndMin}
-                    keyboardType="number-pad" placeholder="0" maxLength={2} />
-                </View>
-              </View>
-            </CollapsibleSection>
-          </>
-        ) : null}
+          <View style={styles.divider} />
+          <Text style={styles.groupLabel}>Do Not Disturb</Text>
+          <ToggleRow label="Enabled" value={noDisturbEnabled} onValueChange={setNoDisturbEnabled} />
+          <View style={styles.timeRow}>
+            <View style={styles.timeField}>
+              <Text style={styles.fieldLabel}>Start Hour</Text>
+              <TextInput style={styles.input} value={ndStartHour} onChangeText={setNdStartHour}
+                keyboardType="number-pad" placeholder="22" maxLength={2} />
+            </View>
+            <View style={styles.timeField}>
+              <Text style={styles.fieldLabel}>Start Min</Text>
+              <TextInput style={styles.input} value={ndStartMin} onChangeText={setNdStartMin}
+                keyboardType="number-pad" placeholder="0" maxLength={2} />
+            </View>
+          </View>
+          <View style={styles.timeRow}>
+            <View style={styles.timeField}>
+              <Text style={styles.fieldLabel}>End Hour</Text>
+              <TextInput style={styles.input} value={ndEndHour} onChangeText={setNdEndHour}
+                keyboardType="number-pad" placeholder="7" maxLength={2} />
+            </View>
+            <View style={styles.timeField}>
+              <Text style={styles.fieldLabel}>End Min</Text>
+              <TextInput style={styles.input} value={ndEndMin} onChangeText={setNdEndMin}
+                keyboardType="number-pad" placeholder="0" maxLength={2} />
+            </View>
+          </View>
+        </CollapsibleSection>
 
         {/* ── Safety Alerts ── */}
         <CollapsibleSection
@@ -1075,58 +1103,75 @@ const DeviceDetailScreen = () => {
           )}
         </CollapsibleSection>
 
-        {SHOW_ADDITIONAL_CONFIG_SECTIONS ? (
-          <CollapsibleSection
-            title="Feature Toggles"
-            icon="toggle"
-            expanded={expandedSections.features}
-            onToggle={() => toggleSection('features')}
-          >
-            <Text style={styles.groupLabel}>Enable Control Flags</Text>
-            <Text style={styles.helperText}>
-              These toggles are stored in the device&apos;s 32-bit enable-control mask and now round-trip through Sync Info.
-            </Text>
-            {EV07B_ENABLE_CONTROL_FLAGS.map(flag => (
-              <ToggleRow
-                key={flag.key}
-                label={`${flag.label} (bit ${flag.bit})`}
-                value={hasEv07bFlag(enableControl, flag.bit)}
-                onValueChange={() => toggleCtrlBit(flag.bit)}
-              />
-            ))}
+        <CollapsibleSection
+          title="Device Feature Flags"
+          icon="toggle"
+          expanded={expandedSections.featureFlags}
+          onToggle={() => toggleSection('featureFlags')}
+        >
+          <Text style={styles.groupLabel}>Enable Control Flags</Text>
+          <Text style={styles.helperText}>
+            These toggles are stored in the device&apos;s 32-bit enable-control mask and now round-trip through Sync Info.
+          </Text>
+          {EV07B_ENABLE_CONTROL_FLAGS.map(flag => (
+            <ToggleRow
+              key={flag.key}
+              label={`${flag.label} (bit ${flag.bit})`}
+              value={hasEv07bFlag(enableControl, flag.bit)}
+              onValueChange={() => toggleCtrlBit(flag.bit)}
+            />
+          ))}
+        </CollapsibleSection>
 
-            <View style={styles.divider} />
-            <Text style={styles.groupLabel}>SMS Reply URLs</Text>
-            <Text style={styles.helperText}>
-              Leave a field blank if you want Save Config to clear that reply template. Device limit is 40 ASCII characters.
-            </Text>
-            <Text style={styles.fieldLabel}>GPS SMS URL</Text>
-            <TextInput style={styles.input} value={smsGpsUrl} onChangeText={setSmsGpsUrl}
-              placeholder="https://maps.example/gps" autoCapitalize="none" autoCorrect={false} maxLength={SMS_URL_MAX_LENGTH} />
-            <Text style={styles.fieldLabel}>WiFi/LBS SMS URL</Text>
-            <TextInput style={styles.input} value={smsWifiLbsUrl} onChangeText={setSmsWifiLbsUrl}
-              placeholder="https://maps.example/lbs" autoCapitalize="none" autoCorrect={false} maxLength={SMS_URL_MAX_LENGTH} />
+        <CollapsibleSection
+          title="SMS Reply Templates"
+          icon="chatbubble"
+          expanded={expandedSections.smsTemplates}
+          onToggle={() => toggleSection('smsTemplates')}
+        >
+          <Text style={styles.helperText}>
+            Leave a field blank if you want Save Config to clear that reply template. Device limit is 40 ASCII characters.
+          </Text>
+          <Text style={styles.fieldLabel}>GPS SMS URL</Text>
+          <TextInput style={styles.input} value={smsGpsUrl} onChangeText={setSmsGpsUrl}
+            placeholder="https://maps.example/gps" autoCapitalize="none" autoCorrect={false} maxLength={SMS_URL_MAX_LENGTH} />
+          <Text style={styles.fieldLabel}>WiFi/LBS SMS URL</Text>
+          <TextInput style={styles.input} value={smsWifiLbsUrl} onChangeText={setSmsWifiLbsUrl}
+            placeholder="https://maps.example/lbs" autoCapitalize="none" autoCorrect={false} maxLength={SMS_URL_MAX_LENGTH} />
+        </CollapsibleSection>
 
-            <View style={styles.divider} />
-            <Text style={styles.groupLabel}>Voice Prompt Flags</Text>
-            <Text style={styles.helperText}>
-              These prompts are stored in key 0x19 as a separate 32-bit mask.
-            </Text>
-            {EV07B_VOICE_PROMPT_FLAGS.map(flag => (
-              <ToggleRow
-                key={flag.key}
-                label={`${flag.label} (bit ${flag.bit})`}
-                value={hasEv07bFlag(voicePromptMask, flag.bit)}
-                onValueChange={() => toggleVoicePromptBit(flag.bit)}
-              />
-            ))}
+        <CollapsibleSection
+          title="Voice Prompts"
+          icon="volume-medium"
+          expanded={expandedSections.voicePrompts}
+          onToggle={() => toggleSection('voicePrompts')}
+        >
+          <Text style={styles.helperText}>
+            These prompts are stored in key 0x19 as a separate 32-bit mask.
+          </Text>
+          {EV07B_VOICE_PROMPT_FLAGS.map(flag => (
+            <ToggleRow
+              key={flag.key}
+              label={`${flag.label} (bit ${flag.bit})`}
+              value={hasEv07bFlag(voicePromptMask, flag.bit)}
+              onValueChange={() => toggleVoicePromptBit(flag.bit)}
+            />
+          ))}
+        </CollapsibleSection>
 
-            <View style={styles.divider} />
-            <Text style={styles.fieldLabel}>Whitelist BLE Device MAC</Text>
-            <TextInput style={styles.input} value={whitelistDevice} onChangeText={setWhitelistDevice}
-              placeholder="AA:BB:CC:DD:EE:FF" autoCapitalize="characters" maxLength={17} />
-          </CollapsibleSection>
-        ) : null}
+        <CollapsibleSection
+          title="BLE Whitelist"
+          icon="bluetooth"
+          expanded={expandedSections.bluetoothAccess}
+          onToggle={() => toggleSection('bluetoothAccess')}
+        >
+          <Text style={styles.helperText}>
+            Limit paired BLE accessory access by saving a single trusted device MAC address.
+          </Text>
+          <Text style={styles.fieldLabel}>Whitelist BLE Device MAC</Text>
+          <TextInput style={styles.input} value={whitelistDevice} onChangeText={setWhitelistDevice}
+            placeholder="AA:BB:CC:DD:EE:FF" autoCapitalize="characters" maxLength={17} />
+        </CollapsibleSection>
 
         {/* ── GATT Services ── */}
         <CollapsibleSection

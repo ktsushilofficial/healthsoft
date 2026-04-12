@@ -105,8 +105,8 @@ describe('ev07bConfigCodec', () => {
       slot: 2,
       enabled: true,
       acceptSms: true,
-      noSimDialing: true,
-      acceptPhoneCall: false,
+      noSimDialing: false,
+      acceptPhoneCall: true,
       number: '+919876543210',
     });
 
@@ -130,8 +130,8 @@ describe('ev07bConfigCodec', () => {
       slot: 2,
       enabled: true,
       acceptSms: true,
-      noSimDialing: true,
-      acceptPhoneCall: false,
+      noSimDialing: false,
+      acceptPhoneCall: true,
       number: '+919876543210',
     });
   });
