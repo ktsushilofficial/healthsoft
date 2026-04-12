@@ -14,6 +14,7 @@ import NotificationsScreen from './src/screens/NotificationsScreen';
 import WebViewScreen from './src/screens/WebViewScreen';
 import ChangePasswordScreen from './src/screens/ChangePasswordScreen';
 import DeviceDetailScreen from './src/screens/DeviceDetailScreen';
+import AssignedDevicesScreen from './src/screens/AssignedDevicesScreen';
 import { BleProvider } from './src/bluetooth/BleProvider';
 import {
   requestNotificationPermission,
@@ -57,6 +58,7 @@ const AppNavigator = () => {
           <Stack.Screen name="WebView" component={WebViewScreen} />
           <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
           <Stack.Screen name="DeviceDetail" component={DeviceDetailScreen} />
+          <Stack.Screen name="AssignedDevices" component={AssignedDevicesScreen} />
         </>
       )}
     </Stack.Navigator>

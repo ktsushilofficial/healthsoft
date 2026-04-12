@@ -551,6 +551,15 @@ const DeviceScreen = () => {
                 <Text style={styles.cardSubtitle}>
                   Link and manage nearby medical devices for the care plan.
                 </Text>
+                <TouchableOpacity
+                  style={styles.assignedDevicesChip}
+                  onPress={() => navigation.navigate('AssignedDevices')}
+                  activeOpacity={0.85}
+                >
+                  <Icon name="hardware-chip-outline" size={17} color="#F28C28" />
+                  <Text style={styles.assignedDevicesChipText}>Assigned devices</Text>
+                  <Icon name="chevron-forward" size={16} color="#C4A574" />
+                </TouchableOpacity>
                 {activeSeniorId ? (
                   <Text style={styles.cardSubtitle}>
                     {assignedDevicesLoading
@@ -1123,6 +1132,31 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '600',
     marginLeft: 6,
+  },
+  assignedDevicesChip: {
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    marginBottom: 14,
+    borderRadius: 999,
+    backgroundColor: '#FFFBF7',
+    borderWidth: 1,
+    borderColor: '#F5DCC4',
+    shadowColor: '#C4A574',
+    shadowOpacity: 0.12,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
+  },
+  assignedDevicesChipText: {
+    marginLeft: 8,
+    marginRight: 4,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#5C4A3A',
+    letterSpacing: 0.2,
   },
   secondaryButton: {
     backgroundColor: '#F28C28',

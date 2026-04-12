@@ -4,4 +4,5 @@ export type DeviceStackParamList = {
     deviceName?: string | null;
     assignedImei?: string | null;
   };
+  AssignedDevices: undefined;
 };

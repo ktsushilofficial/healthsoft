@@ -1,5 +1,5 @@
 // src/screens/HomeScreen.tsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 
 import {
   View,
@@ -14,7 +14,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useAuth } from '../context/AuthContext';
 import SeniorSelectionModal from '../components/SeniorSelectionModal';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { getMockSeniorHomeSnapshot } from '../mocks/mockSeniorHomeSnapshot';
+import { buildOpenStreetMapMarkerUrl } from '../utils/openStreetMap';
 
 const HERO_IMAGES = [
   { uri: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80' },
@@ -24,20 +26,59 @@ const HERO_IMAGES = [
   { uri: 'https://images.unsplash.com/photo-1447752875215-b2761acb3c5d?auto=format&fit=crop&w=1200&q=80' },
 ];
 
+const SENIOR_ROLE = 'SENIOR';
+
+function capitalizeWord(s: string) {
+  if (!s) return '';
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+
+function getGreetingFromDate(date: Date) {
+  const h = date.getHours();
+  if (h >= 5 && h < 12) {
+    return { title: 'Good morning', icon: 'sunny' as const, iconColor: '#F4C24D' };
+  }
+  if (h >= 12 && h < 17) {
+    return { title: 'Good afternoon', icon: 'sunny' as const, iconColor: '#FFB347' };
+  }
+  if (h >= 17 && h < 21) {
+    return {
+      title: 'Good evening',
+      icon: 'partly-sunny' as const,
+      iconColor: '#FF9F1C',
+    };
+  }
+  return { title: 'Good night', icon: 'moon' as const, iconColor: '#C5D4EB' };
+}
+
 const HomeScreen = () => {
-  const { selectedSenior, seniors, getMySeniors, isCaretaker } = useAuth();
+  const navigation = useNavigation<any>();
+  const { user, selectedSenior, seniors, getMySeniors, isCaretaker } = useAuth();
   const [modalVisible, setModalVisible] = useState(false);
   const [heroIndex, setHeroIndex] = useState(0);
+  const [nowTick, setNowTick] = useState(() => new Date());
 
-  const weatherImage = {
-    uri: 'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=600&q=80',
+  const snapshotKey = useMemo(() => {
+    if (!user) return 'preview';
+    if (user.role === SENIOR_ROLE) return user.user_id;
+    if (selectedSenior?.userId) return selectedSenior.userId;
+    return `family-${user.user_id}`;
+  }, [user, selectedSenior?.userId]);
+
+  const liveSnapshot = useMemo(
+    () => getMockSeniorHomeSnapshot(snapshotKey),
+    [snapshotKey]
+  );
+
+  const locationThumb = {
+    uri: 'https://images.unsplash.com/photo-1524661135-423995f22d0f?auto=format&fit=crop&w=600&q=80',
   };
 
   useFocusEffect(
     useCallback(() => {
+      setNowTick(new Date());
       if (!isCaretaker) return;
       const checkSeniorSelection = async () => {
-        // Refresh senior list when screen focuses
         try {
           await getMySeniors();
         } catch (e) {
@@ -61,6 +102,50 @@ const HomeScreen = () => {
     }, 6000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const greeting = useMemo(() => getGreetingFromDate(nowTick), [nowTick]);
+
+  const bannerDisplayName = useMemo(() => {
+    if (!user) return { line: 'Welcome!', subtitleDay: '' };
+    if (user.role === SENIOR_ROLE) {
+      const fn = capitalizeWord((user.first_name || '').trim());
+      const ln = (user.last_name || '').trim();
+      const line = fn ? `${fn}${ln ? ` ${ln}` : ''}!` : 'Welcome!';
+      return { line, subtitleDay: '' };
+    }
+    if (selectedSenior) {
+      const fn = capitalizeWord((selectedSenior.firstName || '').trim());
+      const ln = (selectedSenior.lastName || '').trim();
+      const line = fn ? `${fn}${ln ? ` ${ln}` : ''}!` : 'Welcome!';
+      return { line, subtitleDay: '' };
+    }
+    return {
+      line: 'Your family',
+      subtitleDay: 'Select a senior above to personalize this card.',
+    };
+  }, [user, selectedSenior]);
+
+  const weekdayLine = useMemo(() => {
+    const d = nowTick;
+    const weekday = d.toLocaleDateString(undefined, { weekday: 'long' });
+    const monthDay = d.toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
+    return `Have a wonderful ${weekday} — ${monthDay}`;
+  }, [nowTick]);
+
+  const openLastPositionMap = useCallback(() => {
+    const lat = liveSnapshot.latitude;
+    const lon = liveSnapshot.longitude;
+    const url = buildOpenStreetMapMarkerUrl(lat, lon);
+    navigation.navigate('WebView', {
+      url,
+      title: 'Last position (OpenStreetMap)',
+    });
+  }, [liveSnapshot.latitude, liveSnapshot.longitude, navigation]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -113,80 +198,148 @@ const HomeScreen = () => {
           imageStyle={styles.greetingImage}
         >
           <View style={styles.greetingOverlay}>
-            <Text style={styles.greetingTitle}>Good Morning</Text>
-            <Text style={styles.greetingName}>Mrs. Rao!</Text>
+            <Text style={styles.greetingTitle}>{greeting.title}</Text>
+            <Text style={styles.greetingName}>{bannerDisplayName.line}</Text>
             <Text style={styles.greetingSubtitle}>
-              Have a wonderful Thursday!
+              {bannerDisplayName.subtitleDay || weekdayLine}
             </Text>
             <Text style={styles.greetingMessage}>
-              Make today a great one and remember,{'\n'}you&apos;re loved and
-              cherished.
+              {bannerDisplayName.subtitleDay
+                ? weekdayLine
+                : `Make today a great one — ${greeting.title.toLowerCase()} from Healthsoft.`}
             </Text>
           </View>
           <View style={styles.sunIcon}>
-            <Icon name="sunny" size={42} color="#F4C24D" />
+            <Icon name={greeting.icon} size={42} color={greeting.iconColor} />
           </View>
         </ImageBackground>
 
-        {/* Weather Card */}
+        {/* Location (reuses weather card layout) */}
         <View style={styles.weatherCard}>
           <View style={styles.weatherLeft}>
             <View style={styles.weatherHeader}>
-              <Icon name="sunny" size={18} color="#FF9500" />
-              <Text style={styles.weatherLocation}>Today in Chennai</Text>
+              <Icon name="location" size={18} color="#FF9500" />
+              <Text style={styles.weatherLocation}>Last known position</Text>
             </View>
-            <View style={styles.weatherContent}>
-              <Text style={styles.temperature}>31°</Text>
-              <Text style={styles.weatherDesc}>Mostly Sunny</Text>
+            <View style={styles.coordBlock}>
+              <Text style={styles.coordLabel}>Latitude</Text>
+              <Text style={[styles.coordValue, styles.coordValueLat]} selectable>
+                {`${liveSnapshot.latitude.toFixed(6)}°`}
+              </Text>
+              <Text style={[styles.coordLabel, styles.coordLabelLon]}>Longitude</Text>
+              <Text style={[styles.coordValue, styles.coordValueLon]} selectable>
+                {`${liveSnapshot.longitude.toFixed(6)}°`}
+              </Text>
             </View>
-            <Text style={styles.weatherRange}>High: 34° | Low: 26°</Text>
+            <Text style={styles.weatherRangeTight}>
+              {`${Math.round(liveSnapshot.speedKph)} km/h · ${liveSnapshot.lastUpdatedLabel}`}
+            </Text>
+            <Text style={styles.weatherRange}>{liveSnapshot.networkLabel}</Text>
+            <TouchableOpacity
+              style={styles.mapButton}
+              onPress={openLastPositionMap}
+              activeOpacity={0.85}
+            >
+              <Icon name="map-outline" size={18} color="#FF9500" />
+              <View style={styles.mapButtonTextCol}>
+                <Text style={styles.mapButtonTitle}>View on map</Text>
+                <Text style={styles.mapButtonSubtitle}>OpenStreetMap · marker at this point</Text>
+              </View>
+              <Icon name="chevron-forward" size={18} color="#C7C1BA" />
+            </TouchableOpacity>
           </View>
-          <Image source={weatherImage} style={styles.weatherImage} />
+          <Image source={locationThumb} style={styles.weatherImage} />
         </View>
 
-        {/* Rahukalam + Yamagandam */}
+        {/* Battery + safety (reuses Rahukalam / Yamagandam card row) */}
         <View style={styles.badgesRow}>
           <View style={[styles.badgeCard, styles.badgeWarm]}>
             <View style={styles.badgeHeader}>
-              <Icon name="warning" size={16} color="#D18B2E" />
-              <Text style={styles.badgeTitle}>Rahukalam</Text>
+              <Icon
+                name={
+                  liveSnapshot.charging
+                    ? 'battery-charging'
+                    : liveSnapshot.batteryPercent > 75
+                      ? 'battery-full'
+                      : liveSnapshot.batteryPercent > 30
+                        ? 'battery-half'
+                        : 'battery-dead-outline'
+                }
+                size={16}
+                color="#D18B2E"
+              />
+              <Text style={styles.badgeTitle}>Battery</Text>
             </View>
-            <Text style={styles.badgeTime}>Today, 1:30 PM - 3:00 PM</Text>
+            <Text style={styles.badgeHighlight}>{`${liveSnapshot.batteryPercent}%`}</Text>
+            <Text style={styles.badgeTime}>
+              {liveSnapshot.charging ? 'Charging now' : 'On battery power'}
+            </Text>
           </View>
           <View style={[styles.badgeCard, styles.badgeCool]}>
             <View style={styles.badgeHeader}>
-              <Icon name="remove-circle" size={16} color="#D7643C" />
-              <Text style={styles.badgeTitle}>Yamagandam</Text>
+              <Icon
+                name={
+                  liveSnapshot.alarmSeverity === 'ok'
+                    ? 'shield-checkmark'
+                    : 'warning'
+                }
+                size={16}
+                color="#D7643C"
+              />
+              <Text style={styles.badgeTitle}>Safety</Text>
             </View>
-            <Text style={styles.badgeTime}>Today, 6:00 AM - 7:30 AM</Text>
+            <Text style={styles.badgeHighlight} numberOfLines={2}>
+              {liveSnapshot.primaryAlarmLabel}
+            </Text>
+            <Text style={styles.badgeTime} numberOfLines={2}>
+              {liveSnapshot.alarmDetail}
+            </Text>
+            <View style={styles.badgeAlarmMeta}>
+              <Icon
+                name="alarm-outline"
+                size={12}
+                color="#8A7565"
+                style={styles.badgeAlarmIcon}
+              />
+              <Text style={styles.badgeAlarmMetaText} numberOfLines={2}>
+                {`Last: ${liveSnapshot.lastAlarmKind} · ${liveSnapshot.lastAlarmAt}`}
+              </Text>
+            </View>
           </View>
         </View>
 
-        {/* Best Times */}
+        {/* Watch summary (reuses “Best times” card) */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Best Times for the Day</Text>
+          <Text style={styles.sectionTitle}>Watch status</Text>
           <View style={styles.timeCard}>
             <View style={styles.timeHeaderRow}>
-              <View>
-                <Text style={styles.timeTitle}>Thursday, Apr 18 2024</Text>
-                <Text style={styles.timeSubtitle}>
-                  Chaitra 10, Jaya Samvatsara
-                </Text>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={styles.timeTitle}>{liveSnapshot.primaryAlarmLabel}</Text>
+                <Text style={styles.timeSubtitle}>{liveSnapshot.alarmDetail}</Text>
+                <View style={styles.lastAlarmRow}>
+                  <Icon name="time-outline" size={16} color="#8A827A" />
+                  <View style={styles.lastAlarmTextCol}>
+                    <Text style={styles.lastAlarmLabel}>Last alarm</Text>
+                    <Text style={styles.lastAlarmValue}>
+                      {`${liveSnapshot.lastAlarmKind} · ${liveSnapshot.lastAlarmAt}`}
+                    </Text>
+                  </View>
+                </View>
               </View>
-              <Icon name="chevron-forward" size={18} color="#C7C1BA" />
+              <Icon name="pulse" size={18} color="#C7C1BA" />
             </View>
 
             <View style={styles.timeRow}>
               <View style={[styles.timeSlot, styles.timeSlotGreen]}>
-                <Text style={styles.timeSlotTitle}>Abhijit Muhurta</Text>
-                <Text style={styles.timeSlotValue}>
-                  Today, 11:55 AM - 12:45 PM
-                </Text>
+                <Text style={styles.timeSlotTitle}>Signal & network</Text>
+                <Text style={styles.timeSlotValue}>{liveSnapshot.networkLabel}</Text>
               </View>
               <View style={[styles.timeSlot, styles.timeSlotPeach]}>
-                <Text style={styles.timeSlotTitle}>Amrit Kalam</Text>
+                <Text style={styles.timeSlotTitle}>Fix quality</Text>
                 <Text style={styles.timeSlotValue}>
-                  Today, 9:46 PM - 11:28 PM
+                  {liveSnapshot.hdop != null && liveSnapshot.satellites != null
+                    ? `HDOP ${liveSnapshot.hdop} · ${liveSnapshot.satellites} satellites`
+                    : 'GNSS lock OK'}
                 </Text>
               </View>
             </View>
@@ -309,11 +462,13 @@ const styles = StyleSheet.create({
     padding: 16,
     borderRadius: 12,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
   },
   weatherLeft: {
     flex: 1,
+    minWidth: 0,
+    paddingRight: 4,
   },
   weatherHeader: {
     flexDirection: 'row',
@@ -325,19 +480,36 @@ const styles = StyleSheet.create({
     color: '#666',
     marginLeft: 8,
   },
-  weatherContent: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
+  coordBlock: {
+    marginBottom: 6,
   },
-  temperature: {
-    fontSize: 48,
-    fontWeight: 'bold',
+  coordLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8A827A',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 2,
+  },
+  coordLabelLon: {
+    marginTop: 8,
+  },
+  coordValue: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#333',
+    fontVariant: ['tabular-nums'],
+  },
+  coordValueLat: {
     color: '#FF9500',
   },
-  weatherDesc: {
-    fontSize: 20,
+  coordValueLon: {
     color: '#333',
-    marginLeft: 12,
+  },
+  weatherRangeTight: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 6,
   },
   weatherRange: {
     fontSize: 14,
@@ -348,7 +520,34 @@ const styles = StyleSheet.create({
     width: 90,
     height: 60,
     borderRadius: 12,
-    marginLeft: 12,
+    marginLeft: 8,
+    marginTop: 28,
+  },
+  mapButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#FFF8F0',
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#FFD4A8',
+  },
+  mapButtonTextCol: {
+    flex: 1,
+    marginLeft: 10,
+    minWidth: 0,
+  },
+  mapButtonTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#333',
+  },
+  mapButtonSubtitle: {
+    fontSize: 11,
+    color: '#8A7565',
+    marginTop: 2,
   },
   badgesRow: {
     flexDirection: 'row',
@@ -381,6 +580,51 @@ const styles = StyleSheet.create({
   badgeTime: {
     fontSize: 12,
     color: '#7A6B60',
+  },
+  badgeHighlight: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#5C4A3A',
+    marginBottom: 4,
+  },
+  badgeAlarmMeta: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginTop: 8,
+  },
+  badgeAlarmIcon: {
+    marginTop: 2,
+    marginRight: 6,
+  },
+  badgeAlarmMetaText: {
+    flex: 1,
+    fontSize: 11,
+    color: '#8A7565',
+    lineHeight: 15,
+  },
+  lastAlarmRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E8E2DA',
+  },
+  lastAlarmTextCol: {
+    flex: 1,
+    marginLeft: 8,
+  },
+  lastAlarmLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8A827A',
+    marginBottom: 4,
+  },
+  lastAlarmValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    lineHeight: 20,
   },
   section: {
     marginTop: 8,
