@@ -255,7 +255,7 @@ function getGreetingFromDate(date: Date) {
 
 const HomeScreen = () => {
   const navigation = useNavigation<any>();
-  const { user, selectedSenior, seniors, getMySeniors, isCaretaker, getSeniorDashboard, getGuardianDashboard } =
+  const { user, selectedSenior, seniors, selectSenior, getMySeniors, isCaretaker, getSeniorDashboard, getGuardianDashboard } =
     useAuth();
   const [modalVisible, setModalVisible] = useState(false);
   const [heroIndex, setHeroIndex] = useState(0);
@@ -572,11 +572,27 @@ const HomeScreen = () => {
   );
 
   useEffect(() => {
-    // Auto-prompt if no senior selected but seniors exist (caretakers only)
-    if (isCaretaker && !selectedSenior && seniors.length > 0) {
-      setModalVisible(true);
+    if (!isCaretaker) {
+      setModalVisible(false);
+      return;
     }
-  }, [selectedSenior, seniors.length, isCaretaker]);
+
+    if (selectedSenior) {
+      setModalVisible(false);
+      return;
+    }
+
+    if (seniors.length === 1) {
+      void selectSenior(seniors[0].userId)
+        .then(() => setModalVisible(false))
+        .catch(() => {
+          setModalVisible(false);
+        });
+      return;
+    }
+
+    setModalVisible(seniors.length > 1);
+  }, [selectedSenior, seniors, isCaretaker, selectSenior]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -665,7 +681,12 @@ const HomeScreen = () => {
           {isCaretaker && (
             <TouchableOpacity
               style={styles.headerRight}
-              onPress={() => setModalVisible(true)}
+              onPress={() => {
+                if (seniors.length > 1) {
+                  setModalVisible(true);
+                }
+              }}
+              disabled={seniors.length <= 1}
             >
               <View style={{ marginRight: 8, alignItems: 'flex-end' }}>
                 <Text style={{ fontSize: 14, fontWeight: '600', color: '#333' }}>
