@@ -41,6 +41,20 @@ const GEO_ALERT_TYPES = [
   { value: 'circle' as const, label: 'Circle' },
   { value: 'polygon' as const, label: 'Polygon' },
 ];
+type WriteBlock = { key: number; value: Uint8Array };
+type ConfigSectionKey =
+  | 'general'
+  | 'sos'
+  | 'cellular'
+  | 'server'
+  | 'reporting'
+  | 'audio'
+  | 'alarm'
+  | 'alerts'
+  | 'featureFlags'
+  | 'smsTemplates'
+  | 'voicePrompts'
+  | 'bluetoothAccess';
 
 function clampInt(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
@@ -244,6 +258,7 @@ const DeviceDetailScreen = () => {
   const [mileageInput, setMileageInput] = useState('');
 
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [savingSection, setSavingSection] = useState<ConfigSectionKey | null>(null);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     identity: true,
     general: true,
@@ -377,82 +392,237 @@ const DeviceDetailScreen = () => {
     }
   }, [deviceId, sendEv07bConfig]);
 
-  const runSave = useCallback(async () => {
-    let savedSosNumbers = false;
-    try {
-      setStatusMsg('Saving…');
-      const writes: { key: number; value: Uint8Array }[] = [];
-      const phoneWrites: { key: number; value: Uint8Array }[] = [];
-      const pushAuthorizedNumber = (numberValue: string, slotValue: string, fallbackSlot: number) => {
-        const digits = numberValue.replace(/[^0-9]/g, '').slice(0, 20);
-        if (!digits) return;
-        const parsedSlot = Number(slotValue);
-        const slot = Number.isFinite(parsedSlot) ? clampInt(parsedSlot, 0, 9) : fallbackSlot;
-        phoneWrites.push({
-          key: 0x30,
-          value: encodeEv07bAuthorizedPhone({
-            slot,
-            enabled: true,
-            acceptSms: true,
-            noSimDialing: false,
-            acceptPhoneCall: true,
-            number: digits,
-          }),
-        });
-      };
+  const pushAuthorizedNumber = useCallback((target: WriteBlock[], numberValue: string, slotValue: string, fallbackSlot: number) => {
+    const digits = numberValue.replace(/[^0-9]/g, '').slice(0, 20);
+    if (!digits) return;
+    const parsedSlot = Number(slotValue);
+    const slot = Number.isFinite(parsedSlot) ? clampInt(parsedSlot, 0, 9) : fallbackSlot;
+    target.push({
+      key: 0x30,
+      value: encodeEv07bAuthorizedPhone({
+        slot,
+        enabled: true,
+        acceptSms: true,
+        noSimDialing: false,
+        acceptPhoneCall: true,
+        number: digits,
+      }),
+    });
+  }, []);
 
-      // Time and timezone
-      const now = Math.floor(Date.now() / 1000);
-      writes.push({ key: 0x06, value: u32le(now) });
-      const parsedTimezone = Number(timezoneInput);
-      const tzVal = Number.isFinite(parsedTimezone) ? clampInt(parsedTimezone, -48, 56) : 0;
-      writes.push({ key: 0x0e, value: s8(tzVal) });
+  const buildAlarmClockWriteBlock = useCallback((overrides?: Partial<{
+    index: number;
+    enabled: boolean;
+    hour: string;
+    minute: string;
+    workdayMask: number;
+    durationSec: string;
+    ring: string;
+  }>): WriteBlock => ({
+    key: 0x0b,
+    value: encodeEv07bAlarmClock({
+      index: clampInt(overrides?.index ?? alarmIndex, 0, 3),
+      enabled: overrides?.enabled ?? alarmEnabled,
+      hour: clampInt(Number(overrides?.hour ?? alarmHour), 0, 23),
+      minute: clampInt(Number(overrides?.minute ?? alarmMinute), 0, 59),
+      workdayMask: overrides?.workdayMask ?? alarmWorkdayMask,
+      durationSec: clampInt(Number(overrides?.durationSec ?? alarmDurationSec), 1, 120),
+      ring: clampInt(Number(overrides?.ring ?? alarmRing), 1, 10),
+    }),
+  }), [alarmDurationSec, alarmEnabled, alarmHour, alarmIndex, alarmMinute, alarmRing, alarmWorkdayMask]);
 
-      // Device name
-      const trimmedDeviceName = deviceNameInput.trim();
-      if (trimmedDeviceName) {
-        writes.push({ key: 0x13, value: asciiBytes(trimmedDeviceName.slice(0, 20)) });
+  const buildNoDisturbWriteBlock = useCallback((overrides?: Partial<{
+    enabled: boolean;
+    startHour: string;
+    startMinute: string;
+    endHour: string;
+    endMinute: string;
+  }>): WriteBlock => ({
+    key: 0x0c,
+    value: encodeEv07bNoDisturb({
+      enabled: overrides?.enabled ?? noDisturbEnabled,
+      startHour: clampInt(Number(overrides?.startHour ?? ndStartHour), 0, 23),
+      startMinute: clampInt(Number(overrides?.startMinute ?? ndStartMin), 0, 59),
+      endHour: clampInt(Number(overrides?.endHour ?? ndEndHour), 0, 23),
+      endMinute: clampInt(Number(overrides?.endMinute ?? ndEndMin), 0, 59),
+    }),
+  }), [ndEndHour, ndEndMin, ndStartHour, ndStartMin, noDisturbEnabled]);
+
+  const buildNoMotionWriteBlock = useCallback((overrides?: Partial<{
+    enabled: boolean;
+    dial: boolean;
+    staticPeriodSec: string;
+  }>): WriteBlock => ({
+    key: 0x53,
+    value: encodeEv07bNoMotionAlert({
+      enabled: overrides?.enabled ?? noMotionAlertEnabled,
+      dial: overrides?.dial ?? noMotionAlertDial,
+      staticPeriodSec: clampInt(Number(overrides?.staticPeriodSec ?? noMotionAlertStaticPeriodSec), 60, 36000),
+    }),
+  }), [noMotionAlertDial, noMotionAlertEnabled, noMotionAlertStaticPeriodSec]);
+
+  const buildTiltWriteBlock = useCallback((overrides?: Partial<{
+    enabled: boolean;
+    dial: boolean;
+    angleDeg: string;
+    durationSec: string;
+  }>): WriteBlock => ({
+    key: 0x55,
+    value: encodeEv07bTiltAlert({
+      enabled: overrides?.enabled ?? tiltAlertEnabled,
+      dial: overrides?.dial ?? tiltAlertDial,
+      angleDeg: clampInt(Number(overrides?.angleDeg ?? tiltAlertAngleDeg), 30, 90),
+      durationSec: clampInt(Number(overrides?.durationSec ?? tiltAlertDurationSec), 10, 3600),
+    }),
+  }), [tiltAlertAngleDeg, tiltAlertDial, tiltAlertDurationSec, tiltAlertEnabled]);
+
+  const buildFallWriteBlock = useCallback((overrides?: Partial<{
+    enabled: boolean;
+    dial: boolean;
+    sensitivity: string;
+  }>): WriteBlock => ({
+    key: 0x56,
+    value: encodeEv07bFallDownAlert({
+      enabled: overrides?.enabled ?? fallDownAlertEnabled,
+      dial: overrides?.dial ?? fallDownAlertDial,
+      sensitivity: clampInt(Number(overrides?.sensitivity ?? fallDownAlertSensitivity), 1, 9),
+    }),
+  }), [fallDownAlertDial, fallDownAlertEnabled, fallDownAlertSensitivity]);
+
+  const buildGeoAlertWriteBlock = useCallback((overrides?: Partial<{
+    enabled: boolean;
+    direction: 'out' | 'in';
+    type: 'circle' | 'polygon';
+    index: string;
+    radiusMeters: string;
+    latitude: string;
+    longitude: string;
+    pointsInput: string;
+  }>): WriteBlock | null => {
+    const nextEnabled = overrides?.enabled ?? geoAlertEnabled;
+    const nextType = overrides?.type ?? geoAlertType;
+    const nextLatitude = overrides?.latitude ?? geoAlertLatitude;
+    const nextLongitude = overrides?.longitude ?? geoAlertLongitude;
+    const nextPointsInput = overrides?.pointsInput ?? geoAlertPointsInput;
+    const shouldWriteGeoAlert =
+      nextEnabled ||
+      nextLatitude.trim().length > 0 ||
+      nextLongitude.trim().length > 0 ||
+      nextPointsInput.trim().length > 0 ||
+      !!identity?.geoAlertEnabled ||
+      !!identity?.geoAlertPoints?.length;
+    if (!shouldWriteGeoAlert) return null;
+
+    let geoPoints: BleGeoPoint[];
+    if (nextType === 'polygon') {
+      geoPoints = nextPointsInput.trim()
+        ? parseGeoPointsInput(nextPointsInput)
+        : (identity?.geoAlertPoints ?? []);
+      if (geoPoints.length < 3) {
+        throw new Error('Geo Fence polygon needs at least 3 points');
       }
-
-      // Working Mode: 3-byte interval + 1-byte mode. The current UI only exposes modes 1-3.
-      const rawWorkingMode = WORKING_MODE_CODES[workingMode] ?? Math.max(1, workingMode + 1);
-      writes.push({ key: 0x0a, value: Uint8Array.from([...u24le(0), rawWorkingMode]) });
-
-      // Authorized numbers reuse key 0x30, with the lower 4 flag bits carrying the slot index.
-      pushAuthorizedNumber(sosNumber, sosSlot, 0);
-      pushAuthorizedNumber(sosNumber2, sosSlot2, 1);
-      pushAuthorizedNumber(sosNumber3, sosSlot3, 2);
-
-      // APN
-      if (apnInput) {
-        writes.push({ key: 0x40, value: asciiBytes(apnInput.trim().slice(0, 31)) });
+    } else {
+      const latitude = Number(nextLatitude);
+      const longitude = Number(nextLongitude);
+      if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+        geoPoints = [{ latitude, longitude }];
+      } else if (identity?.geoAlertPoints?.[0]) {
+        geoPoints = [identity.geoAlertPoints[0]];
+      } else {
+        throw new Error('Geo Fence latitude and longitude are required');
       }
-      if (apnUserInput) {
-        writes.push({ key: 0x41, value: asciiBytes(apnUserInput.trim().slice(0, 15)) });
-      }
-      if (apnPassInput) {
-        writes.push({ key: 0x42, value: asciiBytes(apnPassInput.trim().slice(0, 15)) });
-      }
+    }
 
-      // Server Address: [flag][port-hi][port-lo][host/domain]
-      const trimmedServerHost = serverHostInput.trim();
-      if (trimmedServerHost) {
-        const parsedPort = Number(serverPortInput);
-        const port = Number.isFinite(parsedPort) && parsedPort > 0
-          ? clampInt(parsedPort, 1, 65535)
-          : clampInt(identity?.serverPort ?? 5050, 1, 65535);
-        const hostBytes = asciiBytes(trimmedServerHost.slice(0, 49));
-        const serverVal = new Uint8Array(3 + hostBytes.length);
-        serverVal[0] = 0x80; // enable GPRS, TCP transport
-        serverVal[1] = (port >>> 8) & 0xff;
-        serverVal[2] = port & 0xff;
-        serverVal.set(hostBytes, 3);
-        writes.push({ key: 0x43, value: serverVal });
-      }
+    return {
+      key: 0x51,
+      value: encodeEv07bGeoAlert({
+        index: clampInt(Number(overrides?.index ?? geoAlertIndex), 0, 15),
+        enabled: nextEnabled,
+        direction: overrides?.direction ?? geoAlertDirection,
+        type: nextType,
+        radiusMeters: clampInt(Number(overrides?.radiusMeters ?? geoAlertRadiusMeters), 0, 65535),
+        points: geoPoints,
+      }),
+    };
+  }, [
+    geoAlertDirection,
+    geoAlertEnabled,
+    geoAlertIndex,
+    geoAlertLatitude,
+    geoAlertLongitude,
+    geoAlertPointsInput,
+    geoAlertRadiusMeters,
+    geoAlertType,
+    identity,
+  ]);
 
-      // Reporting interval block: heartbeat + upload + lazy upload.
-      const parsedUploadInterval = Number(uploadIntervalInput);
-      if (Number.isFinite(parsedUploadInterval) && parsedUploadInterval > 0) {
+  const sendWriteBlocks = useCallback(async (statusLabel: string, writeBlocks: WriteBlock[], successLabel = statusLabel) => {
+    setStatusMsg(`${statusLabel}…`);
+    const resp = await sendEv07bConfig(deviceId, { writeBlocks });
+    setStatusMsg(`${successLabel} saved${resp.seqId != null ? ` (seq ${resp.seqId})` : ''}`);
+    return resp.seqId;
+  }, [deviceId, sendEv07bConfig]);
+
+  const buildSectionWriteBlocks = useCallback((section: ConfigSectionKey): WriteBlock[] => {
+    switch (section) {
+      case 'general': {
+        const writes: WriteBlock[] = [];
+        const now = Math.floor(Date.now() / 1000);
+        writes.push({ key: 0x06, value: u32le(now) });
+        const parsedTimezone = Number(timezoneInput);
+        const tzVal = Number.isFinite(parsedTimezone) ? clampInt(parsedTimezone, -48, 56) : 0;
+        writes.push({ key: 0x0e, value: s8(tzVal) });
+        const trimmedDeviceName = deviceNameInput.trim();
+        if (trimmedDeviceName) {
+          writes.push({ key: 0x13, value: asciiBytes(trimmedDeviceName.slice(0, 20)) });
+        }
+        const rawWorkingMode = WORKING_MODE_CODES[workingMode] ?? Math.max(1, workingMode + 1);
+        writes.push({ key: 0x0a, value: Uint8Array.from([...u24le(0), rawWorkingMode]) });
+        if (mileageInput) {
+          const mileage = Number(mileageInput);
+          if (Number.isFinite(mileage) && mileage >= 0) {
+            writes.push({ key: 0x09, value: u32le(Math.floor(mileage)) });
+          }
+        }
+        return writes;
+      }
+      case 'sos': {
+        const writes: WriteBlock[] = [];
+        pushAuthorizedNumber(writes, sosNumber, sosSlot, 0);
+        pushAuthorizedNumber(writes, sosNumber2, sosSlot2, 1);
+        pushAuthorizedNumber(writes, sosNumber3, sosSlot3, 2);
+        return writes;
+      }
+      case 'cellular': {
+        const writes: WriteBlock[] = [];
+        if (apnInput) writes.push({ key: 0x40, value: asciiBytes(apnInput.trim().slice(0, 31)) });
+        if (apnUserInput) writes.push({ key: 0x41, value: asciiBytes(apnUserInput.trim().slice(0, 15)) });
+        if (apnPassInput) writes.push({ key: 0x42, value: asciiBytes(apnPassInput.trim().slice(0, 15)) });
+        return writes;
+      }
+      case 'server': {
+        const writes: WriteBlock[] = [];
+        const trimmedServerHost = serverHostInput.trim();
+        if (trimmedServerHost) {
+          const parsedPort = Number(serverPortInput);
+          const port = Number.isFinite(parsedPort) && parsedPort > 0
+            ? clampInt(parsedPort, 1, 65535)
+            : clampInt(identity?.serverPort ?? 5050, 1, 65535);
+          const hostBytes = asciiBytes(trimmedServerHost.slice(0, 49));
+          const serverVal = new Uint8Array(3 + hostBytes.length);
+          serverVal[0] = 0x80;
+          serverVal[1] = (port >>> 8) & 0xff;
+          serverVal[2] = port & 0xff;
+          serverVal.set(hostBytes, 3);
+          writes.push({ key: 0x43, value: serverVal });
+        }
+        return writes;
+      }
+      case 'reporting': {
+        const parsedUploadInterval = Number(uploadIntervalInput);
+        if (!Number.isFinite(parsedUploadInterval) || parsedUploadInterval <= 0) {
+          return [];
+        }
         const uploadInterval = clampInt(parsedUploadInterval, 10, 86400);
         const heartbeatInterval = clampInt(identity?.heartbeatInterval ?? 200, 60, 86400);
         const lazyUploadInterval = clampInt(
@@ -460,211 +630,126 @@ const DeviceDetailScreen = () => {
           300,
           86400,
         );
-        writes.push({
+        return [{
           key: 0x44,
           value: Uint8Array.from([
             ...u32le(0x80000000 + heartbeatInterval),
             ...u32le(uploadInterval),
             ...u32le(lazyUploadInterval),
           ]),
-        });
+        }];
       }
-
-      // Alarm Clock: [index+enable, hour, minute, workday, duration, ring]
-      writes.push({
-        key: 0x0b,
-        value: encodeEv07bAlarmClock({
-          index: clampInt(alarmIndex, 0, 3),
-          enabled: alarmEnabled,
-          hour: clampInt(Number(alarmHour), 0, 23),
-          minute: clampInt(Number(alarmMinute), 0, 59),
-          workdayMask: alarmWorkdayMask,
-          durationSec: clampInt(Number(alarmDurationSec), 1, 120),
-          ring: clampInt(Number(alarmRing), 1, 10),
-        }),
-      });
-
-      // No Disturb: [flag, startH, startM, endH, endM]
-      writes.push({
-        key: 0x0c,
-        value: encodeEv07bNoDisturb({
-          enabled: noDisturbEnabled,
-          startHour: clampInt(Number(ndStartHour), 0, 23),
-          startMinute: clampInt(Number(ndStartMin), 0, 59),
-          endHour: clampInt(Number(ndEndHour), 0, 23),
-          endMinute: clampInt(Number(ndEndMin), 0, 59),
-        }),
-      });
-
-      // Fall / no-motion / tilt alerts
-      writes.push({
-        key: 0x53,
-        value: encodeEv07bNoMotionAlert({
-          enabled: noMotionAlertEnabled,
-          dial: noMotionAlertDial,
-          staticPeriodSec: clampInt(Number(noMotionAlertStaticPeriodSec), 60, 36000),
-        }),
-      });
-      writes.push({
-        key: 0x55,
-        value: encodeEv07bTiltAlert({
-          enabled: tiltAlertEnabled,
-          dial: tiltAlertDial,
-          angleDeg: clampInt(Number(tiltAlertAngleDeg), 30, 90),
-          durationSec: clampInt(Number(tiltAlertDurationSec), 10, 3600),
-        }),
-      });
-      writes.push({
-        key: 0x56,
-        value: encodeEv07bFallDownAlert({
-          enabled: fallDownAlertEnabled,
-          dial: fallDownAlertDial,
-          sensitivity: clampInt(Number(fallDownAlertSensitivity), 1, 9),
-        }),
-      });
-
-      // Geo fence (circle or polygon). We only send this block if the user or device already has geo data.
-      const shouldWriteGeoAlert =
-        geoAlertEnabled ||
-        geoAlertLatitude.trim().length > 0 ||
-        geoAlertLongitude.trim().length > 0 ||
-        geoAlertPointsInput.trim().length > 0 ||
-        !!identity?.geoAlertEnabled ||
-        !!identity?.geoAlertPoints?.length;
-      if (shouldWriteGeoAlert) {
-        let geoPoints: BleGeoPoint[];
-        if (geoAlertType === 'polygon') {
-          geoPoints = geoAlertPointsInput.trim()
-            ? parseGeoPointsInput(geoAlertPointsInput)
-            : (identity?.geoAlertPoints ?? []);
-          if (geoPoints.length < 3) {
-            throw new Error('Geo Fence polygon needs at least 3 points');
-          }
-        } else {
-          const latitude = Number(geoAlertLatitude);
-          const longitude = Number(geoAlertLongitude);
-          if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
-            geoPoints = [{ latitude, longitude }];
-          } else if (identity?.geoAlertPoints?.[0]) {
-            geoPoints = [identity.geoAlertPoints[0]];
-          } else {
-            throw new Error('Geo Fence latitude and longitude are required');
-          }
-        }
-
-        writes.push({
-          key: 0x51,
-          value: encodeEv07bGeoAlert({
-            index: clampInt(Number(geoAlertIndex), 0, 15),
-            enabled: geoAlertEnabled,
-            direction: geoAlertDirection,
-            type: geoAlertType,
-            radiusMeters: clampInt(Number(geoAlertRadiusMeters), 0, 65535),
-            points: geoPoints,
-          }),
-        });
+      case 'audio':
+        return [
+          { key: 0x10, value: u8(clampInt(Number(ringtoneVol), 0, 100)) },
+          { key: 0x11, value: u8(clampInt(Number(micVol), 0, 15)) },
+          { key: 0x12, value: u8(clampInt(Number(speakerVol), 0, 100)) },
+        ];
+      case 'alarm':
+        return [buildAlarmClockWriteBlock(), buildNoDisturbWriteBlock()];
+      case 'alerts': {
+        const writes: WriteBlock[] = [
+          buildNoMotionWriteBlock(),
+          buildTiltWriteBlock(),
+          buildFallWriteBlock(),
+        ];
+        const geoWrite = buildGeoAlertWriteBlock();
+        if (geoWrite) writes.push(geoWrite);
+        return writes;
       }
-
-      writes.push({
-        key: 0x0f,
-        value: u32le(enableControl >>> 0),
-      });
-
-      // SMS reply URLs. Sending an empty payload clears the template on device.
-      writes.push({
-        key: 0x17,
-        value: encodeEv07bAsciiSetting(smsGpsUrl, SMS_URL_MAX_LENGTH),
-      });
-      writes.push({
-        key: 0x18,
-        value: encodeEv07bAsciiSetting(smsWifiLbsUrl, SMS_URL_MAX_LENGTH),
-      });
-
-      // Voice Prompt flags
-      writes.push({
-        key: 0x19,
-        value: u32le(voicePromptMask >>> 0),
-      });
-
-      // Volumes
-      writes.push({ key: 0x10, value: u8(clampInt(Number(ringtoneVol), 0, 100)) });
-      writes.push({ key: 0x11, value: u8(clampInt(Number(micVol), 0, 15)) });
-      writes.push({ key: 0x12, value: u8(clampInt(Number(speakerVol), 0, 100)) });
-
-      // Whitelist Device: [flag][6-byte MAC]
-      if (whitelistDevice) {
+      case 'featureFlags':
+        return [{ key: 0x0f, value: u32le(enableControl >>> 0) }];
+      case 'smsTemplates':
+        return [
+          { key: 0x17, value: encodeEv07bAsciiSetting(smsGpsUrl, SMS_URL_MAX_LENGTH) },
+          { key: 0x18, value: encodeEv07bAsciiSetting(smsWifiLbsUrl, SMS_URL_MAX_LENGTH) },
+        ];
+      case 'voicePrompts':
+        return [{ key: 0x19, value: u32le(voicePromptMask >>> 0) }];
+      case 'bluetoothAccess': {
+        if (!whitelistDevice) return [];
         const macBytes = parseMacAddress(whitelistDevice);
         if (!macBytes) {
           throw new Error('Whitelist BLE device must use AA:BB:CC:DD:EE:FF format');
         }
-        writes.push({ key: 0x16, value: Uint8Array.from([0x80, ...macBytes]) });
+        return [{ key: 0x16, value: Uint8Array.from([0x80, ...macBytes]) }];
       }
-
-      // Initialize Mileage
-      if (mileageInput) {
-        const m = Number(mileageInput);
-        if (Number.isFinite(m) && m >= 0) {
-          writes.push({ key: 0x09, value: u32le(Math.floor(m)) });
-        }
-      }
-
-      let lastSeqId: number | null = null;
-
-      if (phoneWrites.length > 0) {
-        const sosResp = await sendEv07bConfig(deviceId, { writeBlocks: phoneWrites });
-        lastSeqId = sosResp.seqId;
-        savedSosNumbers = true;
-
-        try {
-          const sosSyncResp = await sendEv07bConfig(deviceId, {
-            readKeys: [0x30, 0x30, 0x30],
-          });
-          lastSeqId = sosSyncResp.seqId;
-        } catch {
-          // Keep the save successful even if the device does not echo all SOS slots on refresh.
-        }
-      }
-
-      if (writes.length > 0) {
-        const resp = await sendEv07bConfig(deviceId, { writeBlocks: writes });
-        lastSeqId = resp.seqId;
-      }
-
-      if (savedSosNumbers && writes.length === 0) {
-        setStatusMsg(`SOS numbers saved${lastSeqId != null ? ` (seq ${lastSeqId})` : ''}`);
-      } else {
-        setStatusMsg(`Saved${lastSeqId != null ? ` (seq ${lastSeqId})` : ''}`);
-      }
-    } catch (e: any) {
-      if (savedSosNumbers) {
-        setStatusMsg(`SOS numbers saved, but other settings failed: ${e.message || 'Save failed'}`);
-      } else {
-        setStatusMsg(e.message || 'Save failed');
-      }
+      default:
+        return [];
     }
   }, [
-    deviceId, deviceNameInput, sendEv07bConfig, sosNumber, sosSlot,
-    sosNumber2, sosSlot2, sosNumber3, sosSlot3,
-    timezoneInput, apnInput, apnUserInput, apnPassInput,
-    serverHostInput, serverPortInput, uploadIntervalInput,
-    workingMode, alarmIndex, alarmEnabled, alarmHour, alarmMinute, alarmWorkdayMask, alarmDurationSec, alarmRing,
-    noDisturbEnabled, ndStartHour, ndStartMin, ndEndHour, ndEndMin,
-    fallDownAlertEnabled, fallDownAlertDial, fallDownAlertSensitivity,
-    noMotionAlertEnabled, noMotionAlertDial, noMotionAlertStaticPeriodSec,
-    tiltAlertEnabled, tiltAlertDial, tiltAlertAngleDeg, tiltAlertDurationSec,
-    geoAlertEnabled, geoAlertDirection, geoAlertType, geoAlertIndex, geoAlertRadiusMeters, geoAlertLatitude, geoAlertLongitude, geoAlertPointsInput,
-    enableControl, ringtoneVol, micVol, speakerVol,
-    whitelistDevice, smsGpsUrl, smsWifiLbsUrl, voicePromptMask, mileageInput, identity,
+    apnInput,
+    apnPassInput,
+    apnUserInput,
+    buildAlarmClockWriteBlock,
+    buildFallWriteBlock,
+    buildGeoAlertWriteBlock,
+    buildNoDisturbWriteBlock,
+    buildNoMotionWriteBlock,
+    buildTiltWriteBlock,
+    deviceNameInput,
+    enableControl,
+    identity,
+    mileageInput,
+    micVol,
+    pushAuthorizedNumber,
+    ringtoneVol,
+    serverHostInput,
+    serverPortInput,
+    smsGpsUrl,
+    smsWifiLbsUrl,
+    sosNumber,
+    sosNumber2,
+    sosNumber3,
+    sosSlot,
+    sosSlot2,
+    sosSlot3,
+    speakerVol,
+    timezoneInput,
+    uploadIntervalInput,
+    voicePromptMask,
+    whitelistDevice,
+    workingMode,
   ]);
 
-  // Helper: toggle a bit in enableControl
-  const toggleCtrlBit = (bit: number) => {
-    setEnableControl(prev => toggleEv07bFlag(prev, bit));
-  };
+  const handleSectionSave = useCallback(async (section: ConfigSectionKey, label: string) => {
+    try {
+      setSavingSection(section);
+      const writeBlocks = buildSectionWriteBlocks(section);
+      if (writeBlocks.length === 0) {
+        setStatusMsg(`Nothing to save for ${label.toLowerCase()}`);
+        return;
+      }
+      const seqId = await sendWriteBlocks(label, writeBlocks, label);
+      if (section === 'sos') {
+        try {
+          const syncResp = await sendEv07bConfig(deviceId, { readKeys: [0x30, 0x30, 0x30] });
+          setStatusMsg(`${label} saved${syncResp.seqId != null ? ` (seq ${syncResp.seqId})` : seqId != null ? ` (seq ${seqId})` : ''}`);
+        } catch {
+          // Best-effort refresh after SOS update.
+        }
+      } else if (section === 'featureFlags') {
+        try {
+          const syncResp = await sendEv07bConfig(deviceId, { readKeys: [0x0f] });
+          setStatusMsg(`${label} saved${syncResp.seqId != null ? ` (seq ${syncResp.seqId})` : seqId != null ? ` (seq ${seqId})` : ''}`);
+        } catch {
+          // Best-effort refresh after feature-flag update.
+        }
+      }
+    } catch (e: any) {
+      setStatusMsg(e.message || `${label} save failed`);
+    } finally {
+      setSavingSection(null);
+    }
+  }, [buildSectionWriteBlocks, deviceId, sendEv07bConfig, sendWriteBlocks]);
 
-  const toggleVoicePromptBit = (bit: number) => {
+  const toggleCtrlBit = useCallback((bit: number) => {
+    setEnableControl(prev => toggleEv07bFlag(prev, bit));
+  }, []);
+
+  const toggleVoicePromptBit = useCallback((bit: number) => {
     setVoicePromptMask(prev => toggleEv07bFlag(prev, bit));
-  };
+  }, []);
 
   const toggleAlarmWorkdayBit = (bit: number) => {
     setAlarmWorkdayMask(prev => prev ^ (1 << bit));
@@ -691,10 +776,6 @@ const DeviceDetailScreen = () => {
             <TouchableOpacity style={styles.primaryButton} onPress={runSync}>
               <Icon name="sync" size={16} color="#FFF" />
               <Text style={styles.primaryButtonText}>Sync Info</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.secondaryButton} onPress={runSave}>
-              <Icon name="save" size={16} color="#F28C28" />
-              <Text style={styles.secondaryButtonText}>Save Config</Text>
             </TouchableOpacity>
           </View>
           {statusMsg ? <Text style={styles.statusMsg}>{statusMsg}</Text> : null}
@@ -770,6 +851,8 @@ const DeviceDetailScreen = () => {
           icon="settings"
           expanded={expandedSections.general}
           onToggle={() => toggleSection('general')}
+          onSave={() => handleSectionSave('general', 'General settings')}
+          saving={savingSection === 'general'}
         >
           <Text style={styles.fieldLabel}>Device Name (max 19 chars)</Text>
           <TextInput style={styles.input} value={deviceNameInput} onChangeText={setDeviceNameInput}
@@ -803,6 +886,8 @@ const DeviceDetailScreen = () => {
           icon="call"
           expanded={expandedSections.sos}
           onToggle={() => toggleSection('sos')}
+          onSave={() => handleSectionSave('sos', 'SOS numbers')}
+          saving={savingSection === 'sos'}
         >
           <Text style={styles.helperText}>
             Enter digits only, including country code. Example: `919500001488`
@@ -831,45 +916,14 @@ const DeviceDetailScreen = () => {
             keyboardType="number-pad" placeholder="2" maxLength={1} />
         </CollapsibleSection>
 
-        {/* ── Cellular / APN ── */}
-        <CollapsibleSection
-          title="Cellular / APN"
-          icon="cellular"
-          expanded={expandedSections.cellular}
-          onToggle={() => toggleSection('cellular')}
-        >
-          <Text style={styles.fieldLabel}>APN</Text>
-          <TextInput style={styles.input} value={apnInput} onChangeText={setApnInput}
-            placeholder="airtelfun.com" autoCapitalize="none" autoCorrect={false} />
-          <Text style={styles.fieldLabel}>APN Username</Text>
-          <TextInput style={styles.input} value={apnUserInput} onChangeText={setApnUserInput}
-            placeholder="(leave empty if none)" autoCapitalize="none" autoCorrect={false} />
-          <Text style={styles.fieldLabel}>APN Password</Text>
-          <TextInput style={styles.input} value={apnPassInput} onChangeText={setApnPassInput}
-            placeholder="(leave empty if none)" autoCapitalize="none" autoCorrect={false} secureTextEntry />
-        </CollapsibleSection>
-
-        {/* ── Tracking Server ── */}
-        <CollapsibleSection
-          title="Tracking Server"
-          icon="cloud-upload"
-          expanded={expandedSections.server}
-          onToggle={() => toggleSection('server')}
-        >
-          <Text style={styles.fieldLabel}>Server Address</Text>
-          <TextInput style={styles.input} value={serverHostInput} onChangeText={setServerHostInput}
-            placeholder="tracking.example.com" autoCapitalize="none" autoCorrect={false} />
-          <Text style={styles.fieldLabel}>Server Port</Text>
-          <TextInput style={styles.input} value={serverPortInput} onChangeText={setServerPortInput}
-            placeholder="5001" keyboardType="number-pad" maxLength={5} />
-        </CollapsibleSection>
-
         {/* ── Reporting ── */}
         <CollapsibleSection
           title="Reporting"
           icon="timer"
           expanded={expandedSections.reporting}
           onToggle={() => toggleSection('reporting')}
+          onSave={() => handleSectionSave('reporting', 'Reporting')}
+          saving={savingSection === 'reporting'}
         >
           <Text style={styles.fieldLabel}>Auto Upload Interval (seconds, 0 = unchanged)</Text>
           <TextInput style={styles.input} value={uploadIntervalInput} onChangeText={setUploadIntervalInput}
@@ -882,6 +936,8 @@ const DeviceDetailScreen = () => {
           icon="volume-high"
           expanded={expandedSections.audio}
           onToggle={() => toggleSection('audio')}
+          onSave={() => handleSectionSave('audio', 'Audio settings')}
+          saving={savingSection === 'audio'}
         >
           <Text style={styles.fieldLabel}>Ring-Tone Volume (0–100)</Text>
           <TextInput style={styles.input} value={ringtoneVol} onChangeText={setRingtoneVol}
@@ -900,9 +956,15 @@ const DeviceDetailScreen = () => {
           icon="alarm"
           expanded={expandedSections.alarm}
           onToggle={() => toggleSection('alarm')}
+          onSave={() => handleSectionSave('alarm', 'Alarm settings')}
+          saving={savingSection === 'alarm'}
         >
           <Text style={styles.groupLabel}>Alarm Clock</Text>
-          <ToggleRow label="Alarm Enabled" value={alarmEnabled} onValueChange={setAlarmEnabled} />
+          <ToggleRow
+            label="Alarm Enabled"
+            value={alarmEnabled}
+            onValueChange={setAlarmEnabled}
+          />
           <Text style={styles.fieldLabel}>Alarm Slot</Text>
           <View style={styles.modeRow}>
             {ALARM_SLOT_OPTIONS.map(slot => (
@@ -962,7 +1024,11 @@ const DeviceDetailScreen = () => {
 
           <View style={styles.divider} />
           <Text style={styles.groupLabel}>Do Not Disturb</Text>
-          <ToggleRow label="Enabled" value={noDisturbEnabled} onValueChange={setNoDisturbEnabled} />
+          <ToggleRow
+            label="Enabled"
+            value={noDisturbEnabled}
+            onValueChange={setNoDisturbEnabled}
+          />
           <View style={styles.timeRow}>
             <View style={styles.timeField}>
               <Text style={styles.fieldLabel}>Start Hour</Text>
@@ -995,26 +1061,52 @@ const DeviceDetailScreen = () => {
           icon="warning"
           expanded={expandedSections.alerts}
           onToggle={() => toggleSection('alerts')}
+          onSave={() => handleSectionSave('alerts', 'Safety alerts')}
+          saving={savingSection === 'alerts'}
         >
           <Text style={styles.groupLabel}>Fall Alarm</Text>
-          <ToggleRow label="Enabled" value={fallDownAlertEnabled} onValueChange={setFallDownAlertEnabled} />
-          <ToggleRow label="Dial Authorized Number" value={fallDownAlertDial} onValueChange={setFallDownAlertDial} />
+          <ToggleRow
+            label="Enabled"
+            value={fallDownAlertEnabled}
+            onValueChange={setFallDownAlertEnabled}
+          />
+          <ToggleRow
+            label="Dial Authorized Number"
+            value={fallDownAlertDial}
+            onValueChange={setFallDownAlertDial}
+          />
           <Text style={styles.fieldLabel}>Sensitivity (1-9)</Text>
           <TextInput style={styles.input} value={fallDownAlertSensitivity} onChangeText={setFallDownAlertSensitivity}
             keyboardType="number-pad" placeholder="5" maxLength={1} />
 
           <View style={styles.divider} />
           <Text style={styles.groupLabel}>No Motion Alarm</Text>
-          <ToggleRow label="Enabled" value={noMotionAlertEnabled} onValueChange={setNoMotionAlertEnabled} />
-          <ToggleRow label="Dial Authorized Number" value={noMotionAlertDial} onValueChange={setNoMotionAlertDial} />
+          <ToggleRow
+            label="Enabled"
+            value={noMotionAlertEnabled}
+            onValueChange={setNoMotionAlertEnabled}
+          />
+          <ToggleRow
+            label="Dial Authorized Number"
+            value={noMotionAlertDial}
+            onValueChange={setNoMotionAlertDial}
+          />
           <Text style={styles.fieldLabel}>Static Period (60-36000 sec)</Text>
           <TextInput style={styles.input} value={noMotionAlertStaticPeriodSec} onChangeText={setNoMotionAlertStaticPeriodSec}
             keyboardType="number-pad" placeholder="300" maxLength={5} />
 
           <View style={styles.divider} />
           <Text style={styles.groupLabel}>Tilt Alarm</Text>
-          <ToggleRow label="Enabled" value={tiltAlertEnabled} onValueChange={setTiltAlertEnabled} />
-          <ToggleRow label="Dial Authorized Number" value={tiltAlertDial} onValueChange={setTiltAlertDial} />
+          <ToggleRow
+            label="Enabled"
+            value={tiltAlertEnabled}
+            onValueChange={setTiltAlertEnabled}
+          />
+          <ToggleRow
+            label="Dial Authorized Number"
+            value={tiltAlertDial}
+            onValueChange={setTiltAlertDial}
+          />
           <View style={styles.timeRow}>
             <View style={styles.timeField}>
               <Text style={styles.fieldLabel}>Angle (30-90 deg)</Text>
@@ -1030,7 +1122,11 @@ const DeviceDetailScreen = () => {
 
           <View style={styles.divider} />
           <Text style={styles.groupLabel}>Geo Fence</Text>
-          <ToggleRow label="Enabled" value={geoAlertEnabled} onValueChange={setGeoAlertEnabled} />
+          <ToggleRow
+            label="Enabled"
+            value={geoAlertEnabled}
+            onValueChange={setGeoAlertEnabled}
+          />
           <Text style={styles.fieldLabel}>Fence Slot (0-15)</Text>
           <TextInput style={styles.input} value={geoAlertIndex} onChangeText={setGeoAlertIndex}
             keyboardType="number-pad" placeholder="0" maxLength={2} />
@@ -1108,6 +1204,8 @@ const DeviceDetailScreen = () => {
           icon="toggle"
           expanded={expandedSections.featureFlags}
           onToggle={() => toggleSection('featureFlags')}
+          onSave={() => handleSectionSave('featureFlags', 'Device feature flags')}
+          saving={savingSection === 'featureFlags'}
         >
           <Text style={styles.groupLabel}>Enable Control Flags</Text>
           <Text style={styles.helperText}>
@@ -1118,59 +1216,11 @@ const DeviceDetailScreen = () => {
               key={flag.key}
               label={`${flag.label} (bit ${flag.bit})`}
               value={hasEv07bFlag(enableControl, flag.bit)}
-              onValueChange={() => toggleCtrlBit(flag.bit)}
+              onValueChange={() => {
+                toggleCtrlBit(flag.bit);
+              }}
             />
           ))}
-        </CollapsibleSection>
-
-        <CollapsibleSection
-          title="SMS Reply Templates"
-          icon="chatbubble"
-          expanded={expandedSections.smsTemplates}
-          onToggle={() => toggleSection('smsTemplates')}
-        >
-          <Text style={styles.helperText}>
-            Leave a field blank if you want Save Config to clear that reply template. Device limit is 40 ASCII characters.
-          </Text>
-          <Text style={styles.fieldLabel}>GPS SMS URL</Text>
-          <TextInput style={styles.input} value={smsGpsUrl} onChangeText={setSmsGpsUrl}
-            placeholder="https://maps.example/gps" autoCapitalize="none" autoCorrect={false} maxLength={SMS_URL_MAX_LENGTH} />
-          <Text style={styles.fieldLabel}>WiFi/LBS SMS URL</Text>
-          <TextInput style={styles.input} value={smsWifiLbsUrl} onChangeText={setSmsWifiLbsUrl}
-            placeholder="https://maps.example/lbs" autoCapitalize="none" autoCorrect={false} maxLength={SMS_URL_MAX_LENGTH} />
-        </CollapsibleSection>
-
-        <CollapsibleSection
-          title="Voice Prompts"
-          icon="volume-medium"
-          expanded={expandedSections.voicePrompts}
-          onToggle={() => toggleSection('voicePrompts')}
-        >
-          <Text style={styles.helperText}>
-            These prompts are stored in key 0x19 as a separate 32-bit mask.
-          </Text>
-          {EV07B_VOICE_PROMPT_FLAGS.map(flag => (
-            <ToggleRow
-              key={flag.key}
-              label={`${flag.label} (bit ${flag.bit})`}
-              value={hasEv07bFlag(voicePromptMask, flag.bit)}
-              onValueChange={() => toggleVoicePromptBit(flag.bit)}
-            />
-          ))}
-        </CollapsibleSection>
-
-        <CollapsibleSection
-          title="BLE Whitelist"
-          icon="bluetooth"
-          expanded={expandedSections.bluetoothAccess}
-          onToggle={() => toggleSection('bluetoothAccess')}
-        >
-          <Text style={styles.helperText}>
-            Limit paired BLE accessory access by saving a single trusted device MAC address.
-          </Text>
-          <Text style={styles.fieldLabel}>Whitelist BLE Device MAC</Text>
-          <TextInput style={styles.input} value={whitelistDevice} onChangeText={setWhitelistDevice}
-            placeholder="AA:BB:CC:DD:EE:FF" autoCapitalize="characters" maxLength={17} />
         </CollapsibleSection>
 
         {/* ── GATT Services ── */}
@@ -1293,38 +1343,58 @@ const DeviceDetailScreen = () => {
 /* ── Sub-components ── */
 
 const CollapsibleSection = ({
-  title, icon, expanded, onToggle, children,
+  title, icon, expanded, onToggle, children, onSave, saving,
 }: {
   title: string;
   icon: string;
   expanded: boolean;
   onToggle: () => void;
   children: React.ReactNode;
+  onSave?: () => void;
+  saving?: boolean;
 }) => (
   <View style={styles.card}>
-    <TouchableOpacity style={styles.sectionHeader} onPress={onToggle} activeOpacity={0.7}>
-      <View style={styles.sectionHeaderLeft}>
-        <Icon name={icon as any} size={18} color="#F28C28" />
-        <Text style={styles.sectionTitle}>{title}</Text>
+    <View style={styles.sectionHeader}>
+      <TouchableOpacity style={styles.sectionHeaderMain} onPress={onToggle} activeOpacity={0.7}>
+        <View style={styles.sectionHeaderLeft}>
+          <Icon name={icon as any} size={18} color="#F28C28" />
+          <Text style={styles.sectionTitle}>{title}</Text>
+        </View>
+      </TouchableOpacity>
+      <View style={styles.sectionHeaderActions}>
+        {onSave ? (
+          <TouchableOpacity
+            style={[styles.inlineSaveButton, saving && styles.inlineSaveButtonDisabled]}
+            onPress={onSave}
+            disabled={saving}
+          >
+            <Icon name="save" size={14} color="#F28C28" />
+            <Text style={styles.inlineSaveButtonText}>{saving ? 'Saving' : 'Save'}</Text>
+          </TouchableOpacity>
+        ) : null}
+        <TouchableOpacity onPress={onToggle} activeOpacity={0.7}>
+          <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color="#7A726A" />
+        </TouchableOpacity>
       </View>
-      <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color="#7A726A" />
-    </TouchableOpacity>
+    </View>
     {expanded ? <View style={styles.sectionContent}>{children}</View> : null}
   </View>
 );
 
 const ToggleRow = ({
-  label, value, onValueChange,
+  label, value, onValueChange, disabled,
 }: {
   label: string;
   value: boolean;
   onValueChange: (v: boolean) => void;
+  disabled?: boolean;
 }) => (
   <View style={styles.toggleRow}>
     <Text style={styles.toggleLabel}>{label}</Text>
     <Switch
       value={value}
       onValueChange={onValueChange}
+      disabled={disabled}
       trackColor={{ false: '#D4CFC8', true: '#F7C68E' }}
       thumbColor={value ? '#F28C28' : '#AAA49D'}
     />
@@ -1424,7 +1494,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  sectionHeaderMain: {
+    flex: 1,
+  },
   sectionHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  sectionHeaderActions: {
     flexDirection: 'row',
     alignItems: 'center',
   },
@@ -1465,6 +1542,26 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: { color: '#FFFFFF', fontWeight: '700', marginLeft: 6 },
   secondaryButtonText: { color: '#F28C28', fontWeight: '700', marginLeft: 6 },
+  inlineSaveButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F6F1EA',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: '#F1E2CF',
+    marginRight: 10,
+  },
+  inlineSaveButtonDisabled: {
+    opacity: 0.7,
+  },
+  inlineSaveButtonText: {
+    color: '#F28C28',
+    fontWeight: '700',
+    fontSize: 12,
+    marginLeft: 5,
+  },
 
   /* Detail rows */
   subtitle: { fontSize: 13, color: '#7A726A', marginBottom: 8 },
