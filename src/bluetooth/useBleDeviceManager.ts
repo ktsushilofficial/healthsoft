@@ -240,43 +240,29 @@ export function useBleDeviceManager() {
       // SOS / Authorized numbers.
       const phoneBlocks = (blocks ?? []).filter(block => block.key >= 0x30 && block.key <= 0x39);
       if (phoneBlocks.length > 0) {
-        let sosNumber1: string | undefined;
-        let sosSlot1: number | undefined;
-        let sosNumber2: string | undefined;
-        let sosSlot2: number | undefined;
-        let sosNumber3: string | undefined;
-        let sosSlot3: number | undefined;
-
-        phoneBlocks.forEach(block => {
+        const decodedPhones = phoneBlocks
+          .map(block => {
           const fallbackSlot = block.key - 0x30;
-          const decoded = decodeEv07bAuthorizedPhone(block.value, fallbackSlot);
-          if (!decoded) return;
+            return decodeEv07bAuthorizedPhone(block.value, fallbackSlot);
+          })
+          .filter((decoded): decoded is NonNullable<typeof decoded> => !!decoded)
+          .slice(0, 3);
 
-          if (decoded.slot === 0) {
-            sosNumber1 = decoded.number;
-            sosSlot1 = decoded.slot;
-          } else if (decoded.slot === 1) {
-            sosNumber2 = decoded.number;
-            sosSlot2 = decoded.slot;
-          } else if (decoded.slot === 2) {
-            sosNumber3 = decoded.number;
-            sosSlot3 = decoded.slot;
-          }
-        });
+        const [phone1, phone2, phone3] = decodedPhones;
 
-        if (sosNumber1 !== undefined) {
-          nextIdentity.sosNumber = sosNumber1;
-          nextIdentity.sosSlot = sosSlot1;
+        if (phone1) {
+          nextIdentity.sosNumber = phone1.number;
+          nextIdentity.sosSlot = phone1.slot;
           changed = true;
         }
-        if (sosNumber2 !== undefined) {
-          nextIdentity.sosNumber2 = sosNumber2;
-          nextIdentity.sosSlot2 = sosSlot2;
+        if (phone2) {
+          nextIdentity.sosNumber2 = phone2.number;
+          nextIdentity.sosSlot2 = phone2.slot;
           changed = true;
         }
-        if (sosNumber3 !== undefined) {
-          nextIdentity.sosNumber3 = sosNumber3;
-          nextIdentity.sosSlot3 = sosSlot3;
+        if (phone3) {
+          nextIdentity.sosNumber3 = phone3.number;
+          nextIdentity.sosSlot3 = phone3.slot;
           changed = true;
         }
       } else if (keys[0x30] && keys[0x30].length >= 1) {

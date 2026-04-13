@@ -721,7 +721,14 @@ const DeviceDetailScreen = () => {
         return;
       }
       const seqId = await sendWriteBlocks(label, writeBlocks, label);
-      if (section === 'sos') {
+      if (section === 'general') {
+        try {
+          const syncResp = await sendEv07bConfig(deviceId, { readKeys: [0x09, 0x0a, 0x0e, 0x13] });
+          setStatusMsg(`${label} saved${syncResp.seqId != null ? ` (seq ${syncResp.seqId})` : seqId != null ? ` (seq ${seqId})` : ''}`);
+        } catch {
+          // Best-effort refresh after general settings update.
+        }
+      } else if (section === 'sos') {
         try {
           const syncResp = await sendEv07bConfig(deviceId, { readKeys: [0x30, 0x30, 0x30] });
           setStatusMsg(`${label} saved${syncResp.seqId != null ? ` (seq ${syncResp.seqId})` : seqId != null ? ` (seq ${seqId})` : ''}`);
@@ -761,7 +768,7 @@ const DeviceDetailScreen = () => {
         <TouchableOpacity onPress={() => navigation.goBack()}>
           <Icon name="arrow-back" size={22} color="#F28C28" />
         </TouchableOpacity>
-        <Text style={styles.title}>{deviceName || 'Device'}</Text>
+        <Text style={styles.title}>{identity?.model || deviceNameInput.trim() || deviceName || 'Device'}</Text>
         <View style={{ width: 22 }} />
       </View>
 
@@ -854,10 +861,6 @@ const DeviceDetailScreen = () => {
           onSave={() => handleSectionSave('general', 'General settings')}
           saving={savingSection === 'general'}
         >
-          <Text style={styles.fieldLabel}>Device Name (max 19 chars)</Text>
-          <TextInput style={styles.input} value={deviceNameInput} onChangeText={setDeviceNameInput}
-            placeholder="EV07BA_xxxx" maxLength={19} />
-
           <Text style={styles.fieldLabel}>Timezone (15-min units, e.g. 22 = +5:30)</Text>
           <TextInput style={styles.input} value={timezoneInput} onChangeText={setTimezoneInput}
             keyboardType="number-pad" placeholder="22" />
