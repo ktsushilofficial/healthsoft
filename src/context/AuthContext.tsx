@@ -6,6 +6,8 @@ import * as Keychain from 'react-native-keychain';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import { extractSeniorAssignedDevices, type SeniorAssignedDevice } from '../utils/deviceAssignments';
 import { clearAllCachedAssignedDeviceMatches } from '../utils/assignedDeviceMatchCache';
+import type { SeniorDashboardApiResponse } from '../types/seniorDashboard';
+import type { GuardianDashboardApiResponse } from '../types/guardianDashboard';
 
 const API_BASE_URL = 'http://seniorcare.healthsoftcare.in';
 const TOKEN_STORAGE_SERVICE = 'healthsoft.auth.tokens';
@@ -82,6 +84,8 @@ interface AuthContextType {
   getMySeniors: () => Promise<Senior[]>;
   selectSenior: (seniorId: string) => Promise<void>;
   getAssignedDevicesForSenior: (seniorId: string) => Promise<SeniorAssignedDevice[]>;
+  getSeniorDashboard: (seniorId: string) => Promise<SeniorDashboardApiResponse>;
+  getGuardianDashboard: (guardianUserId: string) => Promise<GuardianDashboardApiResponse>;
 }
 
 interface SignupData {
@@ -988,6 +992,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const getSeniorDashboard = useCallback(async (seniorId: string): Promise<SeniorDashboardApiResponse> => {
+    const trimmed = seniorId.trim();
+    if (!trimmed) {
+      throw new Error('Senior ID is required for the dashboard.');
+    }
+    try {
+      return await authorizedRequest<SeniorDashboardApiResponse>(
+        `/api/v1/senior-dashboard/${encodeURIComponent(trimmed)}`,
+        'GET',
+        undefined,
+        { Accept: '*/*' },
+      );
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const getGuardianDashboard = useCallback(async (guardianUserId: string): Promise<GuardianDashboardApiResponse> => {
+    const trimmed = guardianUserId.trim();
+    if (!trimmed) {
+      throw new Error('Guardian user ID is required for the dashboard.');
+    }
+    try {
+      return await authorizedRequest<GuardianDashboardApiResponse>(
+        `/api/v1/guardian-dashboard/${encodeURIComponent(trimmed)}`,
+        'GET',
+        undefined,
+        { Accept: '*/*' },
+      );
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Clear seniors cache when user is not a caretaker/guardian
   useEffect(() => {
     if (user && !(user.role === CARETAKER_ROLE || user.role === GUARDIAN_ROLE)) {
@@ -1024,11 +1064,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       getMySeniors,
       selectSenior,
       getAssignedDevicesForSenior,
+      getSeniorDashboard,
+      getGuardianDashboard,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       user, isAuthenticated, isInitializing, isCaretaker, authMethod,
       seniors, selectedSenior, refreshUserProfile, getMySeniors, getAssignedDevicesForSenior,
+      getSeniorDashboard, getGuardianDashboard,
     ],
   );
 

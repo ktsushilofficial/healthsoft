@@ -9,14 +9,23 @@ import {
   Image,
   ImageBackground,
   TouchableOpacity,
+  Modal,
+  Pressable,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useAuth } from '../context/AuthContext';
 import SeniorSelectionModal from '../components/SeniorSelectionModal';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
-import { getMockSeniorHomeSnapshot } from '../mocks/mockSeniorHomeSnapshot';
+import { emptySeniorHomeSnapshot } from '../types/seniorHomeSnapshot';
 import { buildOpenStreetMapMarkerUrl } from '../utils/openStreetMap';
+import type { SeniorDashboardDeviceRecord } from '../types/seniorDashboard';
+import type { GuardianSeniorProfileRow } from '../types/guardianDashboard';
+import {
+  getSeniorDashboardDeviceLabel,
+  mapSeniorDashboardDeviceToSnapshot,
+} from '../utils/mapSeniorDashboardDeviceToSnapshot';
 
 const HERO_IMAGES = [
   { uri: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80' },
@@ -27,10 +36,64 @@ const HERO_IMAGES = [
 ];
 
 const SENIOR_ROLE = 'SENIOR';
+const CARETAKER_ROLE = 'CARE_TAKER';
+const GUARDIAN_ROLE = 'GUARDIAN';
+const NA = 'NA';
+
+function displayStr(value: string | null | undefined): string {
+  if (value == null || String(value).trim() === '') {
+    return NA;
+  }
+  return value;
+}
+
+function displayDeg(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) {
+    return NA;
+  }
+  return `${value.toFixed(6)}°`;
+}
+
+function displayBatteryPct(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) {
+    return NA;
+  }
+  return `${Math.round(value)}%`;
+}
+
+function chargingCaption(charging: boolean | null): string {
+  if (charging === null) {
+    return NA;
+  }
+  return charging ? 'Charging now' : 'On battery power';
+}
+
+function lastAlarmLine(kind: string | null, at: string | null): string {
+  const k = displayStr(kind);
+  const a = displayStr(at);
+  if (k === NA && a === NA) {
+    return NA;
+  }
+  return `${k} · ${a}`;
+}
 
 function capitalizeWord(s: string) {
   if (!s) return '';
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+
+/** Same index rule as device list: match selected senior’s userId, else first profile. */
+function guardianProfileIndex(
+  profiles: GuardianSeniorProfileRow[],
+  selectedSeniorUserId: string | null | undefined,
+): number {
+  if (profiles.length === 0) return 0;
+  const trimmed = (selectedSeniorUserId || '').trim();
+  if (!trimmed) return 0;
+  const matchIdx = profiles.findIndex(
+    p => (p.seniorDetailsDTO?.userId || '').trim() === trimmed,
+  );
+  return matchIdx >= 0 ? matchIdx : 0;
 }
 
 function getGreetingFromDate(date: Date) {
@@ -53,22 +116,291 @@ function getGreetingFromDate(date: Date) {
 
 const HomeScreen = () => {
   const navigation = useNavigation<any>();
-  const { user, selectedSenior, seniors, getMySeniors, isCaretaker } = useAuth();
+  const { user, selectedSenior, seniors, getMySeniors, isCaretaker, getSeniorDashboard, getGuardianDashboard } =
+    useAuth();
   const [modalVisible, setModalVisible] = useState(false);
   const [heroIndex, setHeroIndex] = useState(0);
   const [nowTick, setNowTick] = useState(() => new Date());
+  const [dashboardDevices, setDashboardDevices] = useState<SeniorDashboardDeviceRecord[]>([]);
+  const [selectedDeviceIndex, setSelectedDeviceIndex] = useState(0);
+  const [devicePickerVisible, setDevicePickerVisible] = useState(false);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [guardianSeniorProfiles, setGuardianSeniorProfiles] = useState<GuardianSeniorProfileRow[]>([]);
 
-  const snapshotKey = useMemo(() => {
-    if (!user) return 'preview';
+  /** Senior id for `/api/v1/senior-dashboard/{id}` — logged-in senior, or caretaker’s selected senior only. */
+  const activeDashboardSeniorId = useMemo(() => {
+    if (!user) return null;
     if (user.role === SENIOR_ROLE) return user.user_id;
-    if (selectedSenior?.userId) return selectedSenior.userId;
-    return `family-${user.user_id}`;
+    if (user.role === CARETAKER_ROLE && selectedSenior?.userId) return selectedSenior.userId;
+    return null;
   }, [user, selectedSenior?.userId]);
 
-  const liveSnapshot = useMemo(
-    () => getMockSeniorHomeSnapshot(snapshotKey),
-    [snapshotKey]
-  );
+  const showTelemetryBar = useMemo(() => {
+    if (!user) return false;
+    if (user.role === SENIOR_ROLE) return true;
+    if (user.role === GUARDIAN_ROLE) return true;
+    if (user.role === CARETAKER_ROLE && selectedSenior?.userId) return true;
+    return false;
+  }, [user, selectedSenior?.userId]);
+
+  useEffect(() => {
+    setDevicePickerVisible(false);
+    setSelectedDeviceIndex(0);
+  }, [activeDashboardSeniorId, user?.role, selectedSenior?.userId]);
+
+  useEffect(() => {
+    if (!user) {
+      setGuardianSeniorProfiles([]);
+      setDashboardDevices([]);
+      setDashboardError(null);
+      setDashboardLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    if (user.role === GUARDIAN_ROLE) {
+      setDashboardLoading(true);
+      setDashboardError(null);
+      setDashboardDevices([]);
+      (async () => {
+        try {
+          const res = await getGuardianDashboard(user.user_id);
+          if (cancelled) return;
+          const rows = Array.isArray(res.seniorProfilesDTO) ? res.seniorProfilesDTO : [];
+          setGuardianSeniorProfiles(rows);
+        } catch (e) {
+          if (cancelled) return;
+          setGuardianSeniorProfiles([]);
+          setDashboardError(e instanceof Error ? e.message : 'Guardian dashboard request failed.');
+        } finally {
+          if (!cancelled) {
+            setDashboardLoading(false);
+          }
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setGuardianSeniorProfiles([]);
+
+    if (user.role === SENIOR_ROLE) {
+      setDashboardLoading(true);
+      setDashboardError(null);
+      (async () => {
+        try {
+          const res = await getSeniorDashboard(user.user_id);
+          if (cancelled) return;
+          const list = Array.isArray(res.allDeviceStatus) ? res.allDeviceStatus : [];
+          setDashboardDevices(list);
+          setSelectedDeviceIndex(0);
+        } catch (e) {
+          if (cancelled) return;
+          setDashboardDevices([]);
+          setDashboardError(e instanceof Error ? e.message : 'Dashboard request failed.');
+        } finally {
+          if (!cancelled) {
+            setDashboardLoading(false);
+          }
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (user.role === CARETAKER_ROLE) {
+      if (!selectedSenior?.userId) {
+        setDashboardDevices([]);
+        setDashboardError(null);
+        setDashboardLoading(false);
+        return;
+      }
+      setDashboardLoading(true);
+      setDashboardError(null);
+      (async () => {
+        try {
+          const res = await getSeniorDashboard(selectedSenior.userId);
+          if (cancelled) return;
+          const list = Array.isArray(res.allDeviceStatus) ? res.allDeviceStatus : [];
+          setDashboardDevices(list);
+          setSelectedDeviceIndex(0);
+        } catch (e) {
+          if (cancelled) return;
+          setDashboardDevices([]);
+          setDashboardError(e instanceof Error ? e.message : 'Dashboard request failed.');
+        } finally {
+          if (!cancelled) {
+            setDashboardLoading(false);
+          }
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setDashboardDevices([]);
+    setDashboardError(null);
+    setDashboardLoading(false);
+    return undefined;
+  }, [user, user?.role, user?.user_id, selectedSenior?.userId, getSeniorDashboard, getGuardianDashboard]);
+
+  useEffect(() => {
+    if (!user || user.role !== GUARDIAN_ROLE) {
+      return;
+    }
+    setDevicePickerVisible(false);
+    if (guardianSeniorProfiles.length === 0) {
+      setDashboardDevices([]);
+      setSelectedDeviceIndex(0);
+      return;
+    }
+    const idx = guardianProfileIndex(guardianSeniorProfiles, selectedSenior?.userId);
+    const row = guardianSeniorProfiles[idx];
+    const list = Array.isArray(row?.allDeviceStatus) ? row!.allDeviceStatus! : [];
+    setDashboardDevices(list);
+    setSelectedDeviceIndex(0);
+  }, [user, user?.role, guardianSeniorProfiles, selectedSenior?.userId]);
+
+  const activeGuardianSeniorDetails = useMemo(() => {
+    if (!user || user.role !== GUARDIAN_ROLE || guardianSeniorProfiles.length === 0) {
+      return null;
+    }
+    const idx = guardianProfileIndex(guardianSeniorProfiles, selectedSenior?.userId);
+    return guardianSeniorProfiles[idx]?.seniorDetailsDTO ?? null;
+  }, [user, user?.role, guardianSeniorProfiles, selectedSenior?.userId]);
+
+  /** Guardian UI: names and photo from dashboard DTO, with my-seniors fallback when needed. */
+  const guardianSeniorDisplay = useMemo(() => {
+    if (!user || user.role !== GUARDIAN_ROLE) {
+      return null;
+    }
+    const dto = activeGuardianSeniorDetails;
+    if (dto) {
+      const fnDto = (dto.firstName || '').trim();
+      const lnDto = (dto.lastName || '').trim();
+      return {
+        firstName: fnDto || (selectedSenior?.firstName || '').trim(),
+        lastName: lnDto || (selectedSenior?.lastName || '').trim(),
+        profileImageUrl: dto.profileImageUrl ?? selectedSenior?.profileImageUrl ?? null,
+      };
+    }
+    if (selectedSenior) {
+      return {
+        firstName: (selectedSenior.firstName || '').trim(),
+        lastName: (selectedSenior.lastName || '').trim(),
+        profileImageUrl: selectedSenior.profileImageUrl ?? null,
+      };
+    }
+    return null;
+  }, [user, user?.role, activeGuardianSeniorDetails, selectedSenior]);
+
+  const caretakerHeaderSenior = useMemo(() => {
+    if (!user || !isCaretaker) {
+      return { firstName: '', profileImageUrl: null as string | null | undefined };
+    }
+    if (user.role === GUARDIAN_ROLE) {
+      const g = guardianSeniorDisplay;
+      return {
+        firstName: (g?.firstName || '').trim() || (selectedSenior?.firstName || '').trim(),
+        profileImageUrl: g?.profileImageUrl ?? selectedSenior?.profileImageUrl,
+      };
+    }
+    return {
+      firstName: (selectedSenior?.firstName || '').trim(),
+      profileImageUrl: selectedSenior?.profileImageUrl,
+    };
+  }, [user, isCaretaker, guardianSeniorDisplay, selectedSenior]);
+
+  const caretakerHeaderInitials = useMemo(() => {
+    if (!user || !isCaretaker) return '?';
+    if (user.role === GUARDIAN_ROLE && guardianSeniorDisplay) {
+      const fn = guardianSeniorDisplay.firstName?.[0] || '';
+      const ln = guardianSeniorDisplay.lastName?.[0] || '';
+      if (fn || ln) return `${fn.toUpperCase()}${ln.toUpperCase()}`;
+    }
+    if (selectedSenior) {
+      return `${(selectedSenior.firstName?.[0] || '').toUpperCase()}${(selectedSenior.lastName?.[0] || '').toUpperCase()}`;
+    }
+    return '?';
+  }, [user, isCaretaker, guardianSeniorDisplay, selectedSenior]);
+
+  const headerShowsActiveSenior = useMemo(() => {
+    if (!isCaretaker || !user) return false;
+    if (selectedSenior) return true;
+    if (user.role === GUARDIAN_ROLE && guardianSeniorDisplay) {
+      return !!(guardianSeniorDisplay.firstName?.trim() || guardianSeniorDisplay.lastName?.trim());
+    }
+    return false;
+  }, [isCaretaker, user, selectedSenior, guardianSeniorDisplay]);
+
+  const liveSnapshot = useMemo(() => {
+    if (dashboardDevices.length > 0) {
+      const idx = Math.min(Math.max(0, selectedDeviceIndex), dashboardDevices.length - 1);
+      return mapSeniorDashboardDeviceToSnapshot(dashboardDevices[idx]!);
+    }
+    return emptySeniorHomeSnapshot();
+  }, [dashboardDevices, selectedDeviceIndex]);
+
+  const selectedDeviceLabel = useMemo(() => {
+    if (dashboardDevices.length === 0) return '';
+    const idx = Math.min(Math.max(0, selectedDeviceIndex), dashboardDevices.length - 1);
+    return getSeniorDashboardDeviceLabel(dashboardDevices[idx]!);
+  }, [dashboardDevices, selectedDeviceIndex]);
+
+  const hasLiveCoordinates =
+    liveSnapshot.latitude != null &&
+    liveSnapshot.longitude != null &&
+    !Number.isNaN(liveSnapshot.latitude) &&
+    !Number.isNaN(liveSnapshot.longitude);
+
+  const batteryIconName = useMemo(() => {
+    if (liveSnapshot.charging === true) {
+      return 'battery-charging' as const;
+    }
+    if (liveSnapshot.batteryPercent == null || Number.isNaN(liveSnapshot.batteryPercent)) {
+      return 'battery-dead-outline' as const;
+    }
+    const p = liveSnapshot.batteryPercent;
+    if (p > 75) return 'battery-full' as const;
+    if (p > 30) return 'battery-half' as const;
+    return 'battery-dead-outline' as const;
+  }, [liveSnapshot.batteryPercent, liveSnapshot.charging]);
+
+  const safetyIconName = useMemo(() => {
+    if (liveSnapshot.alarmSeverity === 'ok') {
+      return 'shield-checkmark' as const;
+    }
+    if (liveSnapshot.alarmSeverity === 'na') {
+      return 'help-circle-outline' as const;
+    }
+    return 'warning' as const;
+  }, [liveSnapshot.alarmSeverity]);
+
+  const speedAndUpdatedLine = useMemo(() => {
+    const speedPart =
+      liveSnapshot.speedKph != null && !Number.isNaN(liveSnapshot.speedKph)
+        ? `${Math.round(liveSnapshot.speedKph)} km/h`
+        : NA;
+    const updatedPart = displayStr(liveSnapshot.lastUpdatedLabel);
+    return `${speedPart} · ${updatedPart}`;
+  }, [liveSnapshot.speedKph, liveSnapshot.lastUpdatedLabel]);
+
+  const fixQualityLine = useMemo(() => {
+    if (
+      liveSnapshot.hdop != null &&
+      liveSnapshot.satellites != null &&
+      !Number.isNaN(liveSnapshot.hdop) &&
+      !Number.isNaN(liveSnapshot.satellites)
+    ) {
+      return `HDOP ${liveSnapshot.hdop} · ${liveSnapshot.satellites} satellites`;
+    }
+    return NA;
+  }, [liveSnapshot.hdop, liveSnapshot.satellites]);
 
   const locationThumb = {
     uri: 'https://images.unsplash.com/photo-1524661135-423995f22d0f?auto=format&fit=crop&w=600&q=80',
@@ -112,23 +444,47 @@ const HomeScreen = () => {
 
   const bannerDisplayName = useMemo(() => {
     if (!user) return { line: 'Welcome!', subtitleDay: '' };
+
     if (user.role === SENIOR_ROLE) {
       const fn = capitalizeWord((user.first_name || '').trim());
       const ln = (user.last_name || '').trim();
-      const line = fn ? `${fn}${ln ? ` ${ln}` : ''}!` : 'Welcome!';
-      return { line, subtitleDay: '' };
+      if (fn || ln) {
+        const line = fn ? `${fn}${ln ? ` ${ln}` : ''}!` : `${capitalizeWord(ln)}!`;
+        return { line, subtitleDay: '' };
+      }
+      const emailLocal = (user.email || '').split('@')[0]?.replace(/[._]+/g, ' ').trim();
+      if (emailLocal) {
+        const firstToken = emailLocal.split(/\s+/)[0] || emailLocal;
+        return { line: `${capitalizeWord(firstToken)}!`, subtitleDay: '' };
+      }
+      return { line: 'Welcome!', subtitleDay: '' };
     }
-    if (selectedSenior) {
+
+    if (user.role === GUARDIAN_ROLE) {
+      const g = guardianSeniorDisplay;
+      if (g && (g.firstName || g.lastName)) {
+        const fn = capitalizeWord((g.firstName || '').trim());
+        const ln = (g.lastName || '').trim();
+        const line = fn ? `${fn}${ln ? ` ${ln}` : ''}!` : ln ? `${capitalizeWord(ln)}!` : 'Welcome!';
+        return { line, subtitleDay: '' };
+      }
+      return {
+        line: 'Your family',
+        subtitleDay: 'Select a senior above to personalize this card.',
+      };
+    }
+
+    if (user.role === CARETAKER_ROLE && selectedSenior) {
       const fn = capitalizeWord((selectedSenior.firstName || '').trim());
       const ln = (selectedSenior.lastName || '').trim();
-      const line = fn ? `${fn}${ln ? ` ${ln}` : ''}!` : 'Welcome!';
+      const line = fn ? `${fn}${ln ? ` ${ln}` : ''}!` : ln ? `${capitalizeWord(ln)}!` : 'Welcome!';
       return { line, subtitleDay: '' };
     }
     return {
       line: 'Your family',
       subtitleDay: 'Select a senior above to personalize this card.',
     };
-  }, [user, selectedSenior]);
+  }, [user, selectedSenior, guardianSeniorDisplay]);
 
   const weekdayLine = useMemo(() => {
     const d = nowTick;
@@ -140,6 +496,7 @@ const HomeScreen = () => {
   const openLastPositionMap = useCallback(() => {
     const lat = liveSnapshot.latitude;
     const lon = liveSnapshot.longitude;
+    if (lat == null || lon == null) return;
     const url = buildOpenStreetMapMarkerUrl(lat, lon);
     navigation.navigate('WebView', {
       url,
@@ -162,22 +519,20 @@ const HomeScreen = () => {
             >
               <View style={{ marginRight: 8, alignItems: 'flex-end' }}>
                 <Text style={{ fontSize: 14, fontWeight: '600', color: '#333' }}>
-                  {selectedSenior ? `${selectedSenior.firstName}` : 'Select Senior'}
+                  {caretakerHeaderSenior.firstName || 'Select Senior'}
                 </Text>
                 <Text style={{ fontSize: 10, color: '#666' }}>
-                  {selectedSenior ? 'Active Profile' : 'Tap to select'}
+                  {headerShowsActiveSenior ? 'Active Profile' : 'Tap to select'}
                 </Text>
               </View>
-              {selectedSenior?.profileImageUrl ? (
+              {caretakerHeaderSenior.profileImageUrl ? (
                 <Image
-                  source={{ uri: selectedSenior.profileImageUrl }}
+                  source={{ uri: caretakerHeaderSenior.profileImageUrl }}
                   style={styles.avatar}
                 />
               ) : (
                 <View style={styles.avatarPlaceholder}>
-                  <Text style={styles.avatarInitials}>
-                    {selectedSenior ? `${(selectedSenior.firstName?.[0] || '').toUpperCase()}${(selectedSenior.lastName?.[0] || '').toUpperCase()}` : '?'}
-                  </Text>
+                  <Text style={styles.avatarInitials}>{caretakerHeaderInitials}</Text>
                 </View>
               )}
             </TouchableOpacity>
@@ -190,6 +545,85 @@ const HomeScreen = () => {
             onClose={() => setModalVisible(false)}
           />
         )}
+
+        {showTelemetryBar ? (
+          <View style={styles.deviceBar}>
+            {dashboardLoading ? (
+              <View style={styles.deviceBarRow}>
+                <ActivityIndicator size="small" color="#FF9500" />
+                <Text style={styles.deviceBarLoadingText}>Loading device data…</Text>
+              </View>
+            ) : dashboardDevices.length > 0 ? (
+              <TouchableOpacity
+                style={styles.deviceBarRow}
+                activeOpacity={dashboardDevices.length > 1 ? 0.7 : 1}
+                onPress={() => {
+                  if (dashboardDevices.length > 1) {
+                    setDevicePickerVisible(true);
+                  }
+                }}
+                disabled={dashboardDevices.length <= 1}
+              >
+                <Icon name="hardware-chip-outline" size={20} color="#FF9500" />
+                <View style={styles.deviceBarTextCol}>
+                  <Text style={styles.deviceBarLabel}>Device</Text>
+                  <Text style={styles.deviceBarValue} numberOfLines={2}>
+                    {selectedDeviceLabel}
+                  </Text>
+                </View>
+                {dashboardDevices.length > 1 ? (
+                  <Icon name="chevron-down" size={20} color="#8A7565" />
+                ) : null}
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.deviceBarTextColFull}>
+                <View style={styles.deviceBarRow}>
+                  <Icon name="hardware-chip-outline" size={20} color="#FF9500" />
+                  <View style={styles.deviceBarTextCol}>
+                    <Text style={styles.deviceBarLabel}>Device</Text>
+                    <Text style={styles.deviceBarValue}>{NA}</Text>
+                  </View>
+                </View>
+                {dashboardError ? (
+                  <Text style={styles.deviceBarErrorSmall}>{dashboardError}</Text>
+                ) : null}
+              </View>
+            )}
+          </View>
+        ) : null}
+
+        <Modal
+          visible={devicePickerVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setDevicePickerVisible(false)}
+        >
+          <Pressable style={styles.pickerBackdrop} onPress={() => setDevicePickerVisible(false)}>
+            <Pressable style={styles.pickerSheet} onPress={e => e.stopPropagation()}>
+              <Text style={styles.pickerTitle}>Select device</Text>
+              {dashboardDevices.map((row, index) => (
+                <TouchableOpacity
+                  key={`${getSeniorDashboardDeviceLabel(row)}-${index}`}
+                  style={[
+                    styles.pickerRow,
+                    index === selectedDeviceIndex && styles.pickerRowSelected,
+                  ]}
+                  onPress={() => {
+                    setSelectedDeviceIndex(index);
+                    setDevicePickerVisible(false);
+                  }}
+                >
+                  <Text style={styles.pickerRowText}>{getSeniorDashboardDeviceLabel(row)}</Text>
+                  {index === selectedDeviceIndex ? (
+                    <Icon name="checkmark-circle" size={22} color="#FF9500" />
+                  ) : (
+                    <Icon name="ellipse-outline" size={22} color="#C7C1BA" />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </Pressable>
+          </Pressable>
+        </Modal>
 
         {/* Greeting Card */}
         <ImageBackground
@@ -224,26 +658,29 @@ const HomeScreen = () => {
             <View style={styles.coordBlock}>
               <Text style={styles.coordLabel}>Latitude</Text>
               <Text style={[styles.coordValue, styles.coordValueLat]} selectable>
-                {`${liveSnapshot.latitude.toFixed(6)}°`}
+                {displayDeg(liveSnapshot.latitude)}
               </Text>
               <Text style={[styles.coordLabel, styles.coordLabelLon]}>Longitude</Text>
               <Text style={[styles.coordValue, styles.coordValueLon]} selectable>
-                {`${liveSnapshot.longitude.toFixed(6)}°`}
+                {displayDeg(liveSnapshot.longitude)}
               </Text>
             </View>
-            <Text style={styles.weatherRangeTight}>
-              {`${Math.round(liveSnapshot.speedKph)} km/h · ${liveSnapshot.lastUpdatedLabel}`}
-            </Text>
-            <Text style={styles.weatherRange}>{liveSnapshot.networkLabel}</Text>
+            <Text style={styles.weatherRangeTight}>{speedAndUpdatedLine}</Text>
+            <Text style={styles.weatherRange}>{displayStr(liveSnapshot.networkLabel)}</Text>
             <TouchableOpacity
-              style={styles.mapButton}
+              style={[styles.mapButton, !hasLiveCoordinates && styles.mapButtonDisabled]}
               onPress={openLastPositionMap}
               activeOpacity={0.85}
+              disabled={!hasLiveCoordinates}
             >
-              <Icon name="map-outline" size={18} color="#FF9500" />
+              <Icon name="map-outline" size={18} color={hasLiveCoordinates ? '#FF9500' : '#C7C1BA'} />
               <View style={styles.mapButtonTextCol}>
-                <Text style={styles.mapButtonTitle}>View on map</Text>
-                <Text style={styles.mapButtonSubtitle}>OpenStreetMap · marker at this point</Text>
+                <Text style={[styles.mapButtonTitle, !hasLiveCoordinates && styles.mapButtonTitleDisabled]}>
+                  View on map
+                </Text>
+                <Text style={styles.mapButtonSubtitle}>
+                  {hasLiveCoordinates ? 'OpenStreetMap · marker at this point' : NA}
+                </Text>
               </View>
               <Icon name="chevron-forward" size={18} color="#C7C1BA" />
             </TouchableOpacity>
@@ -255,44 +692,22 @@ const HomeScreen = () => {
         <View style={styles.badgesRow}>
           <View style={[styles.badgeCard, styles.badgeWarm]}>
             <View style={styles.badgeHeader}>
-              <Icon
-                name={
-                  liveSnapshot.charging
-                    ? 'battery-charging'
-                    : liveSnapshot.batteryPercent > 75
-                      ? 'battery-full'
-                      : liveSnapshot.batteryPercent > 30
-                        ? 'battery-half'
-                        : 'battery-dead-outline'
-                }
-                size={16}
-                color="#D18B2E"
-              />
+              <Icon name={batteryIconName} size={16} color="#D18B2E" />
               <Text style={styles.badgeTitle}>Battery</Text>
             </View>
-            <Text style={styles.badgeHighlight}>{`${liveSnapshot.batteryPercent}%`}</Text>
-            <Text style={styles.badgeTime}>
-              {liveSnapshot.charging ? 'Charging now' : 'On battery power'}
-            </Text>
+            <Text style={styles.badgeHighlight}>{displayBatteryPct(liveSnapshot.batteryPercent)}</Text>
+            <Text style={styles.badgeTime}>{chargingCaption(liveSnapshot.charging)}</Text>
           </View>
           <View style={[styles.badgeCard, styles.badgeCool]}>
             <View style={styles.badgeHeader}>
-              <Icon
-                name={
-                  liveSnapshot.alarmSeverity === 'ok'
-                    ? 'shield-checkmark'
-                    : 'warning'
-                }
-                size={16}
-                color="#D7643C"
-              />
+              <Icon name={safetyIconName} size={16} color="#D7643C" />
               <Text style={styles.badgeTitle}>Safety</Text>
             </View>
             <Text style={styles.badgeHighlight} numberOfLines={2}>
-              {liveSnapshot.primaryAlarmLabel}
+              {displayStr(liveSnapshot.primaryAlarmLabel)}
             </Text>
             <Text style={styles.badgeTime} numberOfLines={2}>
-              {liveSnapshot.alarmDetail}
+              {displayStr(liveSnapshot.alarmDetail)}
             </Text>
             <View style={styles.badgeAlarmMeta}>
               <Icon
@@ -302,7 +717,7 @@ const HomeScreen = () => {
                 style={styles.badgeAlarmIcon}
               />
               <Text style={styles.badgeAlarmMetaText} numberOfLines={2}>
-                {`Last: ${liveSnapshot.lastAlarmKind} · ${liveSnapshot.lastAlarmAt}`}
+                {`Last: ${lastAlarmLine(liveSnapshot.lastAlarmKind, liveSnapshot.lastAlarmAt)}`}
               </Text>
             </View>
           </View>
@@ -314,14 +729,14 @@ const HomeScreen = () => {
           <View style={styles.timeCard}>
             <View style={styles.timeHeaderRow}>
               <View style={{ flex: 1, paddingRight: 8 }}>
-                <Text style={styles.timeTitle}>{liveSnapshot.primaryAlarmLabel}</Text>
-                <Text style={styles.timeSubtitle}>{liveSnapshot.alarmDetail}</Text>
+                <Text style={styles.timeTitle}>{displayStr(liveSnapshot.primaryAlarmLabel)}</Text>
+                <Text style={styles.timeSubtitle}>{displayStr(liveSnapshot.alarmDetail)}</Text>
                 <View style={styles.lastAlarmRow}>
                   <Icon name="time-outline" size={16} color="#8A827A" />
                   <View style={styles.lastAlarmTextCol}>
                     <Text style={styles.lastAlarmLabel}>Last alarm</Text>
                     <Text style={styles.lastAlarmValue}>
-                      {`${liveSnapshot.lastAlarmKind} · ${liveSnapshot.lastAlarmAt}`}
+                      {lastAlarmLine(liveSnapshot.lastAlarmKind, liveSnapshot.lastAlarmAt)}
                     </Text>
                   </View>
                 </View>
@@ -332,15 +747,11 @@ const HomeScreen = () => {
             <View style={styles.timeRow}>
               <View style={[styles.timeSlot, styles.timeSlotGreen]}>
                 <Text style={styles.timeSlotTitle}>Signal & network</Text>
-                <Text style={styles.timeSlotValue}>{liveSnapshot.networkLabel}</Text>
+                <Text style={styles.timeSlotValue}>{displayStr(liveSnapshot.networkLabel)}</Text>
               </View>
               <View style={[styles.timeSlot, styles.timeSlotPeach]}>
                 <Text style={styles.timeSlotTitle}>Fix quality</Text>
-                <Text style={styles.timeSlotValue}>
-                  {liveSnapshot.hdop != null && liveSnapshot.satellites != null
-                    ? `HDOP ${liveSnapshot.hdop} · ${liveSnapshot.satellites} satellites`
-                    : 'GNSS lock OK'}
-                </Text>
+                <Text style={styles.timeSlotValue}>{fixQualityLine}</Text>
               </View>
             </View>
           </View>
@@ -365,6 +776,88 @@ const styles = StyleSheet.create({
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  deviceBar: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#E8E2DA',
+  },
+  deviceBarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  deviceBarTextCol: {
+    flex: 1,
+    marginLeft: 10,
+    minWidth: 0,
+  },
+  deviceBarLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8A827A',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 2,
+  },
+  deviceBarValue: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#333',
+  },
+  deviceBarTextColFull: {
+    width: '100%',
+  },
+  deviceBarErrorSmall: {
+    marginTop: 8,
+    fontSize: 12,
+    color: '#A94442',
+    lineHeight: 16,
+  },
+  deviceBarLoadingText: {
+    marginLeft: 10,
+    fontSize: 14,
+    color: '#666',
+  },
+  pickerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  pickerSheet: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    paddingVertical: 8,
+    maxHeight: '70%',
+  },
+  pickerTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#333',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  pickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E8E2DA',
+  },
+  pickerRowSelected: {
+    backgroundColor: '#FFF8F0',
+  },
+  pickerRowText: {
+    flex: 1,
+    fontSize: 15,
+    color: '#333',
+    marginRight: 8,
   },
   dots: {
     flexDirection: 'row',
@@ -534,6 +1027,10 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: '#FFD4A8',
   },
+  mapButtonDisabled: {
+    backgroundColor: '#F3F0EC',
+    borderColor: '#E8E2DA',
+  },
   mapButtonTextCol: {
     flex: 1,
     marginLeft: 10,
@@ -543,6 +1040,9 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: '#333',
+  },
+  mapButtonTitleDisabled: {
+    color: '#9A938C',
   },
   mapButtonSubtitle: {
     fontSize: 11,
