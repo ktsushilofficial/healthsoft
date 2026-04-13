@@ -279,13 +279,6 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
               <Text style={styles.googleButtonText}>Continue with Google</Text>
             </TouchableOpacity>
 
-            {/* Sign Up Link */}
-            <View style={styles.signupContainer}>
-              <Text style={styles.signupText}>Don't have an account? </Text>
-              <TouchableOpacity onPress={() => navigation.navigate('Signup')}>
-                <Text style={styles.signupLink}>Sign Up</Text>
-              </TouchableOpacity>
-            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -433,20 +426,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     marginLeft: 12,
-  },
-  signupContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    paddingBottom: 32,
-  },
-  signupText: {
-    color: '#8E8E93',
-    fontSize: 14,
-  },
-  signupLink: {
-    color: '#FF9500',
-    fontSize: 14,
-    fontWeight: '600',
   },
   methodToggle: {
     alignSelf: 'center',

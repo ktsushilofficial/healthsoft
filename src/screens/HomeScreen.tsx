@@ -96,6 +96,145 @@ function guardianProfileIndex(
   return matchIdx >= 0 ? matchIdx : 0;
 }
 
+function readStringField(record: SeniorDashboardDeviceRecord, key: string): string | null {
+  const value = record[key];
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function readNumberField(record: SeniorDashboardDeviceRecord, key: string): number | null {
+  const value = record[key];
+  return typeof value === 'number' && !Number.isNaN(value) ? value : null;
+}
+
+function toEpochSeconds(value: number | null): number | null {
+  if (value == null || value <= 0) return null;
+  return value > 1e12 ? value / 1000 : value;
+}
+
+function pickLatestEpochValue(a: number | null, b: number | null): number | null {
+  const aSec = toEpochSeconds(a);
+  const bSec = toEpochSeconds(b);
+  if (aSec == null) return b;
+  if (bSec == null) return a;
+  return aSec >= bSec ? a : b;
+}
+
+function withPositionAliases(position: SeniorDashboardDeviceRecord): SeniorDashboardDeviceRecord {
+  return {
+    ...position,
+    ident: readStringField(position, 'imei') ?? readStringField(position, 'ident'),
+    imei: readStringField(position, 'imei'),
+    'device.uuid': readStringField(position, 'deviceUUID') ?? readStringField(position, 'deviceUuid'),
+    'device.name': readStringField(position, 'deviceName') ?? readStringField(position, 'device.name'),
+    deviceName: readStringField(position, 'deviceName') ?? readStringField(position, 'device.name'),
+    'device.serial.number':
+      readStringField(position, 'deviceSerialNumber') ?? readStringField(position, 'device.serial.number'),
+    'device.id': readNumberField(position, 'deviceId') ?? readNumberField(position, 'device.id'),
+    'position.latitude':
+      readNumberField(position, 'positionLatitude') ?? readNumberField(position, 'position.latitude'),
+    'position.longitude':
+      readNumberField(position, 'positionLongitude') ?? readNumberField(position, 'position.longitude'),
+    'position.altitude':
+      readNumberField(position, 'positionAltitude') ?? readNumberField(position, 'position.altitude'),
+    'position.direction':
+      readNumberField(position, 'positionDirection') ?? readNumberField(position, 'position.direction'),
+    'speed.kph': readNumberField(position, 'positionSpeed') ?? readNumberField(position, 'speed.kph'),
+    hdop: readNumberField(position, 'positionHdop') ?? readNumberField(position, 'hdop'),
+    satellites:
+      readNumberField(position, 'positionSatellites') ?? readNumberField(position, 'satellites'),
+    'server.timestamp':
+      readNumberField(position, 'serverTimestamp') ?? readNumberField(position, 'server.timestamp'),
+  };
+}
+
+function mergeGuardianDeviceStatusWithPosition(
+  statusRows: SeniorDashboardDeviceRecord[],
+  positionRows: SeniorDashboardDeviceRecord[],
+): SeniorDashboardDeviceRecord[] {
+  if (statusRows.length === 0) return [];
+  if (positionRows.length === 0) return statusRows;
+
+  const positions = positionRows.map(withPositionAliases);
+  const byIdent = new Map<string, SeniorDashboardDeviceRecord>();
+  const byDeviceName = new Map<string, SeniorDashboardDeviceRecord>();
+  const byDeviceId = new Map<number, SeniorDashboardDeviceRecord>();
+
+  positions.forEach(pos => {
+    const ident = readStringField(pos, 'ident');
+    if (ident) byIdent.set(ident, pos);
+
+    const name = readStringField(pos, 'device.name');
+    if (name) byDeviceName.set(name.toLowerCase(), pos);
+
+    const id = readNumberField(pos, 'device.id') ?? readNumberField(pos, 'id');
+    if (id != null) byDeviceId.set(id, pos);
+  });
+
+  return statusRows.map(status => {
+    const normalizedStatus: SeniorDashboardDeviceRecord = {
+      ...status,
+      ident: readStringField(status, 'imei') ?? readStringField(status, 'ident'),
+      'device.name': readStringField(status, 'deviceName') ?? readStringField(status, 'device.name'),
+      'device.id': readNumberField(status, 'deviceId') ?? readNumberField(status, 'device.id'),
+      'device.uuid': readStringField(status, 'deviceUuid') ?? readStringField(status, 'deviceUUID'),
+      'battery.level': readNumberField(status, 'batteryLevel') ?? readNumberField(status, 'battery.level'),
+      'battery.charging.status':
+        (status['batteryChargingStatus'] as boolean | undefined) ??
+        (status['battery.charging.status'] as boolean | undefined),
+      'fall.alarm.status':
+        (status['fallAlarmStatus'] as boolean | undefined) ??
+        (status['fall.alarm.status'] as boolean | undefined),
+      'movement.status':
+        (status['movementStatus'] as boolean | undefined) ??
+        (status['movement.status'] as boolean | undefined),
+      'gsm.network.type': readStringField(status, 'gsmNetworkType') ?? readStringField(status, 'gsm.network.type'),
+      'gsm.signal.dbm': readNumberField(status, 'gsmSignalDbm') ?? readNumberField(status, 'gsm.signal.dbm'),
+      'wifi.status':
+        (status['wifiStatus'] as boolean | undefined) ?? (status['wifi.status'] as boolean | undefined),
+      'server.timestamp':
+        readNumberField(status, 'serverTimestamp') ?? readNumberField(status, 'server.timestamp'),
+    };
+
+    const ident = readStringField(normalizedStatus, 'ident');
+    const deviceName = readStringField(normalizedStatus, 'device.name');
+    const deviceId = readNumberField(normalizedStatus, 'device.id');
+    const deviceUuid = readStringField(normalizedStatus, 'device.uuid');
+    const matched =
+      (ident ? byIdent.get(ident) : undefined) ??
+      (deviceUuid
+        ? positions.find(p => readStringField(p, 'device.uuid') === deviceUuid)
+        : undefined) ??
+      (deviceId != null ? byDeviceId.get(deviceId) : undefined) ??
+      (deviceName ? byDeviceName.get(deviceName.toLowerCase()) : undefined);
+    if (!matched) {
+      return normalizedStatus;
+    }
+
+    const merged: SeniorDashboardDeviceRecord = { ...normalizedStatus, ...matched };
+
+    const latestTimestamp = pickLatestEpochValue(
+      readNumberField(normalizedStatus, 'timestamp'),
+      readNumberField(matched, 'timestamp'),
+    );
+    if (latestTimestamp != null) {
+      merged.timestamp = latestTimestamp;
+    }
+
+    const latestServerTimestamp = pickLatestEpochValue(
+      readNumberField(normalizedStatus, 'server.timestamp'),
+      readNumberField(matched, 'server.timestamp'),
+    );
+    if (latestServerTimestamp != null) {
+      merged['server.timestamp'] = latestServerTimestamp;
+      merged.serverTimestamp = latestServerTimestamp;
+    }
+
+    return merged;
+  });
+}
+
 function getGreetingFromDate(date: Date) {
   const h = date.getHours();
   if (h >= 5 && h < 12) {
@@ -127,6 +266,7 @@ const HomeScreen = () => {
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [guardianSeniorProfiles, setGuardianSeniorProfiles] = useState<GuardianSeniorProfileRow[]>([]);
+  const [guardianDevicePositions, setGuardianDevicePositions] = useState<SeniorDashboardDeviceRecord[]>([]);
 
   /** Senior id for `/api/v1/senior-dashboard/{id}` — logged-in senior, or caretaker’s selected senior only. */
   const activeDashboardSeniorId = useMemo(() => {
@@ -144,6 +284,8 @@ const HomeScreen = () => {
     return false;
   }, [user, selectedSenior?.userId]);
 
+  const showLocationCard = user?.role === GUARDIAN_ROLE;
+
   useEffect(() => {
     setDevicePickerVisible(false);
     setSelectedDeviceIndex(0);
@@ -152,6 +294,7 @@ const HomeScreen = () => {
   useEffect(() => {
     if (!user) {
       setGuardianSeniorProfiles([]);
+      setGuardianDevicePositions([]);
       setDashboardDevices([]);
       setDashboardError(null);
       setDashboardLoading(false);
@@ -169,10 +312,15 @@ const HomeScreen = () => {
           const res = await getGuardianDashboard(user.user_id);
           if (cancelled) return;
           const rows = Array.isArray(res.seniorProfilesDTO) ? res.seniorProfilesDTO : [];
+          const positions = Array.isArray(res.seniorDevicePosition?.allDeviceStatus)
+            ? res.seniorDevicePosition?.allDeviceStatus
+            : [];
           setGuardianSeniorProfiles(rows);
+          setGuardianDevicePositions(positions);
         } catch (e) {
           if (cancelled) return;
           setGuardianSeniorProfiles([]);
+          setGuardianDevicePositions([]);
           setDashboardError(e instanceof Error ? e.message : 'Guardian dashboard request failed.');
         } finally {
           if (!cancelled) {
@@ -186,6 +334,7 @@ const HomeScreen = () => {
     }
 
     setGuardianSeniorProfiles([]);
+    setGuardianDevicePositions([]);
 
     if (user.role === SENIOR_ROLE) {
       setDashboardLoading(true);
@@ -261,10 +410,11 @@ const HomeScreen = () => {
     }
     const idx = guardianProfileIndex(guardianSeniorProfiles, selectedSenior?.userId);
     const row = guardianSeniorProfiles[idx];
-    const list = Array.isArray(row?.allDeviceStatus) ? row!.allDeviceStatus! : [];
+    const baseList = Array.isArray(row?.allDeviceStatus) ? row!.allDeviceStatus! : [];
+    const list = mergeGuardianDeviceStatusWithPosition(baseList, guardianDevicePositions);
     setDashboardDevices(list);
     setSelectedDeviceIndex(0);
-  }, [user, user?.role, guardianSeniorProfiles, selectedSenior?.userId]);
+  }, [user, user?.role, guardianSeniorProfiles, guardianDevicePositions, selectedSenior?.userId]);
 
   const activeGuardianSeniorDetails = useMemo(() => {
     if (!user || user.role !== GUARDIAN_ROLE || guardianSeniorProfiles.length === 0) {
@@ -648,45 +798,46 @@ const HomeScreen = () => {
           </View>
         </ImageBackground>
 
-        {/* Location (reuses weather card layout) */}
-        <View style={styles.weatherCard}>
-          <View style={styles.weatherLeft}>
-            <View style={styles.weatherHeader}>
-              <Icon name="location" size={18} color="#FF9500" />
-              <Text style={styles.weatherLocation}>Last known position</Text>
-            </View>
-            <View style={styles.coordBlock}>
-              <Text style={styles.coordLabel}>Latitude</Text>
-              <Text style={[styles.coordValue, styles.coordValueLat]} selectable>
-                {displayDeg(liveSnapshot.latitude)}
-              </Text>
-              <Text style={[styles.coordLabel, styles.coordLabelLon]}>Longitude</Text>
-              <Text style={[styles.coordValue, styles.coordValueLon]} selectable>
-                {displayDeg(liveSnapshot.longitude)}
-              </Text>
-            </View>
-            <Text style={styles.weatherRangeTight}>{speedAndUpdatedLine}</Text>
-            <Text style={styles.weatherRange}>{displayStr(liveSnapshot.networkLabel)}</Text>
-            <TouchableOpacity
-              style={[styles.mapButton, !hasLiveCoordinates && styles.mapButtonDisabled]}
-              onPress={openLastPositionMap}
-              activeOpacity={0.85}
-              disabled={!hasLiveCoordinates}
-            >
-              <Icon name="map-outline" size={18} color={hasLiveCoordinates ? '#FF9500' : '#C7C1BA'} />
-              <View style={styles.mapButtonTextCol}>
-                <Text style={[styles.mapButtonTitle, !hasLiveCoordinates && styles.mapButtonTitleDisabled]}>
-                  View on map
+        {showLocationCard ? (
+          <View style={styles.weatherCard}>
+            <View style={styles.weatherLeft}>
+              <View style={styles.weatherHeader}>
+                <Icon name="location" size={18} color="#FF9500" />
+                <Text style={styles.weatherLocation}>Last known position</Text>
+              </View>
+              <View style={styles.coordBlock}>
+                <Text style={styles.coordLabel}>Latitude</Text>
+                <Text style={[styles.coordValue, styles.coordValueLat]} selectable>
+                  {displayDeg(liveSnapshot.latitude)}
                 </Text>
-                <Text style={styles.mapButtonSubtitle}>
-                  {hasLiveCoordinates ? 'OpenStreetMap · marker at this point' : NA}
+                <Text style={[styles.coordLabel, styles.coordLabelLon]}>Longitude</Text>
+                <Text style={[styles.coordValue, styles.coordValueLon]} selectable>
+                  {displayDeg(liveSnapshot.longitude)}
                 </Text>
               </View>
-              <Icon name="chevron-forward" size={18} color="#C7C1BA" />
-            </TouchableOpacity>
+              <Text style={styles.weatherRangeTight}>{speedAndUpdatedLine}</Text>
+              <Text style={styles.weatherRange}>{displayStr(liveSnapshot.networkLabel)}</Text>
+              <TouchableOpacity
+                style={[styles.mapButton, !hasLiveCoordinates && styles.mapButtonDisabled]}
+                onPress={openLastPositionMap}
+                activeOpacity={0.85}
+                disabled={!hasLiveCoordinates}
+              >
+                <Icon name="map-outline" size={18} color={hasLiveCoordinates ? '#FF9500' : '#C7C1BA'} />
+                <View style={styles.mapButtonTextCol}>
+                  <Text style={[styles.mapButtonTitle, !hasLiveCoordinates && styles.mapButtonTitleDisabled]}>
+                    View on map
+                  </Text>
+                  <Text style={styles.mapButtonSubtitle}>
+                    {hasLiveCoordinates ? 'OpenStreetMap · marker at this point' : NA}
+                  </Text>
+                </View>
+                <Icon name="chevron-forward" size={18} color="#C7C1BA" />
+              </TouchableOpacity>
+            </View>
+            <Image source={locationThumb} style={styles.weatherImage} />
           </View>
-          <Image source={locationThumb} style={styles.weatherImage} />
-        </View>
+        ) : null}
 
         {/* Battery + safety (reuses Rahukalam / Yamagandam card row) */}
         <View style={styles.badgesRow}>

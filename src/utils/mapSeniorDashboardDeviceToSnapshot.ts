@@ -36,7 +36,7 @@ function firstDefinedLatLon(
 }
 
 function resolveTimestampSeconds(record: SeniorDashboardDeviceRecord): number | undefined {
-  const serverTs = pickNumber(record, 'server.timestamp');
+  const serverTs = pickNumber(record, 'server.timestamp') ?? pickNumber(record, 'serverTimestamp');
   if (serverTs != null && serverTs > 1_000_000_000) {
     return serverTs > 1e12 ? serverTs / 1000 : serverTs;
   }
@@ -64,9 +64,9 @@ function formatLastUpdated(record: SeniorDashboardDeviceRecord): string | null {
 }
 
 function buildNetworkLabel(record: SeniorDashboardDeviceRecord): string | null {
-  const gsmType = pickString(record, 'gsm.network.type');
-  const dbm = pickNumber(record, 'gsm.signal.dbm');
-  const wifiOn = pickBoolean(record, 'wifi.status');
+  const gsmType = pickString(record, 'gsm.network.type') ?? pickString(record, 'gsmNetworkType');
+  const dbm = pickNumber(record, 'gsm.signal.dbm') ?? pickNumber(record, 'gsmSignalDbm');
+  const wifiOn = pickBoolean(record, 'wifi.status') ?? pickBoolean(record, 'wifiStatus');
   const parts: string[] = [];
   if (gsmType) {
     parts.push(dbm != null ? `${gsmType} · ${dbm} dBm` : gsmType);
@@ -76,10 +76,10 @@ function buildNetworkLabel(record: SeniorDashboardDeviceRecord): string | null {
   if (wifiOn) {
     parts.push('Wi‑Fi on');
   }
-  const locGps = pickBoolean(record, 'location.source.gps');
+  const locGps = pickBoolean(record, 'location.source.gps') ?? pickBoolean(record, 'agpsPositionValid');
   const locWifi = pickBoolean(record, 'location.source.wifi');
   const locGsm = pickBoolean(record, 'location.source.gsm');
-  const locBt = pickBoolean(record, 'location.source.bluetooth');
+  const locBt = pickBoolean(record, 'location.source.bluetooth') ?? pickBoolean(record, 'bluetoothConnectedStatus');
   const sources: string[] = [];
   if (locGps) sources.push('GPS');
   if (locWifi) sources.push('Wi‑Fi');
@@ -95,8 +95,8 @@ function inferAlarm(record: SeniorDashboardDeviceRecord): Pick<
   SeniorHomeSnapshot,
   'primaryAlarmLabel' | 'alarmDetail' | 'alarmSeverity' | 'lastAlarmKind' | 'lastAlarmAt'
 > {
-  const fall = pickBoolean(record, 'fall.alarm.status');
-  const movement = pickBoolean(record, 'movement.status');
+  const fall = pickBoolean(record, 'fall.alarm.status') ?? pickBoolean(record, 'fallAlarmStatus');
+  const movement = pickBoolean(record, 'movement.status') ?? pickBoolean(record, 'movementStatus');
 
   if (fall === undefined && movement === undefined) {
     return {
@@ -141,25 +141,31 @@ function inferAlarm(record: SeniorDashboardDeviceRecord): Pick<
 export function mapSeniorDashboardDeviceToSnapshot(
   record: SeniorDashboardDeviceRecord,
 ): SeniorHomeSnapshot {
-  const batteryRaw = pickNumber(record, 'battery.level');
+  const batteryRaw = pickNumber(record, 'battery.level') ?? pickNumber(record, 'batteryLevel');
   const batteryPercent =
     batteryRaw != null ? Math.max(0, Math.min(100, Math.round(batteryRaw))) : null;
-  const chargingPick = pickBoolean(record, 'battery.charging.status');
+  const chargingPick =
+    pickBoolean(record, 'battery.charging.status') ?? pickBoolean(record, 'batteryChargingStatus');
   const charging = chargingPick !== undefined ? chargingPick : null;
 
   const coords =
     firstDefinedLatLon(
       record,
-      ['position.latitude', 'latitude', 'gnss.latitude', 'gps.latitude'],
-      ['position.longitude', 'longitude', 'gnss.longitude', 'gps.longitude'],
+      ['position.latitude', 'positionLatitude', 'latitude', 'gnss.latitude', 'gps.latitude'],
+      ['position.longitude', 'positionLongitude', 'longitude', 'gnss.longitude', 'gps.longitude'],
     );
 
-  const speedRaw = pickNumber(record, 'speed.kph') ?? pickNumber(record, 'speed');
+  const speedRaw =
+    pickNumber(record, 'speed.kph') ?? pickNumber(record, 'positionSpeed') ?? pickNumber(record, 'speed');
   const speedKph = speedRaw != null ? Math.max(0, speedRaw) : null;
 
-  const hdop = pickNumber(record, 'hdop') ?? pickNumber(record, 'gnss.hdop') ?? null;
+  const hdop =
+    pickNumber(record, 'hdop') ?? pickNumber(record, 'positionHdop') ?? pickNumber(record, 'gnss.hdop') ?? null;
   const satellites =
-    pickNumber(record, 'satellites') ?? pickNumber(record, 'gnss.satellites') ?? null;
+    pickNumber(record, 'satellites') ??
+    pickNumber(record, 'positionSatellites') ??
+    pickNumber(record, 'gnss.satellites') ??
+    null;
 
   const alarm = inferAlarm(record);
 
@@ -178,9 +184,9 @@ export function mapSeniorDashboardDeviceToSnapshot(
 }
 
 export function getSeniorDashboardDeviceLabel(record: SeniorDashboardDeviceRecord): string {
-  const name = pickString(record, 'device.name');
-  const ident = pickString(record, 'ident');
-  const devId = pickNumber(record, 'device.id');
+  const name = pickString(record, 'device.name') ?? pickString(record, 'deviceName');
+  const ident = pickString(record, 'ident') ?? pickString(record, 'imei');
+  const devId = pickNumber(record, 'device.id') ?? pickNumber(record, 'deviceId');
   if (name && ident && name !== ident) {
     return `${name} (${ident})`;
   }

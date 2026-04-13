@@ -22,6 +22,11 @@ export interface GuardianSeniorProfileRow {
   allDeviceStatus?: SeniorDashboardDeviceRecord[] | null;
 }
 
+export interface GuardianSeniorDevicePositionDTO {
+  allDeviceStatus?: SeniorDashboardDeviceRecord[] | null;
+}
+
 export interface GuardianDashboardApiResponse {
   seniorProfilesDTO?: GuardianSeniorProfileRow[] | null;
+  seniorDevicePosition?: GuardianSeniorDevicePositionDTO | null;
 }
