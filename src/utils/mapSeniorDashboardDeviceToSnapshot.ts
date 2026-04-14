@@ -95,7 +95,8 @@ function inferAlarm(record: SeniorDashboardDeviceRecord): Pick<
   SeniorHomeSnapshot,
   'primaryAlarmLabel' | 'alarmDetail' | 'alarmSeverity' | 'lastAlarmKind' | 'lastAlarmAt'
 > {
-  const fall = pickBoolean(record, 'fall.alarm.status') ?? pickBoolean(record, 'fallAlarmStatus');
+  const fall = pickBoolean(record, 'fallAlarmStart') ?? pickBoolean(record, 'fall.alarm.status') ?? pickBoolean(record, 'fallAlarmStatus');
+  const panic = pickBoolean(record, 'alarmPanicStart');
   const movement = pickBoolean(record, 'movement.status') ?? pickBoolean(record, 'movementStatus');
 
   if (fall === undefined && movement === undefined) {
@@ -104,6 +105,16 @@ function inferAlarm(record: SeniorDashboardDeviceRecord): Pick<
       alarmDetail: null,
       alarmSeverity: 'na',
       lastAlarmKind: null,
+      lastAlarmAt: formatLastUpdated(record),
+    };
+  }
+
+  if (panic === true) {
+    return {
+      primaryAlarmLabel: 'SOS reported',
+      alarmDetail: 'Device reported an SOS panic signal on the latest packet.',
+      alarmSeverity: 'critical',
+      lastAlarmKind: 'SOS button',
       lastAlarmAt: formatLastUpdated(record),
     };
   }

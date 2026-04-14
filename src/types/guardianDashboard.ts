@@ -19,14 +19,19 @@ export interface GuardianSeniorDetailsDTO {
 
 export interface GuardianSeniorProfileRow {
   seniorDetailsDTO?: GuardianSeniorDetailsDTO | null;
-  allDeviceStatus?: SeniorDashboardDeviceRecord[] | null;
+  deviceStatusEventDTOs?: SeniorDashboardDeviceRecord[] | null;
 }
 
 export interface GuardianSeniorDevicePositionDTO {
-  allDeviceStatus?: SeniorDashboardDeviceRecord[] | null;
+  devicePositionEventDTOs?: SeniorDashboardDeviceRecord[] | null;
+}
+
+export interface GuardianSeniorDeviceAlarmDTO {
+  deviceAlarmEventDTOs?: SeniorDashboardDeviceRecord[] | null;
 }
 
 export interface GuardianDashboardApiResponse {
   seniorProfilesDTO?: GuardianSeniorProfileRow[] | null;
-  seniorDevicePosition?: GuardianSeniorDevicePositionDTO | null;
+  seniorDevicePositions?: GuardianSeniorDevicePositionDTO | null;
+  seniorDeviceAlarms?: GuardianSeniorDeviceAlarmDTO | null;
 }

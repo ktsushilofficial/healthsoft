@@ -5,5 +5,5 @@
 export type SeniorDashboardDeviceRecord = Record<string, unknown>;
 
 export interface SeniorDashboardApiResponse {
-  allDeviceStatus?: SeniorDashboardDeviceRecord[];
+  deviceStatusEventDTOs?: SeniorDashboardDeviceRecord[];
 }

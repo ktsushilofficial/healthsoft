@@ -12,6 +12,7 @@ import {
   Modal,
   Pressable,
   ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -152,6 +153,7 @@ function withPositionAliases(position: SeniorDashboardDeviceRecord): SeniorDashb
 function mergeGuardianDeviceStatusWithPosition(
   statusRows: SeniorDashboardDeviceRecord[],
   positionRows: SeniorDashboardDeviceRecord[],
+  alarmRows: SeniorDashboardDeviceRecord[] = [],
 ): SeniorDashboardDeviceRecord[] {
   if (statusRows.length === 0) return [];
   if (positionRows.length === 0) return statusRows;
@@ -160,10 +162,23 @@ function mergeGuardianDeviceStatusWithPosition(
   const byIdent = new Map<string, SeniorDashboardDeviceRecord>();
   const byDeviceName = new Map<string, SeniorDashboardDeviceRecord>();
   const byDeviceId = new Map<number, SeniorDashboardDeviceRecord>();
+  const byUuid = new Map<string, SeniorDashboardDeviceRecord>();
+
+  const alarmsByIdent = new Map<string, SeniorDashboardDeviceRecord>();
+  const alarmsByUuid = new Map<string, SeniorDashboardDeviceRecord>();
+
+  alarmRows.forEach(alarm => {
+    const ident = readStringField(alarm, 'ident');
+    if (ident) alarmsByIdent.set(ident, alarm);
+    const uuid = readStringField(alarm, 'deviceUUID') ?? readStringField(alarm, 'deviceUuid') ?? readStringField(alarm, 'device.uuid');
+    if (uuid) alarmsByUuid.set(uuid, alarm);
+  });
 
   positions.forEach(pos => {
     const ident = readStringField(pos, 'ident');
     if (ident) byIdent.set(ident, pos);
+    const uuid = readStringField(pos, 'device.uuid');
+    if (uuid) byUuid.set(uuid, pos);
 
     const name = readStringField(pos, 'device.name');
     if (name) byDeviceName.set(name.toLowerCase(), pos);
@@ -203,16 +218,17 @@ function mergeGuardianDeviceStatusWithPosition(
     const deviceUuid = readStringField(normalizedStatus, 'device.uuid');
     const matched =
       (ident ? byIdent.get(ident) : undefined) ??
-      (deviceUuid
-        ? positions.find(p => readStringField(p, 'device.uuid') === deviceUuid)
-        : undefined) ??
+      (deviceUuid ? byUuid.get(deviceUuid) : undefined) ??
       (deviceId != null ? byDeviceId.get(deviceId) : undefined) ??
       (deviceName ? byDeviceName.get(deviceName.toLowerCase()) : undefined);
-    if (!matched) {
-      return normalizedStatus;
-    }
 
-    const merged: SeniorDashboardDeviceRecord = { ...normalizedStatus, ...matched };
+    const matchedAlarm =
+      (ident ? alarmsByIdent.get(ident) : undefined) ??
+      (deviceUuid ? alarmsByUuid.get(deviceUuid) : undefined);
+
+    let merged: SeniorDashboardDeviceRecord = { ...normalizedStatus };
+    if (matched) merged = { ...merged, ...matched };
+    if (matchedAlarm) merged = { ...merged, ...matchedAlarm };
 
     const latestTimestamp = pickLatestEpochValue(
       readNumberField(normalizedStatus, 'timestamp'),
@@ -224,7 +240,7 @@ function mergeGuardianDeviceStatusWithPosition(
 
     const latestServerTimestamp = pickLatestEpochValue(
       readNumberField(normalizedStatus, 'server.timestamp'),
-      readNumberField(matched, 'server.timestamp'),
+      pickLatestEpochValue(readNumberField(matched || {}, 'server.timestamp'), readNumberField(matchedAlarm || {}, 'server.timestamp'))
     );
     if (latestServerTimestamp != null) {
       merged['server.timestamp'] = latestServerTimestamp;
@@ -267,6 +283,8 @@ const HomeScreen = () => {
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [guardianSeniorProfiles, setGuardianSeniorProfiles] = useState<GuardianSeniorProfileRow[]>([]);
   const [guardianDevicePositions, setGuardianDevicePositions] = useState<SeniorDashboardDeviceRecord[]>([]);
+  const [guardianDeviceAlarms, setGuardianDeviceAlarms] = useState<SeniorDashboardDeviceRecord[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
 
   /** Senior id for `/api/v1/senior-dashboard/{id}` — logged-in senior, or caretaker’s selected senior only. */
   const activeDashboardSeniorId = useMemo(() => {
@@ -291,112 +309,100 @@ const HomeScreen = () => {
     setSelectedDeviceIndex(0);
   }, [activeDashboardSeniorId, user?.role, selectedSenior?.userId]);
 
-  useEffect(() => {
+  const fetchDashboardData = useCallback(async (isRefresh = false) => {
     if (!user) {
       setGuardianSeniorProfiles([]);
       setGuardianDevicePositions([]);
+      setGuardianDeviceAlarms([]);
       setDashboardDevices([]);
       setDashboardError(null);
       setDashboardLoading(false);
+      setRefreshing(false);
       return;
     }
 
-    let cancelled = false;
+    if (isRefresh) setRefreshing(true);
+    else setDashboardLoading(true);
+    setDashboardError(null);
 
     if (user.role === GUARDIAN_ROLE) {
-      setDashboardLoading(true);
-      setDashboardError(null);
       setDashboardDevices([]);
-      (async () => {
-        try {
-          const res = await getGuardianDashboard(user.user_id);
-          if (cancelled) return;
-          const rows = Array.isArray(res.seniorProfilesDTO) ? res.seniorProfilesDTO : [];
-          const positions = Array.isArray(res.seniorDevicePosition?.allDeviceStatus)
-            ? res.seniorDevicePosition?.allDeviceStatus
-            : [];
-          setGuardianSeniorProfiles(rows);
-          setGuardianDevicePositions(positions);
-        } catch (e) {
-          if (cancelled) return;
-          setGuardianSeniorProfiles([]);
-          setGuardianDevicePositions([]);
-          setDashboardError(e instanceof Error ? e.message : 'Guardian dashboard request failed.');
-        } finally {
-          if (!cancelled) {
-            setDashboardLoading(false);
-          }
-        }
-      })();
-      return () => {
-        cancelled = true;
-      };
+      try {
+        const res = await getGuardianDashboard(user.user_id);
+        const rows = Array.isArray(res.seniorProfilesDTO) ? res.seniorProfilesDTO : [];
+        const positions = Array.isArray(res.seniorDevicePositions?.devicePositionEventDTOs)
+          ? res.seniorDevicePositions?.devicePositionEventDTOs
+          : [];
+        const alarms = Array.isArray(res.seniorDeviceAlarms?.deviceAlarmEventDTOs)
+          ? res.seniorDeviceAlarms?.deviceAlarmEventDTOs
+          : [];
+        setGuardianSeniorProfiles(rows);
+        setGuardianDevicePositions(positions);
+        setGuardianDeviceAlarms(alarms);
+      } catch (e) {
+        setGuardianSeniorProfiles([]);
+        setGuardianDevicePositions([]);
+        setGuardianDeviceAlarms([]);
+        setDashboardError(e instanceof Error ? e.message : 'Guardian dashboard request failed.');
+      } finally {
+        if (isRefresh) setRefreshing(false);
+        else setDashboardLoading(false);
+      }
+      return;
     }
 
     setGuardianSeniorProfiles([]);
     setGuardianDevicePositions([]);
+    setGuardianDeviceAlarms([]);
 
     if (user.role === SENIOR_ROLE) {
-      setDashboardLoading(true);
-      setDashboardError(null);
-      (async () => {
-        try {
-          const res = await getSeniorDashboard(user.user_id);
-          if (cancelled) return;
-          const list = Array.isArray(res.allDeviceStatus) ? res.allDeviceStatus : [];
-          setDashboardDevices(list);
-          setSelectedDeviceIndex(0);
-        } catch (e) {
-          if (cancelled) return;
-          setDashboardDevices([]);
-          setDashboardError(e instanceof Error ? e.message : 'Dashboard request failed.');
-        } finally {
-          if (!cancelled) {
-            setDashboardLoading(false);
-          }
-        }
-      })();
-      return () => {
-        cancelled = true;
-      };
+      try {
+        const res = await getSeniorDashboard(user.user_id);
+        const list = Array.isArray(res.deviceStatusEventDTOs) ? res.deviceStatusEventDTOs : [];
+        setDashboardDevices(list);
+        setSelectedDeviceIndex(0);
+      } catch (e) {
+        setDashboardDevices([]);
+        setDashboardError(e instanceof Error ? e.message : 'Dashboard request failed.');
+      } finally {
+        if (isRefresh) setRefreshing(false);
+        else setDashboardLoading(false);
+      }
+      return;
     }
 
     if (user.role === CARETAKER_ROLE) {
       if (!selectedSenior?.userId) {
         setDashboardDevices([]);
         setDashboardError(null);
-        setDashboardLoading(false);
+        if (isRefresh) setRefreshing(false);
+        else setDashboardLoading(false);
         return;
       }
-      setDashboardLoading(true);
-      setDashboardError(null);
-      (async () => {
-        try {
-          const res = await getSeniorDashboard(selectedSenior.userId);
-          if (cancelled) return;
-          const list = Array.isArray(res.allDeviceStatus) ? res.allDeviceStatus : [];
-          setDashboardDevices(list);
-          setSelectedDeviceIndex(0);
-        } catch (e) {
-          if (cancelled) return;
-          setDashboardDevices([]);
-          setDashboardError(e instanceof Error ? e.message : 'Dashboard request failed.');
-        } finally {
-          if (!cancelled) {
-            setDashboardLoading(false);
-          }
-        }
-      })();
-      return () => {
-        cancelled = true;
-      };
+      try {
+        const res = await getSeniorDashboard(selectedSenior.userId);
+        const list = Array.isArray(res.deviceStatusEventDTOs) ? res.deviceStatusEventDTOs : [];
+        setDashboardDevices(list);
+        setSelectedDeviceIndex(0);
+      } catch (e) {
+        setDashboardDevices([]);
+        setDashboardError(e instanceof Error ? e.message : 'Dashboard request failed.');
+      } finally {
+        if (isRefresh) setRefreshing(false);
+        else setDashboardLoading(false);
+      }
+      return;
     }
 
     setDashboardDevices([]);
     setDashboardError(null);
-    setDashboardLoading(false);
-    return undefined;
+    if (isRefresh) setRefreshing(false);
+    else setDashboardLoading(false);
   }, [user, user?.role, user?.user_id, selectedSenior?.userId, getSeniorDashboard, getGuardianDashboard]);
+
+  useEffect(() => {
+    fetchDashboardData(false);
+  }, [fetchDashboardData]);
 
   useEffect(() => {
     if (!user || user.role !== GUARDIAN_ROLE) {
@@ -410,11 +416,11 @@ const HomeScreen = () => {
     }
     const idx = guardianProfileIndex(guardianSeniorProfiles, selectedSenior?.userId);
     const row = guardianSeniorProfiles[idx];
-    const baseList = Array.isArray(row?.allDeviceStatus) ? row!.allDeviceStatus! : [];
-    const list = mergeGuardianDeviceStatusWithPosition(baseList, guardianDevicePositions);
+    const baseList = Array.isArray(row?.deviceStatusEventDTOs) ? row!.deviceStatusEventDTOs! : [];
+    const list = mergeGuardianDeviceStatusWithPosition(baseList, guardianDevicePositions, guardianDeviceAlarms);
     setDashboardDevices(list);
     setSelectedDeviceIndex(0);
-  }, [user, user?.role, guardianSeniorProfiles, guardianDevicePositions, selectedSenior?.userId]);
+  }, [user, user?.role, guardianSeniorProfiles, guardianDevicePositions, guardianDeviceAlarms, selectedSenior?.userId]);
 
   const activeGuardianSeniorDetails = useMemo(() => {
     if (!user || user.role !== GUARDIAN_ROLE || guardianSeniorProfiles.length === 0) {
@@ -672,7 +678,18 @@ const HomeScreen = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView>
+      <ScrollView
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => {
+              void fetchDashboardData(true);
+            }}
+            colors={['#FF9500']}
+            tintColor="#FF9500"
+          />
+        }
+      >
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.logoContainer}>
