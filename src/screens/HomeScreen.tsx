@@ -1,5 +1,5 @@
 // src/screens/HomeScreen.tsx
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 
 import {
   View,
@@ -18,6 +18,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useAuth } from '../context/AuthContext';
 import SeniorSelectionModal from '../components/SeniorSelectionModal';
+import GuardianWelcomeModal from '../components/GuardianWelcomeModal';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { emptySeniorHomeSnapshot } from '../types/seniorHomeSnapshot';
 import { buildOpenStreetMapMarkerUrl } from '../utils/openStreetMap';
@@ -81,6 +82,42 @@ function lastAlarmLine(kind: string | null, at: string | null): string {
 function capitalizeWord(s: string) {
   if (!s) return '';
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+
+function buildGreetingName(firstName: string, lastName: string, fallbackEmail?: string) {
+  const fn = capitalizeWord((firstName || '').trim());
+  const ln = (lastName || '').trim();
+  if (fn || ln) {
+    return fn ? `${fn}${ln ? ` ${ln}` : ''}!` : `${capitalizeWord(ln)}!`;
+  }
+
+  const emailLocal = (fallbackEmail || '').split('@')[0]?.replace(/[._]+/g, ' ').trim();
+  if (emailLocal) {
+    const firstToken = emailLocal.split(/\s+/)[0] || emailLocal;
+    return `${capitalizeWord(firstToken)}!`;
+  }
+
+  return 'Welcome!';
+}
+
+function buildDisplayName(firstName: string, lastName: string, fallbackEmail?: string) {
+  const fn = capitalizeWord((firstName || '').trim());
+  const ln = capitalizeWord((lastName || '').trim());
+  const fullName = [fn, ln].filter(Boolean).join(' ').trim();
+  if (fullName) {
+    return fullName;
+  }
+
+  const emailLocal = (fallbackEmail || '').split('@')[0]?.replace(/[._]+/g, ' ').trim();
+  if (emailLocal) {
+    return emailLocal
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(capitalizeWord)
+      .join(' ');
+  }
+
+  return 'Guardian';
 }
 
 /** Same index rule as device list: match selected senior’s userId, else first profile. */
@@ -232,7 +269,7 @@ function mergeGuardianDeviceStatusWithPosition(
 
     const latestTimestamp = pickLatestEpochValue(
       readNumberField(normalizedStatus, 'timestamp'),
-      readNumberField(matched, 'timestamp'),
+      readNumberField(matched || {}, 'timestamp'),
     );
     if (latestTimestamp != null) {
       merged.timestamp = latestTimestamp;
@@ -285,6 +322,10 @@ const HomeScreen = () => {
   const [guardianDevicePositions, setGuardianDevicePositions] = useState<SeniorDashboardDeviceRecord[]>([]);
   const [guardianDeviceAlarms, setGuardianDeviceAlarms] = useState<SeniorDashboardDeviceRecord[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [guardianWelcomeVisible, setGuardianWelcomeVisible] = useState(false);
+  const shownGuardianWelcomeForUser = useRef<string | null>(null);
+  const isMountedRef = useRef(true);
+  const dashboardRequestIdRef = useRef(0);
 
   /** Senior id for `/api/v1/senior-dashboard/{id}` — logged-in senior, or caretaker’s selected senior only. */
   const activeDashboardSeniorId = useMemo(() => {
@@ -304,13 +345,35 @@ const HomeScreen = () => {
 
   const showLocationCard = user?.role === GUARDIAN_ROLE;
 
+  const guardianWelcomeName = useMemo(() => {
+    if (!user || user.role !== GUARDIAN_ROLE) {
+      return '';
+    }
+    return buildDisplayName(user.first_name, user.last_name, user.email);
+  }, [user]);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+  }, []);
+
   useEffect(() => {
     setDevicePickerVisible(false);
     setSelectedDeviceIndex(0);
   }, [activeDashboardSeniorId, user?.role, selectedSenior?.userId]);
 
   const fetchDashboardData = useCallback(async (isRefresh = false) => {
+    const requestId = ++dashboardRequestIdRef.current;
+    const shouldIgnore = () =>
+      !isMountedRef.current || dashboardRequestIdRef.current !== requestId;
+
     if (!user) {
+      if (shouldIgnore()) return;
       setGuardianSeniorProfiles([]);
       setGuardianDevicePositions([]);
       setGuardianDeviceAlarms([]);
@@ -321,6 +384,7 @@ const HomeScreen = () => {
       return;
     }
 
+    if (shouldIgnore()) return;
     if (isRefresh) setRefreshing(true);
     else setDashboardLoading(true);
     setDashboardError(null);
@@ -329,6 +393,7 @@ const HomeScreen = () => {
       setDashboardDevices([]);
       try {
         const res = await getGuardianDashboard(user.user_id);
+        if (shouldIgnore()) return;
         const rows = Array.isArray(res.seniorProfilesDTO) ? res.seniorProfilesDTO : [];
         const positions = Array.isArray(res.seniorDevicePositions?.devicePositionEventDTOs)
           ? res.seniorDevicePositions?.devicePositionEventDTOs
@@ -340,17 +405,20 @@ const HomeScreen = () => {
         setGuardianDevicePositions(positions);
         setGuardianDeviceAlarms(alarms);
       } catch (e) {
+        if (shouldIgnore()) return;
         setGuardianSeniorProfiles([]);
         setGuardianDevicePositions([]);
         setGuardianDeviceAlarms([]);
         setDashboardError(e instanceof Error ? e.message : 'Guardian dashboard request failed.');
       } finally {
+        if (shouldIgnore()) return;
         if (isRefresh) setRefreshing(false);
         else setDashboardLoading(false);
       }
       return;
     }
 
+    if (shouldIgnore()) return;
     setGuardianSeniorProfiles([]);
     setGuardianDevicePositions([]);
     setGuardianDeviceAlarms([]);
@@ -358,13 +426,16 @@ const HomeScreen = () => {
     if (user.role === SENIOR_ROLE) {
       try {
         const res = await getSeniorDashboard(user.user_id);
+        if (shouldIgnore()) return;
         const list = Array.isArray(res.deviceStatusEventDTOs) ? res.deviceStatusEventDTOs : [];
         setDashboardDevices(list);
         setSelectedDeviceIndex(0);
       } catch (e) {
+        if (shouldIgnore()) return;
         setDashboardDevices([]);
         setDashboardError(e instanceof Error ? e.message : 'Dashboard request failed.');
       } finally {
+        if (shouldIgnore()) return;
         if (isRefresh) setRefreshing(false);
         else setDashboardLoading(false);
       }
@@ -373,6 +444,7 @@ const HomeScreen = () => {
 
     if (user.role === CARETAKER_ROLE) {
       if (!selectedSenior?.userId) {
+        if (shouldIgnore()) return;
         setDashboardDevices([]);
         setDashboardError(null);
         if (isRefresh) setRefreshing(false);
@@ -381,19 +453,23 @@ const HomeScreen = () => {
       }
       try {
         const res = await getSeniorDashboard(selectedSenior.userId);
+        if (shouldIgnore()) return;
         const list = Array.isArray(res.deviceStatusEventDTOs) ? res.deviceStatusEventDTOs : [];
         setDashboardDevices(list);
         setSelectedDeviceIndex(0);
       } catch (e) {
+        if (shouldIgnore()) return;
         setDashboardDevices([]);
         setDashboardError(e instanceof Error ? e.message : 'Dashboard request failed.');
       } finally {
+        if (shouldIgnore()) return;
         if (isRefresh) setRefreshing(false);
         else setDashboardLoading(false);
       }
       return;
     }
 
+    if (shouldIgnore()) return;
     setDashboardDevices([]);
     setDashboardError(null);
     if (isRefresh) setRefreshing(false);
@@ -406,6 +482,8 @@ const HomeScreen = () => {
 
   useEffect(() => {
     if (!user || user.role !== GUARDIAN_ROLE) {
+      setDashboardDevices([]);
+      setSelectedDeviceIndex(0);
       return;
     }
     setDevicePickerVisible(false);
@@ -416,7 +494,7 @@ const HomeScreen = () => {
     }
     const idx = guardianProfileIndex(guardianSeniorProfiles, selectedSenior?.userId);
     const row = guardianSeniorProfiles[idx];
-    const baseList = Array.isArray(row?.deviceStatusEventDTOs) ? row!.deviceStatusEventDTOs! : [];
+    const baseList = Array.isArray(row?.deviceStatusEventDTOs) ? row.deviceStatusEventDTOs : [];
     const list = mergeGuardianDeviceStatusWithPosition(baseList, guardianDevicePositions, guardianDeviceAlarms);
     setDashboardDevices(list);
     setSelectedDeviceIndex(0);
@@ -612,37 +690,44 @@ const HomeScreen = () => {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    if (!user || user.role !== GUARDIAN_ROLE || !user.user_id) {
+      shownGuardianWelcomeForUser.current = null;
+      setGuardianWelcomeVisible(false);
+    }
+  }, [user]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!user || user.role !== GUARDIAN_ROLE || !user.user_id) {
+        return;
+      }
+
+      if (shownGuardianWelcomeForUser.current === user.user_id) {
+        return;
+      }
+
+      shownGuardianWelcomeForUser.current = user.user_id;
+      setGuardianWelcomeVisible(true);
+    }, [user])
+  );
+
   const greeting = useMemo(() => getGreetingFromDate(nowTick), [nowTick]);
 
   const bannerDisplayName = useMemo(() => {
     if (!user) return { line: 'Welcome!', subtitleDay: '' };
 
     if (user.role === SENIOR_ROLE) {
-      const fn = capitalizeWord((user.first_name || '').trim());
-      const ln = (user.last_name || '').trim();
-      if (fn || ln) {
-        const line = fn ? `${fn}${ln ? ` ${ln}` : ''}!` : `${capitalizeWord(ln)}!`;
-        return { line, subtitleDay: '' };
-      }
-      const emailLocal = (user.email || '').split('@')[0]?.replace(/[._]+/g, ' ').trim();
-      if (emailLocal) {
-        const firstToken = emailLocal.split(/\s+/)[0] || emailLocal;
-        return { line: `${capitalizeWord(firstToken)}!`, subtitleDay: '' };
-      }
-      return { line: 'Welcome!', subtitleDay: '' };
+      return {
+        line: buildGreetingName(user.first_name, user.last_name, user.email),
+        subtitleDay: '',
+      };
     }
 
     if (user.role === GUARDIAN_ROLE) {
-      const g = guardianSeniorDisplay;
-      if (g && (g.firstName || g.lastName)) {
-        const fn = capitalizeWord((g.firstName || '').trim());
-        const ln = (g.lastName || '').trim();
-        const line = fn ? `${fn}${ln ? ` ${ln}` : ''}!` : ln ? `${capitalizeWord(ln)}!` : 'Welcome!';
-        return { line, subtitleDay: '' };
-      }
       return {
-        line: 'Your family',
-        subtitleDay: 'Select a senior above to personalize this card.',
+        line: buildGreetingName(user.first_name, user.last_name, user.email),
+        subtitleDay: '',
       };
     }
 
@@ -665,6 +750,28 @@ const HomeScreen = () => {
     return `Have a wonderful ${weekday} — ${monthDay}`;
   }, [nowTick]);
 
+  const guardianSelectedSeniorLabel = useMemo(() => {
+    if (!user || user.role !== GUARDIAN_ROLE) {
+      return '';
+    }
+
+    const fn = capitalizeWord((guardianSeniorDisplay?.firstName || selectedSenior?.firstName || '').trim());
+    const ln = capitalizeWord((guardianSeniorDisplay?.lastName || selectedSenior?.lastName || '').trim());
+    const fullName = [fn, ln].filter(Boolean).join(' ').trim();
+
+    if (seniors.length <= 1) {
+      return fullName ? `Selected senior: ${fullName}` : 'Senior selected';
+    }
+
+    if (fullName) {
+      return `Selected senior: ${fullName}`;
+    }
+
+    return 'Please select a senior to continue.';
+  }, [user, guardianSeniorDisplay, selectedSenior, seniors.length]);
+
+  const showGuardianSelectionButton = !!user && user.role === GUARDIAN_ROLE && seniors.length > 1;
+
   const openLastPositionMap = useCallback(() => {
     const lat = liveSnapshot.latitude;
     const lon = liveSnapshot.longitude;
@@ -678,6 +785,14 @@ const HomeScreen = () => {
 
   return (
     <SafeAreaView style={styles.container}>
+      <GuardianWelcomeModal
+        visible={guardianWelcomeVisible}
+        greetingTitle={greeting.title}
+        guardianName={guardianWelcomeName}
+        seniorsCount={seniors.length}
+        devicesCount={dashboardDevices.length}
+        onClose={() => setGuardianWelcomeVisible(false)}
+      />
       <ScrollView
         refreshControl={
           <RefreshControl
@@ -830,6 +945,25 @@ const HomeScreen = () => {
                 ? weekdayLine
                 : `Make today a great one — ${greeting.title.toLowerCase()} from Healthsoft.`}
             </Text>
+            {user?.role === GUARDIAN_ROLE ? (
+              <View style={styles.guardianSelectionCard}>
+                <View style={styles.guardianSelectionHeader}>
+                  <Icon name="people-outline" size={18} color="#8B4513" />
+                  <Text style={styles.guardianSelectionTitle}>Senior profile</Text>
+                </View>
+                <Text style={styles.guardianSelectionText}>{guardianSelectedSeniorLabel}</Text>
+                {showGuardianSelectionButton ? (
+                  <TouchableOpacity
+                    style={styles.guardianSelectionButton}
+                    onPress={() => setModalVisible(true)}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.guardianSelectionButtonText}>Open senior selection</Text>
+                    <Icon name="chevron-forward" size={18} color="#FFFFFF" />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            ) : null}
           </View>
           <View style={styles.sunIcon}>
             <Icon name={greeting.icon} size={42} color={greeting.iconColor} />
@@ -1132,6 +1266,44 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     lineHeight: 20,
+  },
+  guardianSelectionCard: {
+    marginTop: 16,
+    paddingTop: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E5D7C7',
+  },
+  guardianSelectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  guardianSelectionTitle: {
+    marginLeft: 8,
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#8B4513',
+  },
+  guardianSelectionText: {
+    fontSize: 14,
+    color: '#5E564F',
+    lineHeight: 20,
+  },
+  guardianSelectionButton: {
+    marginTop: 12,
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: '#D97706',
+  },
+  guardianSelectionButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginRight: 8,
   },
   sunIcon: {
     justifyContent: 'center',

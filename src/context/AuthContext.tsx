@@ -971,6 +971,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const isCaretaker = user?.role === CARETAKER_ROLE || user?.role === GUARDIAN_ROLE;
 
+  useEffect(() => {
+    if (!isCaretaker || !selectedSenior) {
+      return;
+    }
+
+    const nextMatch = seniors.find(s => s.userId === selectedSenior.userId);
+    if (nextMatch) {
+      if (nextMatch !== selectedSenior) {
+        setSelectedSenior(nextMatch);
+      }
+      return;
+    }
+
+    setSelectedSenior(null);
+    void Keychain.resetGenericPassword({ service: SELECTED_SENIOR_STORAGE_SERVICE }).catch(() => {
+      // Ignore storage cleanup failures; UI state already recovered.
+    });
+  }, [isCaretaker, selectedSenior, seniors]);
+
   const getAssignedDevicesForSenior = useCallback(async (seniorId: string): Promise<SeniorAssignedDevice[]> => {
     const trimmedSeniorId = seniorId.trim();
     if (!trimmedSeniorId) {

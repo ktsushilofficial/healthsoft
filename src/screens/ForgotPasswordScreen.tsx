@@ -216,6 +216,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#F8F8F8',
     borderRadius: 12,
     paddingHorizontal: 16,
+    minHeight: 56,
     marginBottom: 24,
     borderWidth: 1,
     borderColor: '#E5E5E5',
@@ -225,9 +226,13 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    height: 52,
+    height: 56,
     fontSize: 16,
+    lineHeight: 20,
     color: '#000000',
+    paddingVertical: 0,
+    textAlignVertical: 'center',
+    includeFontPadding: false,
   },
   resetButton: {
     backgroundColor: '#FF9500',

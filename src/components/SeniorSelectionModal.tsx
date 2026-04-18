@@ -24,8 +24,12 @@ const SeniorSelectionModal: React.FC<SeniorSelectionModalProps> = ({
     const { seniors, selectSenior, selectedSenior } = useAuth();
 
     const handleSelect = async (seniorId: string) => {
-        await selectSenior(seniorId);
-        onClose();
+        try {
+            await selectSenior(seniorId);
+            onClose();
+        } catch (error) {
+            console.warn('Failed to select senior profile', error);
+        }
     };
 
     const renderSeniorItem = ({ item }: { item: Senior }) => {
