@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
+import LinearGradient from 'react-native-linear-gradient';
 import { useAuth } from '../context/AuthContext';
 import SeniorSelectionModal from '../components/SeniorSelectionModal';
 import GuardianWelcomeModal from '../components/GuardianWelcomeModal';
@@ -343,7 +344,7 @@ const HomeScreen = () => {
     return false;
   }, [user, selectedSenior?.userId]);
 
-  const showLocationCard = user?.role === GUARDIAN_ROLE;
+  const showLocationCard = !!user && user.role !== SENIOR_ROLE;
 
   const guardianWelcomeName = useMemo(() => {
     if (!user || user.role !== GUARDIAN_ROLE) {
@@ -639,6 +640,56 @@ const HomeScreen = () => {
   const locationThumb = {
     uri: 'https://images.unsplash.com/photo-1524661135-423995f22d0f?auto=format&fit=crop&w=600&q=80',
   };
+
+  const activeDeviceRecord = useMemo(() => {
+    if (dashboardDevices.length === 0) return null;
+    const idx = Math.min(Math.max(0, selectedDeviceIndex), dashboardDevices.length - 1);
+    return dashboardDevices[idx];
+  }, [dashboardDevices, selectedDeviceIndex]);
+
+  const activityAnalysis = useMemo(() => {
+    if (!activeDeviceRecord) return { label: 'Unknown', icon: 'help-outline', colors: ['#E2E8F0', '#CBD5E1'] };
+    const moving = activeDeviceRecord.movementStatus ?? activeDeviceRecord['movement.status'] ?? false;
+    const speed = liveSnapshot.speedKph;
+    if (speed != null && speed > 5) {
+      return { label: 'In Transit', icon: 'car-sport', colors: ['#8B5CF6', '#6D28D9'] };
+    }
+    if (moving) {
+      return { label: 'Active', icon: 'walk', colors: ['#0EA5E9', '#0369A1'] };
+    }
+    return { label: 'Stationary', icon: 'body', colors: ['#10B981', '#047857'] };
+  }, [activeDeviceRecord, liveSnapshot.speedKph]);
+
+  const envAnalysis = useMemo(() => {
+    if (!activeDeviceRecord) return { label: 'Unknown', icon: 'help-outline', colors: ['#E2E8F0', '#CBD5E1'] };
+    const indoor = activeDeviceRecord.indoorStatus ?? activeDeviceRecord['indoor.status'] ?? false;
+    const wifiHome = activeDeviceRecord.wifiHomeStatus ?? activeDeviceRecord['wifi.home.status'] ?? false;
+    if (wifiHome) {
+      return { label: 'At Home', icon: 'home', colors: ['#F59E0B', '#EA580C'] };
+    }
+    if (indoor) {
+      return { label: 'Indoors', icon: 'business', colors: ['#F43F5E', '#E11D48'] };
+    }
+    return { label: 'Outdoors', icon: 'leaf', colors: ['#84CC16', '#65A30D'] };
+  }, [activeDeviceRecord]);
+
+  const sosAnalysis = useMemo(() => {
+    if (!activeDeviceRecord) return { label: 'Unknown', detail: 'Waiting for device', active: false };
+    const panic = activeDeviceRecord.alarmPanicStart === true;
+    if (panic) {
+      return { label: 'SOS Triggered', detail: 'Panic button pressed!', active: true };
+    }
+    return { label: 'Safe', detail: 'No active SOS', active: false };
+  }, [activeDeviceRecord]);
+
+  const alarmAnalysis = useMemo(() => {
+    if (!activeDeviceRecord) return { label: 'Unknown', active: false };
+    const fall = activeDeviceRecord.fallAlarmStart === true || activeDeviceRecord.fallAlarmStatus === true || activeDeviceRecord['fall.alarm.status'] === true;
+    if (fall) {
+      return { label: 'Fall Detected', active: true };
+    }
+    return { label: 'Normal', active: false };
+  }, [activeDeviceRecord]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1019,62 +1070,138 @@ const HomeScreen = () => {
           </View>
         ) : null}
 
-        {/* Battery + safety (reuses Rahukalam / Yamagandam card row) */}
-        <View style={styles.badgesRow}>
-          <View style={[styles.badgeCard, styles.badgeWarm]}>
-            <View style={styles.badgeHeader}>
-              <Icon name={batteryIconName} size={16} color="#D18B2E" />
-              <Text style={styles.badgeTitle}>Battery</Text>
+        {/* Active Emergency Banner */}
+        {liveSnapshot.alarmSeverity === 'critical' || liveSnapshot.alarmSeverity === 'warning' ? (
+          <View style={styles.emergencyBanner}>
+            <View style={styles.emergencyIconWrap}>
+              <Icon name="warning" size={24} color="#FFFFFF" />
             </View>
-            <Text style={styles.badgeHighlight}>{displayBatteryPct(liveSnapshot.batteryPercent)}</Text>
-            <Text style={styles.badgeTime}>{chargingCaption(liveSnapshot.charging)}</Text>
+            <View style={styles.emergencyTextCol}>
+              <Text style={styles.emergencyTitle} numberOfLines={1}>ALERT: {displayStr(liveSnapshot.primaryAlarmLabel)}</Text>
+              <Text style={styles.emergencySubtitle}>{displayStr(liveSnapshot.alarmDetail)}</Text>
+            </View>
           </View>
-          <View style={[styles.badgeCard, styles.badgeCool]}>
-            <View style={styles.badgeHeader}>
-              <Icon name={safetyIconName} size={16} color="#D7643C" />
-              <Text style={styles.badgeTitle}>Safety</Text>
+        ) : null}
+
+        <View style={styles.sectionHeaderWrap}>
+          <Text style={styles.sectionTitle}>Live context</Text>
+        </View>
+
+        <View style={styles.vitalGrid}>
+          {/* Battery Status */}
+          <LinearGradient
+            colors={
+              liveSnapshot.batteryPercent != null && liveSnapshot.batteryPercent <= 20
+                ? ['#EF4444', '#B91C1C']
+                : ['#F59E0B', '#B45309']
+            }
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.vitalTile}
+          >
+            <Icon name={batteryIconName} size={28} color="#FFFFFF" style={styles.vitalIcon} />
+            <View style={styles.vitalTextCol}>
+              <Text style={styles.vitalTitle}>Battery</Text>
+              <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{displayBatteryPct(liveSnapshot.batteryPercent)}</Text>
+              <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{chargingCaption(liveSnapshot.charging)}</Text>
             </View>
-            <Text style={styles.badgeHighlight} numberOfLines={2}>
-              {displayStr(liveSnapshot.primaryAlarmLabel)}
-            </Text>
-            <Text style={styles.badgeTime} numberOfLines={2}>
-              {displayStr(liveSnapshot.alarmDetail)}
-            </Text>
-            <View style={styles.badgeAlarmMeta}>
-              <Icon
-                name="alarm-outline"
-                size={12}
-                color="#8A7565"
-                style={styles.badgeAlarmIcon}
-              />
-              <Text style={styles.badgeAlarmMetaText} numberOfLines={2}>
-                {`Last: ${lastAlarmLine(liveSnapshot.lastAlarmKind, liveSnapshot.lastAlarmAt)}`}
+          </LinearGradient>
+
+          {/* Main SOS Status (Full Width) */}
+          <LinearGradient
+            colors={sosAnalysis.active ? ['#DC2626', '#991B1B'] : ['#059669', '#047857']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.vitalTileFull}
+          >
+            <Icon name="medkit" size={28} color="#FFFFFF" style={styles.vitalIcon} />
+            <View style={styles.vitalTextCol}>
+              <Text style={styles.vitalTitle}>SOS Panic Button</Text>
+              <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{sosAnalysis.label}</Text>
+              <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{sosAnalysis.detail}</Text>
+            </View>
+          </LinearGradient>
+
+          {/* Device Alarms */}
+          <LinearGradient
+            colors={alarmAnalysis.active ? ['#F97316', '#C2410C'] : ['#0891B2', '#164E63']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.vitalTile}
+          >
+            <Icon name="warning" size={28} color="#FFFFFF" style={styles.vitalIcon} />
+            <View style={styles.vitalTextCol}>
+              <Text style={styles.vitalTitle}>Device Alarms</Text>
+              <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{alarmAnalysis.label}</Text>
+              <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{alarmAnalysis.active ? 'Check immediately' : 'Sensors clear'}</Text>
+            </View>
+          </LinearGradient>
+
+          {/* Activity Context */}
+          <LinearGradient
+            colors={activityAnalysis.colors}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.vitalTile}
+          >
+            <Icon name={activityAnalysis.icon} size={28} color="#FFFFFF" style={styles.vitalIcon} />
+            <View style={styles.vitalTextCol}>
+              <Text style={styles.vitalTitle}>Activity</Text>
+              <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{activityAnalysis.label}</Text>
+              <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+                {liveSnapshot.speedKph != null && liveSnapshot.speedKph > 0 ? `${Math.round(liveSnapshot.speedKph)} km/h` : 'No speed'}
               </Text>
             </View>
-          </View>
+          </LinearGradient>
+
+          {/* Environment Context */}
+          <LinearGradient
+            colors={envAnalysis.colors}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.vitalTile}
+          >
+            <Icon name={envAnalysis.icon} size={28} color="#FFFFFF" style={styles.vitalIcon} />
+            <View style={styles.vitalTextCol}>
+              <Text style={styles.vitalTitle}>Environment</Text>
+              <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{envAnalysis.label}</Text>
+              <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+                {activeDeviceRecord?.gsmNetworkType ? `${activeDeviceRecord.gsmNetworkType} Signal` : 'Available'}
+              </Text>
+            </View>
+          </LinearGradient>
         </View>
 
         {/* Watch summary (reuses “Best times” card) */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Watch status</Text>
-          <View style={styles.timeCard}>
-            <View style={styles.timeHeaderRow}>
-              <View style={{ flex: 1, paddingRight: 8 }}>
-                <Text style={styles.timeTitle}>{displayStr(liveSnapshot.primaryAlarmLabel)}</Text>
-                <Text style={styles.timeSubtitle}>{displayStr(liveSnapshot.alarmDetail)}</Text>
-                <View style={styles.lastAlarmRow}>
-                  <Icon name="time-outline" size={16} color="#8A827A" />
-                  <View style={styles.lastAlarmTextCol}>
-                    <Text style={styles.lastAlarmLabel}>Last alarm</Text>
-                    <Text style={styles.lastAlarmValue}>
-                      {lastAlarmLine(liveSnapshot.lastAlarmKind, liveSnapshot.lastAlarmAt)}
-                    </Text>
-                  </View>
+        {/* Recent SOS / Alarms Box */}
+        {liveSnapshot.lastAlarmKind && liveSnapshot.lastAlarmKind !== NA ? (
+          <View style={styles.section}>
+            <View style={styles.sectionHeaderWrap}>
+              <Text style={styles.sectionTitle}>Alert History</Text>
+            </View>
+            <View style={styles.alarmHistoryCard}>
+              <View style={styles.alarmHistoryHeader}>
+                <View style={styles.alarmHistoryIconBox}>
+                  <Icon name="alert-circle" size={26} color="#DC2626" />
+                </View>
+                <View style={styles.alarmHistoryTitleCol}>
+                  <Text style={styles.alarmHistoryKind}>{displayStr(liveSnapshot.lastAlarmKind)}</Text>
+                  <Text style={styles.alarmHistoryTime}>{displayStr(liveSnapshot.lastAlarmAt)}</Text>
                 </View>
               </View>
-              <Icon name="pulse" size={18} color="#C7C1BA" />
+              <View style={styles.alarmHistoryBody}>
+                 <Text style={styles.alarmHistoryDesc}>This event was automatically logged by the device. Please verify the senior's safety if required.</Text>
+              </View>
             </View>
+          </View>
+        ) : null}
 
+        {/* Watch telemetry */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeaderWrap}>
+            <Text style={styles.sectionTitle}>Technical status</Text>
+          </View>
+          <View style={styles.timeCard}>
             <View style={styles.timeRow}>
               <View style={[styles.timeSlot, styles.timeSlotGreen]}>
                 <Text style={styles.timeSlotTitle}>Signal & network</Text>
@@ -1418,58 +1545,66 @@ const styles = StyleSheet.create({
     color: '#8A7565',
     marginTop: 2,
   },
-  badgesRow: {
+  vitalGrid: {
     flexDirection: 'row',
-    marginHorizontal: 16,
-    marginBottom: 12,
+    flexWrap: 'wrap',
+    marginHorizontal: 10,
+    marginBottom: 16,
   },
-  badgeCard: {
+  vitalTileFull: {
+    width: '96%',
+    margin: '2%',
+    borderRadius: 20,
+    padding: 16,
+    flexDirection: 'column',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  vitalTile: {
+    width: '46%',
+    margin: '2%',
+    borderRadius: 20,
+    padding: 16,
+    flexDirection: 'column',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  vitalIcon: {
+    marginBottom: 14,
+    opacity: 0.95,
+  },
+  vitalTextCol: {
     flex: 1,
-    padding: 12,
-    borderRadius: 12,
-    marginHorizontal: 4,
   },
-  badgeWarm: {
-    backgroundColor: '#F8EEDB',
-  },
-  badgeCool: {
-    backgroundColor: '#F6E6DE',
-  },
-  badgeHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  badgeTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#7D5A2E',
-    marginLeft: 6,
-  },
-  badgeTime: {
-    fontSize: 12,
-    color: '#7A6B60',
-  },
-  badgeHighlight: {
-    fontSize: 18,
+  vitalTitle: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 11,
     fontWeight: '700',
-    color: '#5C4A3A',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
     marginBottom: 4,
   },
-  badgeAlarmMeta: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginTop: 8,
+  vitalValue: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '800',
+    marginBottom: 4,
   },
-  badgeAlarmIcon: {
-    marginTop: 2,
-    marginRight: 6,
+  vitalSubtitle: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+    fontWeight: '500',
   },
-  badgeAlarmMetaText: {
-    flex: 1,
-    fontSize: 11,
-    color: '#8A7565',
-    lineHeight: 15,
+  sectionHeaderWrap: {
+    paddingHorizontal: 16,
+    marginTop: 4,
+    marginBottom: 8,
   },
   lastAlarmRow: {
     flexDirection: 'row',
@@ -1553,6 +1688,94 @@ const styles = StyleSheet.create({
   timeSlotValue: {
     fontSize: 12,
     color: '#6E655D',
+  },
+  emergencyBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EF4444',
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 8,
+    borderRadius: 12,
+    padding: 14,
+    shadowColor: '#EF4444',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  emergencyIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  emergencyTextCol: {
+    flex: 1,
+  },
+  emergencyTitle: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 2,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  emergencySubtitle: {
+    color: '#FEE2E2',
+    fontSize: 13,
+    fontWeight: '500',
+    lineHeight: 18,
+  },
+  alarmHistoryCard: {
+    backgroundColor: '#FEF2F2',
+    marginHorizontal: 16,
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  alarmHistoryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  alarmHistoryIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FEE2E2',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  alarmHistoryTitleCol: {
+    flex: 1,
+  },
+  alarmHistoryKind: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#991B1B',
+    marginBottom: 2,
+  },
+  alarmHistoryTime: {
+    fontSize: 13,
+    color: '#B91C1C',
+    fontWeight: '500',
+  },
+  alarmHistoryBody: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#FECACA',
+    paddingTop: 12,
+  },
+  alarmHistoryDesc: {
+    fontSize: 13,
+    color: '#7F1D1D',
+    lineHeight: 18,
   },
 });
 

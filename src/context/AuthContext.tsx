@@ -8,8 +8,8 @@ import { extractSeniorAssignedDevices, type SeniorAssignedDevice } from '../util
 import { clearAllCachedAssignedDeviceMatches } from '../utils/assignedDeviceMatchCache';
 import type { SeniorDashboardApiResponse } from '../types/seniorDashboard';
 import type { GuardianDashboardApiResponse } from '../types/guardianDashboard';
+import { API_BASE_URL } from '../config/api';
 
-const API_BASE_URL = 'http://seniorcare.healthsoftcare.in';
 const TOKEN_STORAGE_SERVICE = 'healthsoft.auth.tokens';
 const TOKEN_STORAGE_USERNAME = 'healthsoft-auth';
 const SELECTED_SENIOR_STORAGE_SERVICE = 'healthsoft.prefs.selectedSenior';
@@ -174,20 +174,61 @@ const getErrorMessage = (error: unknown): string => {
   return 'Unexpected request error.';
 };
 
-const maskTokenForLog = (token?: string | null): string => {
-  if (!token) {
-    return 'missing';
+const stringifyForLog = (value: unknown): string => {
+  if (value === undefined) {
+    return 'undefined';
   }
-
-  if (token.length <= 12) {
-    return `${token.slice(0, 4)}...${token.slice(-4)}`;
+  if (typeof value === 'string') {
+    return value;
   }
-
-  return `${token.slice(0, 8)}...${token.slice(-6)}`;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 };
 
-const formatTokenForLog = (token?: string | null): string =>
-  __DEV__ ? token ?? 'missing' : maskTokenForLog(token);
+const logApiRequest = (
+  method: Method,
+  path: string,
+  headers: Record<string, string>,
+  data?: unknown,
+) => {
+  console.log(
+    `[API Request] ${method} ${API_BASE_URL}${path}\nHeaders: ${stringifyForLog(headers)}\nBody: ${stringifyForLog(data)}`,
+  );
+};
+
+const logApiResponse = (
+  method: Method,
+  path: string,
+  status: number,
+  headers: unknown,
+  data: unknown,
+) => {
+  console.log(
+    `[API Response] ${method} ${API_BASE_URL}${path}\nStatus: ${status}\nHeaders: ${stringifyForLog(headers)}\nBody: ${stringifyForLog(data)}`,
+  );
+};
+
+const logApiError = (
+  method: Method,
+  path: string,
+  headers: Record<string, string>,
+  data: unknown,
+  error: unknown,
+) => {
+  if (axios.isAxiosError(error)) {
+    console.log(
+      `[API Error] ${method} ${API_BASE_URL}${path}\nHeaders: ${stringifyForLog(headers)}\nBody: ${stringifyForLog(data)}\nStatus: ${error.response?.status ?? 'unknown'}\nResponse Headers: ${stringifyForLog(error.response?.headers)}\nResponse Body: ${stringifyForLog(error.response?.data)}`,
+    );
+    return;
+  }
+
+  console.log(
+    `[API Error] ${method} ${API_BASE_URL}${path}\nHeaders: ${stringifyForLog(headers)}\nBody: ${stringifyForLog(data)}\nError: ${stringifyForLog(error)}`,
+  );
+};
 
 const extractTokens = (
   raw: Partial<UserData>,
@@ -335,13 +376,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       ...extraHeaders,
     };
 
-    if (authTokens?.accessToken && authTokens?.tokenType) {
-      console.log(
-        `[API Auth] ${method} ${path} using ${authTokens.tokenType} ${formatTokenForLog(authTokens.accessToken)}`,
-      );
-    }
-
-    console.log(`[API Request] ${method} ${API_BASE_URL}${path}`, data ? JSON.stringify(data, null, 2) : '');
+    logApiRequest(method, path, headers, data);
 
     try {
       const response = await apiClient.request<T>({
@@ -351,14 +386,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         headers,
       });
 
-      console.log(`[API Response] ${method} ${path}`, JSON.stringify(response.data, null, 2));
+      logApiResponse(method, path, response.status, response.headers, response.data);
       return response.data;
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.log(`[API Error] ${method} ${path}`, error.response?.status, JSON.stringify(error.response?.data, null, 2));
-      } else {
-        console.log(`[API Error] ${method} ${path}`, error);
-      }
+      logApiError(method, path, headers, data, error);
       throw error;
     }
   };
@@ -415,18 +446,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         return null;
       }
 
+      const refreshPath = '/api/v1/auth/refresh';
+      const refreshHeaders = {
+        Authorization: `${currentTokens.tokenType} ${currentTokens.accessToken}`,
+      };
+      const refreshBody = { refreshToken: currentTokens.refreshToken };
+
       try {
-        console.log(
-          `[API Auth] POST /api/v1/auth/refresh using ${currentTokens.tokenType} ${formatTokenForLog(currentTokens.accessToken)}`,
-        );
+        logApiRequest('POST', refreshPath, refreshHeaders, refreshBody);
         const refreshResponse = await apiClient.request<Partial<UserData>>({
-          url: '/api/v1/auth/refresh',
+          url: refreshPath,
           method: 'POST',
-          data: { refreshToken: currentTokens.refreshToken },
-          headers: {
-            Authorization: `${currentTokens.tokenType} ${currentTokens.accessToken}`,
-          },
+          data: refreshBody,
+          headers: refreshHeaders,
         });
+        logApiResponse(
+          'POST',
+          refreshPath,
+          refreshResponse.status,
+          refreshResponse.headers,
+          refreshResponse.data,
+        );
 
         const nextTokens = extractTokens(refreshResponse.data, currentTokens);
         if (!nextTokens.accessToken || !nextTokens.refreshToken) {
@@ -453,7 +493,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         );
 
         return nextTokens;
-      } catch {
+      } catch (error) {
+        logApiError('POST', refreshPath, refreshHeaders, refreshBody, error);
         return null;
       }
     })();
@@ -840,21 +881,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     if (snapshotTokens?.refreshToken && snapshotTokens.tokenType) {
+      const logoutPath = '/api/v1/auth/logout';
+      const logoutHeaders = {
+        refreshToken: snapshotTokens.refreshToken,
+      };
       console.log(
-        `[API Auth] POST /api/v1/auth/logout using ${snapshotTokens.tokenType} ${formatTokenForLog(snapshotTokens.refreshToken)}`,
+        `[API Auth Tokens] logout\nAccess Token: ${snapshotTokens.accessToken}\nRefresh Token: ${snapshotTokens.refreshToken}\nToken Type: ${snapshotTokens.tokenType}`,
       );
+      logApiRequest('POST', logoutPath, logoutHeaders, undefined);
       apiClient
         .request<void>({
-          url: '/api/v1/auth/logout',
+          url: logoutPath,
           method: 'POST',
-          data: {
-            refreshToken: snapshotTokens.refreshToken,
-          },
-          headers: {
-            Authorization: `${snapshotTokens.tokenType} ${snapshotTokens.refreshToken}`,
-          },
+          headers: logoutHeaders,
         })
-        .catch(() => {
+        .then(response => {
+          logApiResponse('POST', logoutPath, response.status, response.headers, response.data);
+        })
+        .catch(error => {
+          logApiError('POST', logoutPath, logoutHeaders, undefined, error);
           // Best-effort remote logout
         });
     }
