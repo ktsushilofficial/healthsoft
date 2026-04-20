@@ -132,6 +132,8 @@ const AccountScreen = () => {
     if (isLoading) return;
     setIsLoading(true);
     setLoadError(null);
+    console.log('--- FETCHING PROFILE ---');
+    console.log('Current Refresh Token:', user?.refresh_token);
     try {
       await refreshUserProfile();
     } catch (error) {

@@ -132,7 +132,8 @@ const apiClient = axios.create({
 });
 
 const isUnauthorizedError = (error: unknown): boolean =>
-  axios.isAxiosError(error) && error.response?.status === 401;
+  axios.isAxiosError(error) &&
+  (error.response?.status === 401 || error.response?.status === 403);
 
 const getErrorMessage = (error: unknown): string => {
   if (axios.isAxiosError(error)) {
@@ -448,16 +449,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const refreshPath = '/api/v1/auth/refresh';
       const refreshHeaders = {
-        Authorization: `${currentTokens.tokenType} ${currentTokens.accessToken}`,
+        refreshToken: currentTokens.refreshToken,
       };
-      const refreshBody = { refreshToken: currentTokens.refreshToken };
 
       try {
-        logApiRequest('POST', refreshPath, refreshHeaders, refreshBody);
+        logApiRequest('POST', refreshPath, refreshHeaders, undefined);
         const refreshResponse = await apiClient.request<Partial<UserData>>({
           url: refreshPath,
           method: 'POST',
-          data: refreshBody,
           headers: refreshHeaders,
         });
         logApiResponse(
@@ -494,7 +493,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
         return nextTokens;
       } catch (error) {
-        logApiError('POST', refreshPath, refreshHeaders, refreshBody, error);
+        logApiError('POST', refreshPath, refreshHeaders, undefined, error);
         return null;
       }
     })();
