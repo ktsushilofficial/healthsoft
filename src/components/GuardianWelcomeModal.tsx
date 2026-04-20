@@ -4,6 +4,7 @@ import {
   Dimensions,
   Easing,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -15,7 +16,9 @@ import Icon from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const CARD_MAX_HEIGHT = Dimensions.get('window').height - 56;
+const WINDOW_HEIGHT = Dimensions.get('window').height;
+const TOP_SAFE_PADDING = Platform.OS === 'ios' ? 20 : 12;
+const BOTTOM_SAFE_PADDING = Platform.OS === 'ios' ? 34 : 16;
 
 interface GuardianWelcomeModalProps {
   visible: boolean;
@@ -165,12 +168,22 @@ const GuardianWelcomeModal: React.FC<GuardianWelcomeModalProps> = ({
 
   return (
     <Modal visible={visible} transparent animationType="none" onRequestClose={handleClose}>
-      <Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>
+      <Animated.View
+        style={[
+          styles.backdrop,
+          {
+            opacity: backdropOpacity,
+            paddingTop: TOP_SAFE_PADDING,
+            paddingBottom: BOTTOM_SAFE_PADDING,
+          },
+        ]}
+      >
         <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} />
         <Animated.View
           style={[
             styles.cardWrap,
             {
+              maxHeight: WINDOW_HEIGHT - TOP_SAFE_PADDING - BOTTOM_SAFE_PADDING - 24,
               opacity: cardOpacity,
               transform: [{ translateY: cardTranslateY }, { scale: cardScale }],
             },
@@ -180,7 +193,12 @@ const GuardianWelcomeModal: React.FC<GuardianWelcomeModalProps> = ({
             colors={['#F6FFF8', '#E7F8ED', '#D7F0DE']}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
-            style={styles.card}
+            style={[
+              styles.card,
+              {
+                maxHeight: WINDOW_HEIGHT - TOP_SAFE_PADDING - BOTTOM_SAFE_PADDING - 24,
+              },
+            ]}
           >
             <Animated.View style={[styles.heroHalo, { transform: [{ scale: haloScale }] }]} />
             <Animated.View
@@ -290,7 +308,8 @@ const GuardianWelcomeModal: React.FC<GuardianWelcomeModalProps> = ({
                   </View>
                 </View>
               </View>
-
+            </ScrollView>
+            <View style={[styles.footer, { paddingBottom: BOTTOM_SAFE_PADDING }]}>
               <TouchableOpacity style={styles.primaryButton} onPress={handleClose} activeOpacity={0.92}>
                 <LinearGradient
                   colors={['#14532D', '#0F3D23']}
@@ -302,7 +321,7 @@ const GuardianWelcomeModal: React.FC<GuardianWelcomeModalProps> = ({
                   <Icon name="arrow-forward" size={18} color="#FFFFFF" />
                 </LinearGradient>
               </TouchableOpacity>
-            </ScrollView>
+            </View>
           </LinearGradient>
         </Animated.View>
       </Animated.View>
@@ -321,12 +340,10 @@ const styles = StyleSheet.create({
   cardWrap: {
     width: '100%',
     maxWidth: 430,
-    maxHeight: CARD_MAX_HEIGHT,
   },
   card: {
     overflow: 'hidden',
     borderRadius: 30,
-    maxHeight: CARD_MAX_HEIGHT,
     shadowColor: '#0F5132',
     shadowOffset: { width: 0, height: 20 },
     shadowOpacity: 0.22,
@@ -339,7 +356,12 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 22,
     paddingTop: 18,
-    paddingBottom: 22,
+    paddingBottom: 6,
+  },
+  footer: {
+    paddingHorizontal: 22,
+    paddingBottom: 12,
+    paddingTop: 0,
   },
   heroHalo: {
     position: 'absolute',
@@ -536,14 +558,15 @@ const styles = StyleSheet.create({
     color: '#5E7666',
   },
   primaryButton: {
-    marginTop: 18,
     borderRadius: 18,
     overflow: 'hidden',
+    minHeight: 56,
   },
   primaryButtonFill: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    minHeight: 56,
     paddingVertical: 16,
     paddingHorizontal: 18,
   },
@@ -552,6 +575,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     marginRight: 10,
+    includeFontPadding: false,
+    textAlignVertical: 'center',
   },
 });
 

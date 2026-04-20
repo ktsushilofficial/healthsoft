@@ -998,7 +998,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
     try {
       const payload = await authorizedRequest<unknown>(
-        `/devices/assignments/seniors/${trimmedSeniorId}/devices`,
+        `/api/v1/devices/assignments/seniors/${trimmedSeniorId}/devices`,
         'GET',
         undefined,
         { Accept: '*/*' },
