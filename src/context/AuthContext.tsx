@@ -498,7 +498,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const refreshUserProfile = useCallback(async (): Promise<UserData> => {
     const profile = await authorizedRequest<Partial<UserData>>(
-      '/profile',
+      '/api/v1/profile',
       'GET',
       undefined,
       { Accept: '*/*' },
@@ -555,7 +555,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       payload.phoneNumber = Number(normalizedPhoneNumber);
     }
 
-    await authorizedRequest<Partial<UserData>>('/profile', 'PUT', payload);
+    await authorizedRequest<Partial<UserData>>('/api/v1/profile', 'PUT', payload);
 
     profileOverrideRef.current = {
       first_name: firstName,
@@ -577,7 +577,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     setUser(localPatchedUser);
 
     try {
-      const profile = await authorizedRequest<Partial<UserData>>('/profile', 'GET', undefined, { Accept: '*/*' });
+      const profile = await authorizedRequest<Partial<UserData>>('/api/v1/profile', 'GET', undefined, { Accept: '*/*' });
       const normalized = normalizeUser(
         withProfileOverride(profile),
         tokensRef.current,
@@ -639,7 +639,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         let profile: Partial<UserData> = {};
         try {
           profile = await authorizedRequest<Partial<UserData>>(
-            '/profile',
+            '/api/v1/profile',
             'GET',
             undefined,
             { Accept: '*/*' },

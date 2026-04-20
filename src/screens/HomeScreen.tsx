@@ -737,6 +737,14 @@ const HomeScreen = () => {
       const line = fn ? `${fn}${ln ? ` ${ln}` : ''}!` : ln ? `${capitalizeWord(ln)}!` : 'Welcome!';
       return { line, subtitleDay: '' };
     }
+
+    if (user.role !== CARETAKER_ROLE) {
+      return {
+        line: buildGreetingName(user.first_name, user.last_name, user.email),
+        subtitleDay: '',
+      };
+    }
+
     return {
       line: 'Your family',
       subtitleDay: 'Select a senior above to personalize this card.',
