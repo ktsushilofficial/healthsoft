@@ -123,6 +123,82 @@ interface ForgotPasswordResponse {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const missingProviderError = () =>
+  new Error('Auth context is unavailable. Please restart the app and sign in again.');
+
+const fallbackAuthContext: AuthContextType = {
+  user: null,
+  isAuthenticated: false,
+  isInitializing: false,
+  isCaretaker: false,
+  authMethod: 'unknown',
+  login: async () => {
+    throw missingProviderError();
+  },
+  loginWithPhone: async () => {
+    throw missingProviderError();
+  },
+  loginMobileSendOtp: async () => {
+    throw missingProviderError();
+  },
+  loginMobileVerifyOtp: async () => {
+    throw missingProviderError();
+  },
+  loginWithGoogle: async () => {
+    throw missingProviderError();
+  },
+  signup: async () => {
+    throw missingProviderError();
+  },
+  verifyEmail: async () => {
+    throw missingProviderError();
+  },
+  refreshUserProfile: async () => {
+    throw missingProviderError();
+  },
+  updateProfile: async () => {
+    throw missingProviderError();
+  },
+  logout: async () => {
+    throw missingProviderError();
+  },
+  changePassword: async () => {
+    throw missingProviderError();
+  },
+  refreshToken: async () => {
+    throw missingProviderError();
+  },
+  googleAuth: async () => {
+    throw missingProviderError();
+  },
+  initiateGoogleLogin: async () => {
+    throw missingProviderError();
+  },
+  forgotPassword: async () => {
+    throw missingProviderError();
+  },
+  resetPassword: async () => {
+    throw missingProviderError();
+  },
+  seniors: [],
+  selectedSenior: null,
+  getMySeniors: async () => {
+    throw missingProviderError();
+  },
+  selectSenior: async () => {
+    throw missingProviderError();
+  },
+  getAssignedDevicesForSenior: async () => {
+    throw missingProviderError();
+  },
+  getSeniorDashboard: async () => {
+    throw missingProviderError();
+  },
+  getGuardianDashboard: async () => {
+    throw missingProviderError();
+  },
+};
+
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
   timeout: 15000,
@@ -924,6 +1000,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const refreshToken = async (): Promise<UserData> => {
     const refreshedTokens = await refreshTokens();
     if (!refreshedTokens) {
+      await clearSession();
       throw new Error('Unable to refresh tokens. Please sign in again.');
     }
 
@@ -1148,7 +1225,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 export const useAuth = (): AuthContextType => {
   const context = useContext(AuthContext);
   if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
+    console.error('useAuth called outside AuthProvider. Returning fallback auth context.');
+    return fallbackAuthContext;
   }
   return context;
 };
