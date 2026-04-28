@@ -177,7 +177,7 @@ const GuardianWelcomeModal: React.FC<GuardianWelcomeModalProps> = ({
             paddingBottom: BOTTOM_SAFE_PADDING,
           },
         ]}
-      >
+	            >
         <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} />
         <Animated.View
           style={[
@@ -307,24 +307,11 @@ const GuardianWelcomeModal: React.FC<GuardianWelcomeModalProps> = ({
                     </Text>
                   </View>
                 </View>
-              </View>
-            </ScrollView>
-            <View style={[styles.footer, { paddingBottom: BOTTOM_SAFE_PADDING }]}>
-              <TouchableOpacity style={styles.primaryButton} onPress={handleClose} activeOpacity={0.92}>
-                <LinearGradient
-                  colors={['#14532D', '#0F3D23']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.primaryButtonFill}
-                >
-                  <Text style={styles.primaryButtonText}>Open Home</Text>
-                  <Icon name="arrow-forward" size={18} color="#FFFFFF" />
-                </LinearGradient>
-              </TouchableOpacity>
-            </View>
-          </LinearGradient>
-        </Animated.View>
-      </Animated.View>
+	              </View>
+	            </ScrollView>
+	          </LinearGradient>
+	        </Animated.View>
+	      </Animated.View>
     </Modal>
   );
 };

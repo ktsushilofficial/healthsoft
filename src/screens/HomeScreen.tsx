@@ -42,6 +42,7 @@ const SENIOR_ROLE = 'SENIOR';
 const CARETAKER_ROLE = 'CARE_TAKER';
 const GUARDIAN_ROLE = 'GUARDIAN';
 const NA = 'NA';
+const DASHBOARD_AUTO_REFRESH_MS = 15_000;
 
 function displayStr(value: string | null | undefined): string {
   if (value == null || String(value).trim() === '') {
@@ -71,13 +72,11 @@ function chargingCaption(charging: boolean | null): string {
   return charging ? 'Charging now' : 'On battery power';
 }
 
-function lastAlarmLine(kind: string | null, at: string | null): string {
-  const k = displayStr(kind);
-  const a = displayStr(at);
-  if (k === NA && a === NA) {
-    return NA;
-  }
-  return `${k} · ${a}`;
+function joinDisplayParts(...parts: Array<string | null | undefined>): string {
+  const filtered = parts
+    .map(part => displayStr(part))
+    .filter(part => part !== NA);
+  return filtered.length > 0 ? filtered.join(' · ') : NA;
 }
 
 function capitalizeWord(s: string) {
@@ -147,6 +146,14 @@ function readNumberField(record: SeniorDashboardDeviceRecord, key: string): numb
   return typeof value === 'number' && !Number.isNaN(value) ? value : null;
 }
 
+function hasOwnField(record: SeniorDashboardDeviceRecord, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function hasAnyOwnField(record: SeniorDashboardDeviceRecord, keys: string[]): boolean {
+  return keys.some(key => hasOwnField(record, key));
+}
+
 function toEpochSeconds(value: number | null): number | null {
   if (value == null || value <= 0) return null;
   return value > 1e12 ? value / 1000 : value;
@@ -194,7 +201,7 @@ function mergeGuardianDeviceStatusWithPosition(
   alarmRows: SeniorDashboardDeviceRecord[] = [],
 ): SeniorDashboardDeviceRecord[] {
   if (statusRows.length === 0) return [];
-  if (positionRows.length === 0) return statusRows;
+  if (positionRows.length === 0 && alarmRows.length === 0) return statusRows;
 
   const positions = positionRows.map(withPositionAliases);
   const byIdent = new Map<string, SeniorDashboardDeviceRecord>();
@@ -250,6 +257,9 @@ function mergeGuardianDeviceStatusWithPosition(
         readNumberField(status, 'serverTimestamp') ?? readNumberField(status, 'server.timestamp'),
     };
 
+    const statusTimestamp = readNumberField(normalizedStatus, 'timestamp');
+    const statusServerTimestamp = readNumberField(normalizedStatus, 'server.timestamp');
+
     const ident = readStringField(normalizedStatus, 'ident');
     const deviceName = readStringField(normalizedStatus, 'device.name');
     const deviceId = readNumberField(normalizedStatus, 'device.id');
@@ -267,6 +277,35 @@ function mergeGuardianDeviceStatusWithPosition(
     let merged: SeniorDashboardDeviceRecord = { ...normalizedStatus };
     if (matched) merged = { ...merged, ...matched };
     if (matchedAlarm) merged = { ...merged, ...matchedAlarm };
+
+    const positionTimestamp = readNumberField(matched || {}, 'timestamp');
+    const positionServerTimestamp =
+      readNumberField(matched || {}, 'server.timestamp') ?? readNumberField(matched || {}, 'serverTimestamp');
+    const alarmTimestamp = readNumberField(matchedAlarm || {}, 'timestamp');
+    const alarmServerTimestamp =
+      readNumberField(matchedAlarm || {}, 'server.timestamp') ??
+      readNumberField(matchedAlarm || {}, 'serverTimestamp');
+
+    if (statusTimestamp != null) {
+      merged['status.timestamp'] = statusTimestamp;
+      merged['battery.timestamp'] = statusTimestamp;
+    }
+    if (statusServerTimestamp != null) {
+      merged['status.server.timestamp'] = statusServerTimestamp;
+      merged['battery.server.timestamp'] = statusServerTimestamp;
+    }
+    if (positionTimestamp != null) {
+      merged['position.timestamp'] = positionTimestamp;
+    }
+    if (positionServerTimestamp != null) {
+      merged['position.server.timestamp'] = positionServerTimestamp;
+    }
+    if (alarmTimestamp != null) {
+      merged['alarm.timestamp'] = alarmTimestamp;
+    }
+    if (alarmServerTimestamp != null) {
+      merged['alarm.server.timestamp'] = alarmServerTimestamp;
+    }
 
     const latestTimestamp = pickLatestEpochValue(
       readNumberField(normalizedStatus, 'timestamp'),
@@ -327,6 +366,7 @@ const HomeScreen = () => {
   const shownGuardianWelcomeForUser = useRef<string | null>(null);
   const isMountedRef = useRef(true);
   const dashboardRequestIdRef = useRef(0);
+  const lastLoadedDashboardContextKeyRef = useRef<string>('');
 
   /** Senior id for `/api/v1/senior-dashboard/{id}` — logged-in senior, or caretaker’s selected senior only. */
   const activeDashboardSeniorId = useMemo(() => {
@@ -345,6 +385,17 @@ const HomeScreen = () => {
   }, [user, selectedSenior?.userId]);
 
   const showLocationCard = !!user && user.role !== SENIOR_ROLE;
+
+  const dashboardContextKey = useMemo(() => {
+    if (!user) return 'anonymous';
+    if (user.role === GUARDIAN_ROLE) {
+      return `${user.role}:${user.user_id}`;
+    }
+    if (user.role === CARETAKER_ROLE) {
+      return `${user.role}:${user.user_id}:${activeDashboardSeniorId ?? ''}`;
+    }
+    return `${user.role}:${user.user_id}`;
+  }, [activeDashboardSeniorId, user, user?.role, user?.user_id]);
 
   const guardianWelcomeName = useMemo(() => {
     if (!user || user.role !== GUARDIAN_ROLE) {
@@ -368,13 +419,19 @@ const HomeScreen = () => {
     setSelectedDeviceIndex(0);
   }, [activeDashboardSeniorId, user?.role, selectedSenior?.userId]);
 
-  const fetchDashboardData = useCallback(async (isRefresh = false) => {
+  const fetchDashboardData = useCallback(async (
+    mode: 'initial' | 'manual' | 'background' = 'initial',
+  ) => {
     const requestId = ++dashboardRequestIdRef.current;
     const shouldIgnore = () =>
       !isMountedRef.current || dashboardRequestIdRef.current !== requestId;
+    const isManualRefresh = mode === 'manual';
+    const shouldShowLoader = mode === 'initial';
+    const shouldPreserveExistingData = mode === 'background';
 
     if (!user) {
       if (shouldIgnore()) return;
+      lastLoadedDashboardContextKeyRef.current = '';
       setGuardianSeniorProfiles([]);
       setGuardianDevicePositions([]);
       setGuardianDeviceAlarms([]);
@@ -386,12 +443,11 @@ const HomeScreen = () => {
     }
 
     if (shouldIgnore()) return;
-    if (isRefresh) setRefreshing(true);
-    else setDashboardLoading(true);
+    if (isManualRefresh) setRefreshing(true);
+    else if (shouldShowLoader) setDashboardLoading(true);
     setDashboardError(null);
 
     if (user.role === GUARDIAN_ROLE) {
-      setDashboardDevices([]);
       try {
         const res = await getGuardianDashboard(user.user_id);
         if (shouldIgnore()) return;
@@ -405,16 +461,19 @@ const HomeScreen = () => {
         setGuardianSeniorProfiles(rows);
         setGuardianDevicePositions(positions);
         setGuardianDeviceAlarms(alarms);
+        lastLoadedDashboardContextKeyRef.current = dashboardContextKey;
       } catch (e) {
         if (shouldIgnore()) return;
-        setGuardianSeniorProfiles([]);
-        setGuardianDevicePositions([]);
-        setGuardianDeviceAlarms([]);
+        if (!shouldPreserveExistingData) {
+          setGuardianSeniorProfiles([]);
+          setGuardianDevicePositions([]);
+          setGuardianDeviceAlarms([]);
+        }
         setDashboardError(e instanceof Error ? e.message : 'Guardian dashboard request failed.');
       } finally {
         if (shouldIgnore()) return;
-        if (isRefresh) setRefreshing(false);
-        else setDashboardLoading(false);
+        if (isManualRefresh) setRefreshing(false);
+        else if (shouldShowLoader) setDashboardLoading(false);
       }
       return;
     }
@@ -430,15 +489,18 @@ const HomeScreen = () => {
         if (shouldIgnore()) return;
         const list = Array.isArray(res.deviceStatusEventDTOs) ? res.deviceStatusEventDTOs : [];
         setDashboardDevices(list);
-        setSelectedDeviceIndex(0);
+        setSelectedDeviceIndex(prev => (list.length > 0 ? Math.min(prev, list.length - 1) : 0));
+        lastLoadedDashboardContextKeyRef.current = dashboardContextKey;
       } catch (e) {
         if (shouldIgnore()) return;
-        setDashboardDevices([]);
+        if (!shouldPreserveExistingData) {
+          setDashboardDevices([]);
+        }
         setDashboardError(e instanceof Error ? e.message : 'Dashboard request failed.');
       } finally {
         if (shouldIgnore()) return;
-        if (isRefresh) setRefreshing(false);
-        else setDashboardLoading(false);
+        if (isManualRefresh) setRefreshing(false);
+        else if (shouldShowLoader) setDashboardLoading(false);
       }
       return;
     }
@@ -448,24 +510,27 @@ const HomeScreen = () => {
         if (shouldIgnore()) return;
         setDashboardDevices([]);
         setDashboardError(null);
-        if (isRefresh) setRefreshing(false);
-        else setDashboardLoading(false);
+        if (isManualRefresh) setRefreshing(false);
+        else if (shouldShowLoader) setDashboardLoading(false);
         return;
       }
       try {
-        const res = await getSeniorDashboard(selectedSenior.userId);
+        const res = await getSeniorDashboard(activeDashboardSeniorId!);
         if (shouldIgnore()) return;
         const list = Array.isArray(res.deviceStatusEventDTOs) ? res.deviceStatusEventDTOs : [];
         setDashboardDevices(list);
-        setSelectedDeviceIndex(0);
+        setSelectedDeviceIndex(prev => (list.length > 0 ? Math.min(prev, list.length - 1) : 0));
+        lastLoadedDashboardContextKeyRef.current = dashboardContextKey;
       } catch (e) {
         if (shouldIgnore()) return;
-        setDashboardDevices([]);
+        if (!shouldPreserveExistingData) {
+          setDashboardDevices([]);
+        }
         setDashboardError(e instanceof Error ? e.message : 'Dashboard request failed.');
       } finally {
         if (shouldIgnore()) return;
-        if (isRefresh) setRefreshing(false);
-        else setDashboardLoading(false);
+        if (isManualRefresh) setRefreshing(false);
+        else if (shouldShowLoader) setDashboardLoading(false);
       }
       return;
     }
@@ -473,13 +538,30 @@ const HomeScreen = () => {
     if (shouldIgnore()) return;
     setDashboardDevices([]);
     setDashboardError(null);
-    if (isRefresh) setRefreshing(false);
-    else setDashboardLoading(false);
-  }, [user, user?.role, user?.user_id, selectedSenior?.userId, getSeniorDashboard, getGuardianDashboard]);
+    if (isManualRefresh) setRefreshing(false);
+    else if (shouldShowLoader) setDashboardLoading(false);
+  }, [activeDashboardSeniorId, dashboardContextKey, user, user?.role, user?.user_id, getSeniorDashboard, getGuardianDashboard]);
 
-  useEffect(() => {
-    fetchDashboardData(false);
-  }, [fetchDashboardData]);
+  useFocusEffect(
+    useCallback(() => {
+      if (!showTelemetryBar) {
+        return;
+      }
+
+      const initialMode =
+        lastLoadedDashboardContextKeyRef.current === dashboardContextKey
+          ? 'background'
+          : 'initial';
+
+      void fetchDashboardData(initialMode);
+
+      const intervalId = setInterval(() => {
+        void fetchDashboardData('background');
+      }, DASHBOARD_AUTO_REFRESH_MS);
+
+      return () => clearInterval(intervalId);
+    }, [dashboardContextKey, fetchDashboardData, showTelemetryBar])
+  );
 
   useEffect(() => {
     if (!user || user.role !== GUARDIAN_ROLE) {
@@ -498,7 +580,7 @@ const HomeScreen = () => {
     const baseList = Array.isArray(row?.deviceStatusEventDTOs) ? row.deviceStatusEventDTOs : [];
     const list = mergeGuardianDeviceStatusWithPosition(baseList, guardianDevicePositions, guardianDeviceAlarms);
     setDashboardDevices(list);
-    setSelectedDeviceIndex(0);
+    setSelectedDeviceIndex(prev => (list.length > 0 ? Math.min(prev, list.length - 1) : 0));
   }, [user, user?.role, guardianSeniorProfiles, guardianDevicePositions, guardianDeviceAlarms, selectedSenior?.userId]);
 
   const activeGuardianSeniorDetails = useMemo(() => {
@@ -621,9 +703,13 @@ const HomeScreen = () => {
       liveSnapshot.speedKph != null && !Number.isNaN(liveSnapshot.speedKph)
         ? `${Math.round(liveSnapshot.speedKph)} km/h`
         : NA;
-    const updatedPart = displayStr(liveSnapshot.lastUpdatedLabel);
-    return `${speedPart} · ${updatedPart}`;
-  }, [liveSnapshot.speedKph, liveSnapshot.lastUpdatedLabel]);
+    const updatedPart = liveSnapshot.locationUpdatedLabel ?? liveSnapshot.lastUpdatedLabel;
+    return joinDisplayParts(speedPart, updatedPart);
+  }, [liveSnapshot.locationUpdatedLabel, liveSnapshot.lastUpdatedLabel, liveSnapshot.speedKph]);
+
+  const batteryStatusLine = useMemo(() => {
+    return joinDisplayParts(chargingCaption(liveSnapshot.charging), liveSnapshot.batteryUpdatedLabel);
+  }, [liveSnapshot.batteryUpdatedLabel, liveSnapshot.charging]);
 
   const fixQualityLine = useMemo(() => {
     if (
@@ -646,6 +732,30 @@ const HomeScreen = () => {
     const idx = Math.min(Math.max(0, selectedDeviceIndex), dashboardDevices.length - 1);
     return dashboardDevices[idx];
   }, [dashboardDevices, selectedDeviceIndex]);
+
+  const hasSosData =
+    !!activeDeviceRecord &&
+    hasAnyOwnField(activeDeviceRecord, ['alarmPanicStart', 'alarmPanicStop']);
+
+  const hasFallAlarmData =
+    !!activeDeviceRecord &&
+    hasAnyOwnField(activeDeviceRecord, [
+      'fallAlarmStart',
+      'fallAlarmStop',
+      'fallAlarmStatus',
+      'fall.alarm.status',
+    ]);
+
+  const hasAlertHistoryData =
+    !!activeDeviceRecord &&
+    hasAnyOwnField(activeDeviceRecord, [
+      'alarm.server.timestamp',
+      'alarm.timestamp',
+      'alarmPanicStart',
+      'alarmPanicStop',
+      'fallAlarmStart',
+      'fallAlarmStop',
+    ]);
 
   const activityAnalysis = useMemo(() => {
     if (!activeDeviceRecord) return { label: 'Unknown', icon: 'help-outline', colors: ['#E2E8F0', '#CBD5E1'] };
@@ -857,7 +967,7 @@ const HomeScreen = () => {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={() => {
-              void fetchDashboardData(true);
+              void fetchDashboardData('manual');
             }}
             colors={['#FF9500']}
             tintColor="#FF9500"
@@ -1103,39 +1213,43 @@ const HomeScreen = () => {
             <View style={styles.vitalTextCol}>
               <Text style={styles.vitalTitle}>Battery</Text>
               <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{displayBatteryPct(liveSnapshot.batteryPercent)}</Text>
-              <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{chargingCaption(liveSnapshot.charging)}</Text>
+              <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{batteryStatusLine}</Text>
             </View>
           </LinearGradient>
 
           {/* Main SOS Status (Full Width) */}
-          <LinearGradient
-            colors={sosAnalysis.active ? ['#DC2626', '#991B1B'] : ['#059669', '#047857']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.vitalTileFull}
-          >
-            <Icon name="medkit" size={28} color="#FFFFFF" style={styles.vitalIcon} />
-            <View style={styles.vitalTextCol}>
-              <Text style={styles.vitalTitle}>SOS Panic Button</Text>
-              <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{sosAnalysis.label}</Text>
-              <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{sosAnalysis.detail}</Text>
-            </View>
-          </LinearGradient>
+          {hasSosData ? (
+            <LinearGradient
+              colors={sosAnalysis.active ? ['#DC2626', '#991B1B'] : ['#059669', '#047857']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.vitalTileFull}
+            >
+              <Icon name="medkit" size={28} color="#FFFFFF" style={styles.vitalIcon} />
+              <View style={styles.vitalTextCol}>
+                <Text style={styles.vitalTitle}>SOS Panic Button</Text>
+                <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{sosAnalysis.label}</Text>
+                <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{sosAnalysis.detail}</Text>
+              </View>
+            </LinearGradient>
+          ) : null}
 
           {/* Device Alarms */}
-          <LinearGradient
-            colors={alarmAnalysis.active ? ['#F97316', '#C2410C'] : ['#0891B2', '#164E63']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.vitalTile}
-          >
-            <Icon name="warning" size={28} color="#FFFFFF" style={styles.vitalIcon} />
-            <View style={styles.vitalTextCol}>
-              <Text style={styles.vitalTitle}>Device Alarms</Text>
-              <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{alarmAnalysis.label}</Text>
-              <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{alarmAnalysis.active ? 'Check immediately' : 'Sensors clear'}</Text>
-            </View>
-          </LinearGradient>
+          {hasFallAlarmData ? (
+            <LinearGradient
+              colors={alarmAnalysis.active ? ['#F97316', '#C2410C'] : ['#0891B2', '#164E63']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.vitalTile}
+            >
+              <Icon name="warning" size={28} color="#FFFFFF" style={styles.vitalIcon} />
+              <View style={styles.vitalTextCol}>
+                <Text style={styles.vitalTitle}>Device Alarms</Text>
+                <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{alarmAnalysis.label}</Text>
+                <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{alarmAnalysis.active ? 'Check immediately' : 'Sensors clear'}</Text>
+              </View>
+            </LinearGradient>
+          ) : null}
 
           {/* Activity Context */}
           <LinearGradient
@@ -1174,7 +1288,7 @@ const HomeScreen = () => {
 
         {/* Watch summary (reuses “Best times” card) */}
         {/* Recent SOS / Alarms Box */}
-        {liveSnapshot.lastAlarmKind && liveSnapshot.lastAlarmKind !== NA ? (
+        {hasAlertHistoryData && liveSnapshot.lastAlarmKind && liveSnapshot.lastAlarmKind !== NA ? (
           <View style={styles.section}>
             <View style={styles.sectionHeaderWrap}>
               <Text style={styles.sectionTitle}>Alert History</Text>

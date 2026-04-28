@@ -8,6 +8,8 @@ export interface SeniorHomeSnapshot {
   batteryPercent: number | null;
   charging: boolean | null;
   networkLabel: string | null;
+  batteryUpdatedLabel: string | null;
+  locationUpdatedLabel: string | null;
   lastUpdatedLabel: string | null;
   latitude: number | null;
   longitude: number | null;
@@ -26,6 +28,8 @@ export function emptySeniorHomeSnapshot(): SeniorHomeSnapshot {
     batteryPercent: null,
     charging: null,
     networkLabel: null,
+    batteryUpdatedLabel: null,
+    locationUpdatedLabel: null,
     lastUpdatedLabel: null,
     latitude: null,
     longitude: null,

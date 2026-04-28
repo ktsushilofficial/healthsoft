@@ -51,10 +51,38 @@ function resolveTimestampSeconds(record: SeniorDashboardDeviceRecord): number | 
   return undefined;
 }
 
+function resolveTimestampSecondsFromKeys(
+  record: SeniorDashboardDeviceRecord,
+  keys: string[],
+): number | undefined {
+  for (const key of keys) {
+    const value = pickNumber(record, key);
+    if (value != null && value > 1_000_000_000) {
+      return value > 1e12 ? value / 1000 : value;
+    }
+  }
+  return undefined;
+}
+
 function formatLastUpdated(record: SeniorDashboardDeviceRecord): string | null {
   const sec = resolveTimestampSeconds(record);
   if (sec == null) {
     return null;
+  }
+  try {
+    return formatDistanceToNow(new Date(sec * 1000), { addSuffix: true });
+  } catch {
+    return null;
+  }
+}
+
+function formatLastUpdatedFromKeys(
+  record: SeniorDashboardDeviceRecord,
+  keys: string[],
+): string | null {
+  const sec = resolveTimestampSecondsFromKeys(record, keys);
+  if (sec == null) {
+    return formatLastUpdated(record);
   }
   try {
     return formatDistanceToNow(new Date(sec * 1000), { addSuffix: true });
@@ -105,7 +133,7 @@ function inferAlarm(record: SeniorDashboardDeviceRecord): Pick<
       alarmDetail: null,
       alarmSeverity: 'na',
       lastAlarmKind: null,
-      lastAlarmAt: formatLastUpdated(record),
+      lastAlarmAt: formatLastUpdatedFromKeys(record, ['alarm.server.timestamp', 'alarm.timestamp']),
     };
   }
 
@@ -115,7 +143,7 @@ function inferAlarm(record: SeniorDashboardDeviceRecord): Pick<
       alarmDetail: 'Device reported an SOS panic signal on the latest packet.',
       alarmSeverity: 'critical',
       lastAlarmKind: 'SOS button',
-      lastAlarmAt: formatLastUpdated(record),
+      lastAlarmAt: formatLastUpdatedFromKeys(record, ['alarm.server.timestamp', 'alarm.timestamp']),
     };
   }
 
@@ -125,7 +153,7 @@ function inferAlarm(record: SeniorDashboardDeviceRecord): Pick<
       alarmDetail: 'Device reported a fall signal on the latest packet.',
       alarmSeverity: 'critical',
       lastAlarmKind: 'Fall sensor',
-      lastAlarmAt: formatLastUpdated(record),
+      lastAlarmAt: formatLastUpdatedFromKeys(record, ['alarm.server.timestamp', 'alarm.timestamp']),
     };
   }
   if (movement === true) {
@@ -134,7 +162,7 @@ function inferAlarm(record: SeniorDashboardDeviceRecord): Pick<
       alarmDetail: 'Recent movement activity reported by the device.',
       alarmSeverity: 'info',
       lastAlarmKind: 'Movement',
-      lastAlarmAt: formatLastUpdated(record),
+      lastAlarmAt: formatLastUpdatedFromKeys(record, ['alarm.server.timestamp', 'alarm.timestamp']),
     };
   }
   return {
@@ -142,7 +170,7 @@ function inferAlarm(record: SeniorDashboardDeviceRecord): Pick<
     alarmDetail: 'No panic or fall signals on the latest packet.',
     alarmSeverity: 'ok',
     lastAlarmKind: 'Status',
-    lastAlarmAt: formatLastUpdated(record),
+    lastAlarmAt: formatLastUpdatedFromKeys(record, ['alarm.server.timestamp', 'alarm.timestamp']),
   };
 }
 
@@ -184,6 +212,16 @@ export function mapSeniorDashboardDeviceToSnapshot(
     batteryPercent,
     charging,
     networkLabel: buildNetworkLabel(record),
+    batteryUpdatedLabel: formatLastUpdatedFromKeys(record, [
+      'battery.server.timestamp',
+      'status.server.timestamp',
+      'battery.timestamp',
+      'status.timestamp',
+    ]),
+    locationUpdatedLabel: formatLastUpdatedFromKeys(record, [
+      'position.server.timestamp',
+      'position.timestamp',
+    ]),
     lastUpdatedLabel: formatLastUpdated(record),
     latitude: coords?.lat ?? null,
     longitude: coords?.lon ?? null,

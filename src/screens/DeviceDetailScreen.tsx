@@ -20,6 +20,7 @@ import {
   EV07B_VOICE_PROMPT_FLAGS,
   EV07B_WEEKDAY_OPTIONS,
   hasEv07bFlag,
+  type Ev07bFlagDefinition,
   toggleEv07bFlag,
 } from '../bluetooth/ev07bConfigCodec';
 
@@ -42,6 +43,13 @@ const GEO_ALERT_TYPES = [
   { value: 'polygon' as const, label: 'Polygon' },
 ];
 type WriteBlock = { key: number; value: Uint8Array };
+type EnableControlSectionKey =
+  | 'featureFeedback'
+  | 'featureCalling'
+  | 'featureBluetooth'
+  | 'featureLocation'
+  | 'featureActivity'
+  | 'featureSystem';
 type ConfigSectionKey =
   | 'general'
   | 'sos'
@@ -51,10 +59,112 @@ type ConfigSectionKey =
   | 'audio'
   | 'alarm'
   | 'alerts'
-  | 'featureFlags'
+  | EnableControlSectionKey
   | 'smsTemplates'
   | 'voicePrompts'
   | 'bluetoothAccess';
+
+const ENABLE_CONTROL_FLAG_BY_KEY = new Map<string, Ev07bFlagDefinition>(
+  EV07B_ENABLE_CONTROL_FLAGS.map(flag => [flag.key, flag] as const),
+);
+
+function pickEnableControlFlags(keys: readonly string[]): Ev07bFlagDefinition[] {
+  return keys.reduce<Ev07bFlagDefinition[]>((result, key) => {
+    const flag = ENABLE_CONTROL_FLAG_BY_KEY.get(key);
+    if (flag) {
+      result.push(flag);
+    }
+    return result;
+  }, []);
+}
+
+const ENABLE_CONTROL_SECTION_CONFIG: readonly {
+  key: EnableControlSectionKey;
+  title: string;
+  saveLabel: string;
+  icon: string;
+  description: string;
+  flags: readonly Ev07bFlagDefinition[];
+}[] = [
+  {
+    key: 'featureFeedback',
+    title: 'Device Feedback',
+    saveLabel: 'Device feedback',
+    icon: 'notifications',
+    description: 'Controls LED, beep, vibration, and raise-to-awake behavior.',
+    flags: pickEnableControlFlags(['led', 'beep', 'vibration', 'raise_wrist']),
+  },
+  {
+    key: 'featureCalling',
+    title: 'SOS & Calling',
+    saveLabel: 'SOS and calling',
+    icon: 'call',
+    description: 'Handles SOS audio and call-related switch behavior.',
+    flags: pickEnableControlFlags([
+      'sos_call_speaker',
+      'side_call_speaker',
+      'sos_call_voice',
+      'sos_cancel',
+    ]),
+  },
+  {
+    key: 'featureBluetooth',
+    title: 'Bluetooth',
+    saveLabel: 'Bluetooth settings',
+    icon: 'bluetooth',
+    description: 'Controls how the device behaves over BLE and nearby locating.',
+    flags: pickEnableControlFlags([
+      'ble_stay_connected',
+      'ble_locating',
+      'ble_always_on',
+    ]),
+  },
+  {
+    key: 'featureLocation',
+    title: 'Location Services',
+    saveLabel: 'Location services',
+    icon: 'locate',
+    description: 'Toggles GPS, Wi-Fi, beacon, and network-based positioning features.',
+    flags: pickEnableControlFlags([
+      'cell_tower',
+      'wifi',
+      'gps_positioning',
+      'home_beacon',
+      'home_wifi',
+      'network_location',
+      'agps',
+    ]),
+  },
+  {
+    key: 'featureActivity',
+    title: 'Activity Tracking',
+    saveLabel: 'Activity tracking',
+    icon: 'walk',
+    description: 'Controls activity reminders and step-count tracking.',
+    flags: pickEnableControlFlags(['activity', 'step_count']),
+  },
+  {
+    key: 'featureSystem',
+    title: 'System & Messaging',
+    saveLabel: 'System and messaging',
+    icon: 'settings',
+    description: 'Groups network, power, messaging, and update-related behavior.',
+    flags: pickEnableControlFlags([
+      'alert_tcp_fast',
+      'data_saver',
+      'power_control',
+      'long_sms',
+      'auto_update',
+    ]),
+  },
+] as const;
+
+const ENABLE_CONTROL_SECTION_KEYS: readonly EnableControlSectionKey[] =
+  ENABLE_CONTROL_SECTION_CONFIG.map(section => section.key);
+
+function isEnableControlSection(section: ConfigSectionKey): section is EnableControlSectionKey {
+  return (ENABLE_CONTROL_SECTION_KEYS as readonly string[]).includes(section);
+}
 
 function clampInt(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
@@ -269,7 +379,12 @@ const DeviceDetailScreen = () => {
     audio: false,
     alarm: false,
     alerts: false,
-    featureFlags: false,
+    featureFeedback: false,
+    featureCalling: false,
+    featureBluetooth: false,
+    featureLocation: false,
+    featureActivity: false,
+    featureSystem: false,
     smsTemplates: false,
     voicePrompts: false,
     bluetoothAccess: false,
@@ -657,7 +772,12 @@ const DeviceDetailScreen = () => {
         if (geoWrite) writes.push(geoWrite);
         return writes;
       }
-      case 'featureFlags':
+      case 'featureFeedback':
+      case 'featureCalling':
+      case 'featureBluetooth':
+      case 'featureLocation':
+      case 'featureActivity':
+      case 'featureSystem':
         return [{ key: 0x0f, value: u32le(enableControl >>> 0) }];
       case 'smsTemplates':
         return [
@@ -735,7 +855,7 @@ const DeviceDetailScreen = () => {
         } catch {
           // Best-effort refresh after SOS update.
         }
-      } else if (section === 'featureFlags') {
+      } else if (isEnableControlSection(section)) {
         try {
           const syncResp = await sendEv07bConfig(deviceId, { readKeys: [0x0f] });
           setStatusMsg(`${label} saved${syncResp.seqId != null ? ` (seq ${syncResp.seqId})` : seqId != null ? ` (seq ${seqId})` : ''}`);
@@ -752,10 +872,6 @@ const DeviceDetailScreen = () => {
 
   const toggleCtrlBit = useCallback((bit: number) => {
     setEnableControl(prev => toggleEv07bFlag(prev, bit));
-  }, []);
-
-  const toggleVoicePromptBit = useCallback((bit: number) => {
-    setVoicePromptMask(prev => toggleEv07bFlag(prev, bit));
   }, []);
 
   const toggleAlarmWorkdayBit = (bit: number) => {
@@ -1202,29 +1318,31 @@ const DeviceDetailScreen = () => {
           )}
         </CollapsibleSection>
 
-        <CollapsibleSection
-          title="Device Feature Flags"
-          icon="toggle"
-          expanded={expandedSections.featureFlags}
-          onToggle={() => toggleSection('featureFlags')}
-          onSave={() => handleSectionSave('featureFlags', 'Device feature flags')}
-          saving={savingSection === 'featureFlags'}
-        >
-          <Text style={styles.groupLabel}>Enable Control Flags</Text>
-          <Text style={styles.helperText}>
-            These toggles are stored in the device&apos;s 32-bit enable-control mask and now round-trip through Sync Info.
-          </Text>
-          {EV07B_ENABLE_CONTROL_FLAGS.map(flag => (
-            <ToggleRow
-              key={flag.key}
-              label={`${flag.label} (bit ${flag.bit})`}
-              value={hasEv07bFlag(enableControl, flag.bit)}
-              onValueChange={() => {
-                toggleCtrlBit(flag.bit);
-              }}
-            />
-          ))}
-        </CollapsibleSection>
+        {ENABLE_CONTROL_SECTION_CONFIG.map(section => (
+          <CollapsibleSection
+            key={section.key}
+            title={section.title}
+            icon={section.icon}
+            expanded={expandedSections[section.key]}
+            onToggle={() => toggleSection(section.key)}
+            onSave={() => handleSectionSave(section.key, section.saveLabel)}
+            saving={savingSection === section.key}
+          >
+            <Text style={styles.helperText}>
+              {section.description} These toggles are saved back to the device&apos;s enable-control mask.
+            </Text>
+            {section.flags.map(flag => (
+              <ToggleRow
+                key={flag.key}
+                label={`${flag.label} (bit ${flag.bit})`}
+                value={hasEv07bFlag(enableControl, flag.bit)}
+                onValueChange={() => {
+                  toggleCtrlBit(flag.bit);
+                }}
+              />
+            ))}
+          </CollapsibleSection>
+        ))}
 
         {/* ── GATT Services ── */}
         <CollapsibleSection
