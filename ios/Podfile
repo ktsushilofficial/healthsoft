@@ -36,5 +36,14 @@ target 'HealthsoftApp' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+
+    installer.pods_project.targets.each do |target|
+      next unless target.name == 'fmt'
+
+      target.build_configurations.each do |build_configuration|
+        # fmt 11 fails under the archive toolchain here unless it stays on C++17.
+        build_configuration.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++17'
+      end
+    end
   end
 end
