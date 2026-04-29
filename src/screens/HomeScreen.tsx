@@ -367,6 +367,9 @@ const HomeScreen = () => {
   const isMountedRef = useRef(true);
   const dashboardRequestIdRef = useRef(0);
   const lastLoadedDashboardContextKeyRef = useRef<string>('');
+  const initialDashboardLoadCountRef = useRef(0);
+  const manualDashboardRefreshCountRef = useRef(0);
+  const backgroundDashboardRefreshCountRef = useRef(0);
 
   /** Senior id for `/api/v1/senior-dashboard/{id}` — logged-in senior, or caretaker’s selected senior only. */
   const activeDashboardSeniorId = useMemo(() => {
@@ -426,10 +429,67 @@ const HomeScreen = () => {
     const shouldIgnore = () =>
       !isMountedRef.current || dashboardRequestIdRef.current !== requestId;
     const isManualRefresh = mode === 'manual';
+    const isBackgroundRefresh = mode === 'background';
     const shouldShowLoader = mode === 'initial';
     const shouldPreserveExistingData = mode === 'background';
+    const acquireFetchSlot = () => {
+      if (isBackgroundRefresh) {
+        if (
+          initialDashboardLoadCountRef.current > 0 ||
+          manualDashboardRefreshCountRef.current > 0 ||
+          backgroundDashboardRefreshCountRef.current > 0
+        ) {
+          return false;
+        }
+        backgroundDashboardRefreshCountRef.current += 1;
+        return true;
+      }
+      if (isManualRefresh) {
+        manualDashboardRefreshCountRef.current += 1;
+        return true;
+      }
+      if (shouldShowLoader) {
+        initialDashboardLoadCountRef.current += 1;
+      }
+      return true;
+    };
+    const releaseFetchSlot = () => {
+      if (isBackgroundRefresh) {
+        backgroundDashboardRefreshCountRef.current = Math.max(
+          0,
+          backgroundDashboardRefreshCountRef.current - 1,
+        );
+        return;
+      }
+      if (isManualRefresh) {
+        manualDashboardRefreshCountRef.current = Math.max(
+          0,
+          manualDashboardRefreshCountRef.current - 1,
+        );
+        if (manualDashboardRefreshCountRef.current === 0) {
+          setRefreshing(false);
+        }
+        return;
+      }
+      if (shouldShowLoader) {
+        initialDashboardLoadCountRef.current = Math.max(
+          0,
+          initialDashboardLoadCountRef.current - 1,
+        );
+        if (initialDashboardLoadCountRef.current === 0) {
+          setDashboardLoading(false);
+        }
+      }
+    };
+
+    if (!acquireFetchSlot()) {
+      return;
+    }
 
     if (!user) {
+      initialDashboardLoadCountRef.current = 0;
+      manualDashboardRefreshCountRef.current = 0;
+      backgroundDashboardRefreshCountRef.current = 0;
       if (shouldIgnore()) return;
       lastLoadedDashboardContextKeyRef.current = '';
       setGuardianSeniorProfiles([]);
@@ -442,7 +502,10 @@ const HomeScreen = () => {
       return;
     }
 
-    if (shouldIgnore()) return;
+    if (shouldIgnore()) {
+      releaseFetchSlot();
+      return;
+    }
     if (isManualRefresh) setRefreshing(true);
     else if (shouldShowLoader) setDashboardLoading(true);
     setDashboardError(null);
@@ -471,14 +534,16 @@ const HomeScreen = () => {
         }
         setDashboardError(e instanceof Error ? e.message : 'Guardian dashboard request failed.');
       } finally {
+        releaseFetchSlot();
         if (shouldIgnore()) return;
-        if (isManualRefresh) setRefreshing(false);
-        else if (shouldShowLoader) setDashboardLoading(false);
       }
       return;
     }
 
-    if (shouldIgnore()) return;
+    if (shouldIgnore()) {
+      releaseFetchSlot();
+      return;
+    }
     setGuardianSeniorProfiles([]);
     setGuardianDevicePositions([]);
     setGuardianDeviceAlarms([]);
@@ -498,20 +563,21 @@ const HomeScreen = () => {
         }
         setDashboardError(e instanceof Error ? e.message : 'Dashboard request failed.');
       } finally {
+        releaseFetchSlot();
         if (shouldIgnore()) return;
-        if (isManualRefresh) setRefreshing(false);
-        else if (shouldShowLoader) setDashboardLoading(false);
       }
       return;
     }
 
     if (user.role === CARETAKER_ROLE) {
       if (!selectedSenior?.userId) {
-        if (shouldIgnore()) return;
+        if (shouldIgnore()) {
+          releaseFetchSlot();
+          return;
+        }
         setDashboardDevices([]);
         setDashboardError(null);
-        if (isManualRefresh) setRefreshing(false);
-        else if (shouldShowLoader) setDashboardLoading(false);
+        releaseFetchSlot();
         return;
       }
       try {
@@ -528,18 +594,19 @@ const HomeScreen = () => {
         }
         setDashboardError(e instanceof Error ? e.message : 'Dashboard request failed.');
       } finally {
+        releaseFetchSlot();
         if (shouldIgnore()) return;
-        if (isManualRefresh) setRefreshing(false);
-        else if (shouldShowLoader) setDashboardLoading(false);
       }
       return;
     }
 
-    if (shouldIgnore()) return;
+    if (shouldIgnore()) {
+      releaseFetchSlot();
+      return;
+    }
     setDashboardDevices([]);
     setDashboardError(null);
-    if (isManualRefresh) setRefreshing(false);
-    else if (shouldShowLoader) setDashboardLoading(false);
+    releaseFetchSlot();
   }, [activeDashboardSeniorId, dashboardContextKey, user, user?.role, user?.user_id, getSeniorDashboard, getGuardianDashboard]);
 
   useFocusEffect(
