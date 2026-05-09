@@ -238,6 +238,9 @@ GoogleService-Info.plist
 
 # Buck
 buck-out/
+
+# Local vendor dump folder (do not commit)
+V8 SDK/
 .buckd/
 .buckconfig.local
 .buckversion
