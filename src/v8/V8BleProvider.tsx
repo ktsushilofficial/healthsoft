@@ -33,6 +33,7 @@ type V8BleContextValue = {
   requestDeviceName: () => Promise<void>;
   requestDeviceTime: () => Promise<void>;
   syncDeviceTime: () => Promise<void>;
+  requestPersonalInfo: () => Promise<void>;
   setRealtimeStepEnabled: (enabled: boolean, includeTemperature: boolean) => Promise<void>;
   requestHistoryBundle: () => Promise<void>;
   requestLiveSnapshot: () => Promise<void>;
@@ -69,6 +70,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   const [suppressAutoConnectUntil, setSuppressAutoConnectUntil] = useState<number>(0);
   const [liveModeEnabled, setLiveModeEnabled] = useState(false);
   const liveSnapshotInFlightRef = useRef(false);
+  const liveSnapshotPromiseRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -165,6 +167,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         v8Native?.requestDeviceMac().catch(() => {});
         v8Native?.requestDeviceName().catch(() => {});
         v8Native?.requestDeviceTime().catch(() => {});
+        v8Native?.requestPersonalInfo().catch(() => {});
       }
     });
 
@@ -329,6 +332,10 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     if (!v8Native) return;
     await v8Native.syncDeviceTime();
   }, []);
+  const requestPersonalInfo = useCallback(async () => {
+    if (!v8Native) return;
+    await v8Native.requestPersonalInfo();
+  }, []);
   const setRealtimeStepEnabled = useCallback(async (enabled: boolean, includeTemperature: boolean) => {
     if (!v8Native) return;
     await v8Native.setRealtimeStepEnabled(enabled, includeTemperature);
@@ -337,40 +344,64 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
 
   const requestHistoryBundle = useCallback(async () => {
     if (!v8Native) return;
-    const sevenDaysAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
     const start = Platform.OS === 'ios'
-      ? sevenDaysAgoMs
-      : new Date(sevenDaysAgoMs).toISOString().slice(0, 19).replace('T', ' ');
-    await Promise.all([
-      v8Native.requestTotalActivity(0, start),
-      v8Native.requestDetailActivity(0, start),
-      v8Native.requestSleep(0, start),
-      v8Native.requestDynamicHR(0, start),
-      v8Native.requestStaticHR(0, start),
-      v8Native.requestHRV(0, start),
+      ? sevenDaysAgo.getTime()
+      : `${sevenDaysAgo.toISOString().slice(0, 10)} 00:00:00`;
+
+    const requestPage = async (mode: number) => Promise.all([
+      v8Native.requestTotalActivity(mode, start),
+      v8Native.requestDetailActivity(mode, start),
+      v8Native.requestSleep(mode, start),
+      v8Native.requestDynamicHR(mode, start),
+      v8Native.requestStaticHR(mode, start),
+      v8Native.requestHRV(mode, start),
+      v8Native.requestSpo2 ? v8Native.requestSpo2(mode, start) : Promise.resolve(true),
+      v8Native.requestTemperature ? v8Native.requestTemperature(mode, start) : Promise.resolve(true),
     ]);
+
+    // Fetch latest page first, then next page for better 7-day coverage on bands
+    // that chunk history in vendor-defined pages.
+    await requestPage(0);
+    await new Promise<void>(resolve => setTimeout(resolve, 400));
+    await requestPage(2);
   }, []);
 
   const requestLiveSnapshot = useCallback(async () => {
     if (!v8Native) return;
-    if (liveSnapshotInFlightRef.current) return;
+    if (liveSnapshotInFlightRef.current && liveSnapshotPromiseRef.current) {
+      await liveSnapshotPromiseRef.current;
+      return;
+    }
     liveSnapshotInFlightRef.current = true;
-    const start = Platform.OS === 'ios' ? Date.now() - 60 * 60 * 1000 : '2026-01-01 00:00:00';
-    try {
+    const snapshotPromise = (async () => {
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const start = Platform.OS === 'ios'
+        ? oneDayAgo.getTime()
+        : `${oneDayAgo.toISOString().slice(0, 10)} ${oneDayAgo.toTimeString().slice(0, 8)}`;
+
       // Request vital data types so steps, BP, SpO2, temperature, and HR are populated.
       // NOTE: requestTotalActivity is intentionally excluded — it returns
       // inflated/stale daily totals that overwrite the accurate interval
       // values from requestStaticHR / requestDetailActivity.
       await Promise.all([
         v8Native.requestStaticHR(0, start),
+        v8Native.requestDynamicHR(0, start),
+        v8Native.requestHRV(0, start),
         v8Native.requestSpo2 ? v8Native.requestSpo2(0, start) : Promise.resolve(true),
       ]);
       await Promise.all([
         v8Native.requestTemperature ? v8Native.requestTemperature(0, start) : Promise.resolve(true),
         v8Native.requestDetailActivity(0, start),
       ]);
+    })();
+    liveSnapshotPromiseRef.current = snapshotPromise;
+    try {
+      await snapshotPromise;
     } finally {
       liveSnapshotInFlightRef.current = false;
+      liveSnapshotPromiseRef.current = null;
     }
   }, []);
 
@@ -466,6 +497,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     requestDeviceName,
     requestDeviceTime,
     syncDeviceTime,
+    requestPersonalInfo,
     setRealtimeStepEnabled,
     requestHistoryBundle,
     requestLiveSnapshot,

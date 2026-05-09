@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   InteractionManager,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -19,6 +20,27 @@ const fmt = (v: unknown, suffix = '') =>
   v != null && v !== '' ? `${v}${suffix}` : '—';
 const fmtNum = (v: number | null | undefined, decimals = 0, suffix = '') =>
   v != null && !Number.isNaN(v) ? `${Number(v).toFixed(decimals)}${suffix}` : '—';
+
+const sampleDayKey = (sample: { timestamp: string | null; receivedAt: number | null }): string | null => {
+  const raw = sample.timestamp?.trim();
+  if (raw) {
+    if (/^\d{10,13}$/.test(raw)) {
+      const epoch = raw.length === 13 ? Number(raw) : Number(raw) * 1000;
+      if (Number.isFinite(epoch)) return new Date(epoch).toISOString().slice(0, 10);
+    }
+    const normalized = raw.replace(/\//g, '-').replace(/\./g, '-');
+    const direct = normalized.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+    if (direct) return `${direct[1]}-${direct[2]}-${direct[3]}`;
+    const parsed = new Date(normalized);
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+    if (Platform.OS === 'ios' && sample.receivedAt != null) {
+      return new Date(sample.receivedAt).toISOString().slice(0, 10);
+    }
+    return null;
+  }
+  if (sample.receivedAt != null) return new Date(sample.receivedAt).toISOString().slice(0, 10);
+  return null;
+};
 
 /* ── tiny reusable pieces ──────────────────────────────── */
 
@@ -72,8 +94,7 @@ const V8DeviceManageScreen = () => {
 
   const {
     connectionStates, disconnect,
-    requestDeviceVersion, requestBattery, requestDeviceMac,
-    requestDeviceName, requestDeviceTime, syncDeviceTime,
+    requestBattery, requestDeviceMac, requestPersonalInfo,
     setRealtimeStepEnabled, requestHistoryBundle, requestLiveSnapshot,
     liveModeEnabled, latestLiveData, historyByType, deviceInfo, clearSavedData,
   } = useV8DeviceManager();
@@ -84,7 +105,6 @@ const V8DeviceManageScreen = () => {
   const [syncing, setSyncing] = useState(false);
   const [refreshingLive, setRefreshingLive] = useState(false);
   const [clearingSaved, setClearingSaved] = useState(false);
-  const [actionLoadingKey, setActionLoadingKey] = useState<string | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const deviceInfoRef = useRef(deviceInfo);
 
@@ -92,19 +112,17 @@ const V8DeviceManageScreen = () => {
     deviceInfoRef.current = deviceInfo;
   }, [deviceInfo]);
 
-  // Auto-fetch all device info when this screen gains focus and band is connected.
+  // Auto-fetch visible device info when this screen gains focus and band is connected.
   useFocusEffect(
     useCallback(() => {
       if (!connected) return;
       const task = InteractionManager.runAfterInteractions(() => {
+        requestPersonalInfo().catch(() => {});
         requestBattery().catch(() => {});
-        requestDeviceVersion().catch(() => {});
         requestDeviceMac().catch(() => {});
-        requestDeviceName().catch(() => {});
-        requestDeviceTime().catch(() => {});
       });
       return () => task.cancel();
-    }, [connected, requestBattery, requestDeviceVersion, requestDeviceMac, requestDeviceName, requestDeviceTime]),
+    }, [connected, requestBattery, requestDeviceMac, requestPersonalInfo]),
   );
 
   const handleSyncHistory = useCallback(async () => {
@@ -115,9 +133,17 @@ const V8DeviceManageScreen = () => {
 
   const handleRefreshLive = useCallback(async () => {
     setRefreshingLive(true);
-    try { await requestLiveSnapshot(); } catch { /* */ }
+    try {
+      await requestLiveSnapshot();
+      // Keep identity fields fresh while user is actively monitoring vitals.
+      await Promise.allSettled([
+        requestPersonalInfo(),
+        requestBattery(),
+        requestDeviceMac(),
+      ]);
+    } catch { /* */ }
     setRefreshingLive(false);
-  }, [requestLiveSnapshot]);
+  }, [requestBattery, requestDeviceMac, requestLiveSnapshot, requestPersonalInfo]);
 
   const handleClearSavedData = useCallback(async () => {
     setClearingSaved(true);
@@ -131,32 +157,6 @@ const V8DeviceManageScreen = () => {
       setClearingSaved(false);
     }
   }, [clearSavedData]);
-
-  const runAction = useCallback(async (
-    key: string,
-    fn: () => Promise<void>,
-    readValue?: (info: typeof deviceInfo) => string | null,
-  ) => {
-    if (!connected) return;
-    setActionLoadingKey(key);
-    setActionStatus(null);
-    try {
-      await fn();
-      const deadline = Date.now() + 5000;
-      let resolvedValue: string | null = null;
-      while (Date.now() < deadline) {
-        const latest = deviceInfoRef.current;
-        resolvedValue = readValue ? readValue(latest) : null;
-        if (resolvedValue) break;
-        await new Promise<void>(resolve => setTimeout(() => resolve(), 250));
-      }
-      setActionStatus(resolvedValue ? `${key}: ${resolvedValue}` : `${key}: no reply from device yet`);
-    } catch (error) {
-      setActionStatus(error instanceof Error ? error.message : `${key} failed`);
-    } finally {
-      setActionLoadingKey(null);
-    }
-  }, [connected]);
 
   const batteryIcon = useMemo(() => {
     const pct = deviceInfo.batteryPercent;
@@ -187,6 +187,91 @@ const V8DeviceManageScreen = () => {
     () => historyEntries.reduce((sum, b) => sum + b.count, 0),
     [historyEntries],
   );
+
+  const todayMotionFallback = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const all = Object.values(historyByType).flatMap(bucket => bucket.entries);
+    const todayEntries = all.filter(entry => sampleDayKey(entry) === today);
+    let steps: number | null = null;
+    let distanceKm: number | null = null;
+    let caloriesKcal: number | null = null;
+    for (const entry of todayEntries) {
+      if (entry.steps != null) {
+        steps = steps == null ? entry.steps : Math.max(steps, entry.steps);
+      }
+      if (entry.distanceKm != null) {
+        distanceKm = distanceKm == null ? entry.distanceKm : Math.max(distanceKm, entry.distanceKm);
+      }
+      if (entry.caloriesKcal != null) {
+        caloriesKcal = caloriesKcal == null ? entry.caloriesKcal : Math.max(caloriesKcal, entry.caloriesKcal);
+      }
+    }
+    return { steps, distanceKm, caloriesKcal };
+  }, [historyByType]);
+
+  const latestVitalsFallback = useMemo(() => {
+    const all = Object.values(historyByType).flatMap(bucket => bucket.entries);
+    const latestNonNull = <T,>(pick: (entry: typeof all[number]) => T | null | undefined): T | null => {
+      let value: T | null = null;
+      let latestTs = 0;
+      for (const entry of all) {
+        const current = pick(entry);
+        if (current == null) continue;
+        const ts = entry.receivedAt ?? 0;
+        if (ts >= latestTs) {
+          latestTs = ts;
+          value = current as T;
+        }
+      }
+      return value;
+    };
+    const latestBp = latestNonNull<{ systolic: number; diastolic: number }>(entry =>
+      entry.systolicBp != null && entry.diastolicBp != null
+        ? { systolic: entry.systolicBp, diastolic: entry.diastolicBp }
+        : null,
+    );
+    return {
+      heartRate: latestNonNull<number>(entry => entry.heartRate),
+      spo2: latestNonNull<number>(entry => entry.spo2),
+      temperatureC: latestNonNull<number>(entry => entry.temperatureC),
+      hrv: latestNonNull<number>(entry => entry.hrv),
+      stress: latestNonNull<number>(entry => entry.stress),
+      systolicBp: latestBp?.systolic ?? null,
+      diastolicBp: latestBp?.diastolic ?? null,
+    };
+  }, [historyByType]);
+
+  const latestIsToday = useMemo(() => {
+    if (!latestLiveData) return false;
+    return sampleDayKey(latestLiveData) === new Date().toISOString().slice(0, 10);
+  }, [latestLiveData]);
+
+  const displaySteps = latestIsToday
+    ? (latestLiveData?.steps ?? todayMotionFallback.steps)
+    : todayMotionFallback.steps;
+  const displayDistanceKm = latestIsToday
+    ? (latestLiveData?.distanceKm ?? todayMotionFallback.distanceKm)
+    : todayMotionFallback.distanceKm;
+  const displayCaloriesKcal = latestIsToday
+    ? (latestLiveData?.caloriesKcal ?? todayMotionFallback.caloriesKcal)
+    : todayMotionFallback.caloriesKcal;
+  const displayHeartRate = latestLiveData?.heartRate ?? latestVitalsFallback.heartRate;
+  const displaySpo2 = latestLiveData?.spo2 ?? latestVitalsFallback.spo2;
+  const displaySystolicBp = latestLiveData?.systolicBp ?? latestVitalsFallback.systolicBp;
+  const displayDiastolicBp = latestLiveData?.diastolicBp ?? latestVitalsFallback.diastolicBp;
+  const displayTemperatureC = latestLiveData?.temperatureC ?? latestVitalsFallback.temperatureC;
+  const displayHrv = latestLiveData?.hrv ?? latestVitalsFallback.hrv;
+  const displayStress = latestLiveData?.stress ?? latestVitalsFallback.stress;
+  const hasAnyLiveVital =
+    displayHeartRate != null ||
+    displaySpo2 != null ||
+    (displaySystolicBp != null && displayDiastolicBp != null) ||
+    displayTemperatureC != null ||
+    displaySteps != null ||
+    displayDistanceKm != null ||
+    displayHrv != null ||
+    displayCaloriesKcal != null ||
+    displayStress != null;
 
   const lastReceivedAgo = useMemo(() => {
     if (!latestLiveData?.receivedAt) return null;
@@ -241,7 +326,7 @@ const V8DeviceManageScreen = () => {
           <View style={s.divider} />
           <InfoRow label="Battery" value={fmtNum(deviceInfo.batteryPercent, 0, '%')} />
           <InfoRow label="Firmware" value={fmt(deviceInfo.firmwareVersion)} />
-          <InfoRow label="IMEI" value={fmt(deviceInfo.imei)} />
+          <InfoRow label="Device ID" value={fmt(deviceInfo.imei)} />
           <InfoRow label="MAC Address" value={fmt(deviceInfo.mac)} />
           <InfoRow label="Device Name" value={fmt(deviceInfo.deviceName)} />
           <InfoRow label="Device Time" value={fmt(deviceInfo.deviceTime)} />
@@ -268,7 +353,7 @@ const V8DeviceManageScreen = () => {
             )}
           </View>
 
-          {!latestLiveData ? (
+          {!hasAnyLiveVital ? (
             <View style={s.emptyState}>
               <Icon name="analytics-outline" size={32} color="#D0C8BF" />
               <Text style={s.emptyText}>No live data received yet</Text>
@@ -276,18 +361,18 @@ const V8DeviceManageScreen = () => {
             </View>
           ) : (
             <View style={s.vitalGrid}>
-              <VitalCard icon="heart" color="#E53935" label="Heart Rate" value={fmtNum(latestLiveData.heartRate, 0)} unit="BPM" />
-              <VitalCard icon="water" color="#1E88E5" label="Blood Oxygen" value={fmtNum(latestLiveData.spo2, 0)} unit="%" />
+              <VitalCard icon="heart" color="#E53935" label="Heart Rate" value={fmtNum(displayHeartRate, 0)} unit="BPM" />
+              <VitalCard icon="water" color="#1E88E5" label="Blood Oxygen" value={fmtNum(displaySpo2, 0)} unit="%" />
               <VitalCard icon="fitness" color="#8E24AA" label="Blood Pressure" value={
-                latestLiveData.systolicBp != null && latestLiveData.diastolicBp != null
-                  ? `${latestLiveData.systolicBp}/${latestLiveData.diastolicBp}` : '—'
+                displaySystolicBp != null && displayDiastolicBp != null
+                  ? `${displaySystolicBp}/${displayDiastolicBp}` : '—'
               } unit="mmHg" />
-              <VitalCard icon="thermometer" color="#FF7043" label="Temperature" value={fmtNum(latestLiveData.temperatureC, 1)} unit="°C" />
-              <VitalCard icon="footsteps" color="#F28C28" label="Steps" value={fmtNum(latestLiveData.steps, 0)} />
-              <VitalCard icon="map" color="#43A047" label="Distance" value={fmtNum(latestLiveData.distanceKm, 2)} unit="km" />
-              <VitalCard icon="speedometer" color="#5C6BC0" label="HRV" value={fmtNum(latestLiveData.hrv, 0)} unit="ms" />
-              <VitalCard icon="flame" color="#EF6C00" label="Calories" value={fmtNum(latestLiveData.caloriesKcal, 0)} unit="kcal" />
-              <VitalCard icon="sad" color="#78909C" label="Stress" value={fmtNum(latestLiveData.stress, 0)} />
+              <VitalCard icon="thermometer" color="#FF7043" label="Temperature" value={fmtNum(displayTemperatureC, 1)} unit="°C" />
+              <VitalCard icon="footsteps" color="#F28C28" label="Steps" value={fmtNum(displaySteps, 0)} />
+              <VitalCard icon="map" color="#43A047" label="Distance" value={fmtNum(displayDistanceKm, 2)} unit="km" />
+              <VitalCard icon="speedometer" color="#5C6BC0" label="HRV" value={fmtNum(displayHrv, 0)} unit="ms" />
+              <VitalCard icon="flame" color="#EF6C00" label="Calories" value={fmtNum(displayCaloriesKcal, 0)} unit="kcal" />
+              <VitalCard icon="sad" color="#78909C" label="Stress" value={fmtNum(displayStress, 0)} />
             </View>
           )}
 
@@ -333,64 +418,6 @@ const V8DeviceManageScreen = () => {
               <Text style={[s.toggleBtnText, !liveModeEnabled ? s.toggleInactiveText : { color: '#9B3C3C' }]}>OFF</Text>
             </TouchableOpacity>
           </View>
-        </View>
-
-        {/* ── Device Actions ── */}
-        <View style={s.card}>
-          <View style={s.sectionTitleRow}>
-            <Icon name="settings-outline" size={16} color="#F28C28" />
-            <Text style={s.sectionTitle}>Device Actions</Text>
-          </View>
-          <View style={s.actionsGrid}>
-            <ActionBtn
-              icon="hardware-chip-outline"
-              label="Version"
-              onPress={() => runAction('Version', requestDeviceVersion, info => (info.firmwareVersion ? String(info.firmwareVersion) : null))}
-              disabled={!connected}
-              loading={actionLoadingKey === 'Version'}
-            />
-            <ActionBtn
-              icon="battery-half"
-              label="Battery"
-              onPress={() => runAction('Battery', requestBattery, () => (
-                deviceInfoRef.current.batteryPercent != null ? `${deviceInfoRef.current.batteryPercent}%` : null
-              ))}
-              disabled={!connected}
-              loading={actionLoadingKey === 'Battery'}
-            />
-            <ActionBtn
-              icon="wifi"
-              label="MAC"
-              onPress={() => runAction('MAC', requestDeviceMac, info => (info.mac ? String(info.mac) : null))}
-              disabled={!connected}
-              loading={actionLoadingKey === 'MAC'}
-            />
-            <ActionBtn
-              icon="text-outline"
-              label="Name"
-              onPress={() => runAction('Name', requestDeviceName, info => (info.deviceName ? String(info.deviceName) : null))}
-              disabled={!connected}
-              loading={actionLoadingKey === 'Name'}
-            />
-            <ActionBtn
-              icon="time-outline"
-              label="Get Time"
-              onPress={() => runAction('Get Time', requestDeviceTime, info => (info.deviceTime ? String(info.deviceTime) : null))}
-              disabled={!connected}
-              loading={actionLoadingKey === 'Get Time'}
-            />
-            <ActionBtn
-              icon="sync"
-              label="Sync Time"
-              onPress={() => runAction('Sync Time', async () => {
-                await syncDeviceTime();
-                await requestDeviceTime();
-              }, info => (info.deviceTime ? String(info.deviceTime) : null))}
-              disabled={!connected}
-              loading={actionLoadingKey === 'Sync Time'}
-            />
-          </View>
-          {actionStatus ? <Text style={s.sectionMeta}>{actionStatus}</Text> : null}
         </View>
 
         {/* ── History Sync ── */}
