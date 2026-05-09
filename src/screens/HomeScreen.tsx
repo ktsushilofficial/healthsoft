@@ -42,7 +42,7 @@ const SENIOR_ROLE = 'SENIOR';
 const CARETAKER_ROLE = 'CARE_TAKER';
 const GUARDIAN_ROLE = 'GUARDIAN';
 const NA = 'NA';
-const DASHBOARD_AUTO_REFRESH_MS = 15_000;
+const DASHBOARD_AUTO_REFRESH_MS = 30_000;
 
 function displayStr(value: string | null | undefined): string {
   if (value == null || String(value).trim() === '') {
@@ -906,17 +906,25 @@ const HomeScreen = () => {
     setModalVisible(seniors.length > 1);
   }, [selectedSenior, seniors, isCaretaker, selectSenior]);
 
-  useEffect(() => {
-    const timer = setInterval(() => {
+  // Only rotate hero images and tick the clock while this screen is visible,
+  // so we don't trigger re-renders when the user is on another tab.
+  useFocusEffect(
+    useCallback(() => {
       setHeroIndex((prev) => (prev + 1) % HERO_IMAGES.length);
-    }, 6000);
-    return () => clearInterval(timer);
-  }, []);
+      const timer = setInterval(() => {
+        setHeroIndex((prev) => (prev + 1) % HERO_IMAGES.length);
+      }, 6000);
+      return () => clearInterval(timer);
+    }, []),
+  );
 
-  useEffect(() => {
-    const id = setInterval(() => setNowTick(new Date()), 60_000);
-    return () => clearInterval(id);
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      setNowTick(new Date());
+      const id = setInterval(() => setNowTick(new Date()), 60_000);
+      return () => clearInterval(id);
+    }, []),
+  );
 
   useEffect(() => {
     if (!user || user.role !== GUARDIAN_ROLE || !user.user_id) {

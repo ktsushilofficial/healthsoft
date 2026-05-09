@@ -5,4 +5,8 @@ export type DeviceStackParamList = {
     assignedImei?: string | null;
   };
   AssignedDevices: undefined;
+  V8DeviceManage: {
+    deviceId: string;
+    deviceName?: string | null;
+  };
 };

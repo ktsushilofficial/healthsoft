@@ -16,6 +16,8 @@ import ChangePasswordScreen from './src/screens/ChangePasswordScreen';
 import DeviceDetailScreen from './src/screens/DeviceDetailScreen';
 import AssignedDevicesScreen from './src/screens/AssignedDevicesScreen';
 import { BleProvider } from './src/bluetooth/BleProvider';
+import { V8BleProvider } from './src/v8/V8BleProvider';
+import V8DeviceManageScreen from './src/screens/V8DeviceManageScreen';
 import {
   requestNotificationPermission,
   getFCMToken,
@@ -59,6 +61,7 @@ const AppNavigator = () => {
           <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
           <Stack.Screen name="DeviceDetail" component={DeviceDetailScreen} />
           <Stack.Screen name="AssignedDevices" component={AssignedDevicesScreen} />
+          <Stack.Screen name="V8DeviceManage" component={V8DeviceManageScreen} />
         </>
       )}
     </Stack.Navigator>
@@ -104,11 +107,13 @@ function App(): React.JSX.Element {
   return (
     <AuthProvider>
       <BleProvider>
-        <SafeAreaProvider>
-          <NavigationContainer>
-            <AppNavigator />
-          </NavigationContainer>
-        </SafeAreaProvider>
+        <V8BleProvider>
+          <SafeAreaProvider>
+            <NavigationContainer>
+              <AppNavigator />
+            </NavigationContainer>
+          </SafeAreaProvider>
+        </V8BleProvider>
       </BleProvider>
     </AuthProvider>
   );

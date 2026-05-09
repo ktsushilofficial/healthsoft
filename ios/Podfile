@@ -21,6 +21,8 @@ target 'HealthsoftApp' do
   pod 'GoogleUtilities', :modular_headers => true
   pod 'FirebaseCore', :modular_headers => true
   pod 'FirebaseMessaging', :modular_headers => true
+  pod 'V8SDK', :path => './V8SDK'
+  pod 'V8Bridge', :path => './V8Bridge'
   config = use_native_modules!
 
   use_react_native!(

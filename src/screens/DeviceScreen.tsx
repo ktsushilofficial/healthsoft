@@ -11,6 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useBle } from '../bluetooth/BleProvider';
+import V8DeviceTab from '../components/V8DeviceTab';
 import type { BleDiscoveredDevice } from '../bluetooth/types';
 import type { DeviceStackParamList } from '../types/navigation';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -92,7 +93,8 @@ const DeviceScreen = () => {
   } = useAuth();
   const tabs = useMemo(
     () => [
-      { id: 'devices', label: 'Devices' },
+      { id: 'current', label: 'Current Devices' },
+      { id: 'v8', label: 'Hand Band' },
     ],
     [],
   );
@@ -401,7 +403,22 @@ const DeviceScreen = () => {
 
         {hasPurchased ? (
           <>
-            {/* Tab bar hidden — only Devices tab is active */}
+            <View style={styles.segmentWrap}>
+              {tabs.map(tab => {
+                const selected = activeTab === tab.id;
+                return (
+                  <TouchableOpacity
+                    key={tab.id}
+                    style={[styles.segment, selected ? styles.segmentActive : null]}
+                    onPress={() => setActiveTab(tab.id)}
+                  >
+                    <Text style={[styles.segmentText, selected ? styles.segmentTextActive : null]}>
+                      {tab.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
 
             {activeTab === 'contacts' ? (
               <View style={styles.card}>
@@ -545,7 +562,7 @@ const DeviceScreen = () => {
               </View>
             ) : null}
 
-            {activeTab === 'devices' ? (
+            {activeTab === 'current' ? (
               <View style={styles.card}>
                 <Text style={styles.cardTitle}>Bluetooth Devices</Text>
                 <Text style={styles.cardSubtitle}>
@@ -791,6 +808,8 @@ const DeviceScreen = () => {
                 ) : null}
               </View>
             ) : null}
+
+            {activeTab === 'v8' ? <V8DeviceTab /> : null}
           </>
         ) : (
           <View style={styles.card}>
