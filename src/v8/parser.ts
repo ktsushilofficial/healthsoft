@@ -16,26 +16,76 @@ function toText(v: unknown): string | null {
 }
 
 function mapEntry(record: Record<string, unknown>): V8VitalSample {
+  const parseBpPart = (value: unknown, index: 0 | 1): number | null => {
+    if (value == null) return null;
+    const text = String(value).trim();
+    if (!text) return null;
+    const match = text.match(/(\d{2,3})\s*[/\\-]\s*(\d{2,3})/);
+    if (!match) return null;
+    const raw = Number(match[index + 1]);
+    return Number.isFinite(raw) ? raw : null;
+  };
+
   const distanceRaw =
     toNum(record.distanceKm) ??
     toNum(record.distance) ??
     toNum(record.stepDistance) ??
     toNum(record.totalDistance);
+  const systolicFromPair =
+    parseBpPart(record.bp, 0) ??
+    parseBpPart(record.BP, 0) ??
+    parseBpPart(record.bloodPressure, 0);
+  const diastolicFromPair =
+    parseBpPart(record.bp, 1) ??
+    parseBpPart(record.BP, 1) ??
+    parseBpPart(record.bloodPressure, 1);
   return {
-    timestamp: toText(record.date) ?? toText(record.time) ?? toText(record.timestamp),
+    timestamp:
+      toText(record.date) ??
+      toText(record.time) ??
+      toText(record.timestamp) ??
+      toText(record.dateTime) ??
+      toText(record.measureTime) ??
+      toText(record.startTime) ??
+      toText(record.historyDate) ??
+      toText(record.day),
     receivedAt: Date.now(),
-    heartRate: toNum(record.heartRate) ?? toNum(record.hr),
+    heartRate: toNum(record.heartRate) ?? toNum(record.hr) ?? toNum(record.singleHR),
     hrv: toNum(record.hrv) ?? toNum(record.hrvValue),
     stress: toNum(record.stress),
-    systolicBp: toNum(record.highBP) ?? toNum(record.sbp),
-    diastolicBp: toNum(record.lowBP) ?? toNum(record.dbp),
+    systolicBp:
+      toNum(record.highBP) ??
+      toNum(record.sbp) ??
+      toNum(record.sys) ??
+      toNum(record.sysBp) ??
+      toNum(record.systolic) ??
+      toNum(record.systolicBP) ??
+      toNum(record.highPressure) ??
+      toNum(record.bloodHigh) ??
+      systolicFromPair,
+    diastolicBp:
+      toNum(record.lowBP) ??
+      toNum(record.dbp) ??
+      toNum(record.dia) ??
+      toNum(record.diaBp) ??
+      toNum(record.diastolic) ??
+      toNum(record.diastolicBP) ??
+      toNum(record.lowPressure) ??
+      toNum(record.bloodLow) ??
+      diastolicFromPair,
     spo2:
       toNum(record.spo2) ??
       toNum(record.SpO2) ??
       toNum(record.oxygen) ??
       toNum(record.oxygenSaturation) ??
       toNum(record.bloodOxygen) ??
-      toNum(record.blood_oxygen),
+      toNum(record.blood_oxygen) ??
+      toNum(record.oxygenValue) ??
+      toNum(record.oxygenPercent) ??
+      toNum(record.spo2Value) ??
+      toNum(record.bloodSpo2) ??
+      toNum(record.automaticSpo2Data) ??
+      toNum(record.manualSpo2Data),
     temperatureC: toNum(record.temperature) ?? toNum(record.temp),
     steps: toNum(record.steps) ?? toNum(record.step) ?? toNum(record.stepCount),
     distanceKm: distanceRaw != null && distanceRaw > 1000 ? distanceRaw / 1000 : distanceRaw,
@@ -44,12 +94,10 @@ function mapEntry(record: Record<string, unknown>): V8VitalSample {
 }
 
 function parseDictDataUnknown(dicData: unknown): Record<string, unknown>[] {
-  if (Array.isArray(dicData)) {
-    return dicData.filter(item => !!item && typeof item === 'object') as Record<string, unknown>[];
-  }
+  const out: Record<string, unknown>[] = [];
 
-  if (typeof dicData === 'string') {
-    const entries = dicData.match(/\{[^{}]*\}/g) ?? [];
+  const parseRecordString = (value: string): Record<string, unknown>[] => {
+    const entries = value.match(/\{[^{}]*\}/g) ?? [];
     return entries.map(raw => {
       const body = raw.slice(1, -1);
       const obj: Record<string, unknown> = {};
@@ -60,22 +108,36 @@ function parseDictDataUnknown(dicData: unknown): Record<string, unknown>[] {
       });
       return obj;
     });
-  }
+  };
 
-  if (dicData && typeof dicData === 'object') {
-    const asRecord = dicData as Record<string, unknown>;
-    const keys = Object.keys(asRecord);
-    if (keys.length === 0) return [];
+  const collect = (node: unknown): void => {
+    if (node == null) return;
 
-    // iOS can return keyed buckets or a single vital object.
-    const objectValues = Object.values(asRecord).filter(v => !!v && typeof v === 'object');
-    if (objectValues.length > 0) {
-      return objectValues as Record<string, unknown>[];
+    if (typeof node === 'string') {
+      parseRecordString(node).forEach(item => out.push(item));
+      return;
     }
-    return [asRecord];
-  }
 
-  return [];
+    if (Array.isArray(node)) {
+      node.forEach(item => collect(item));
+      return;
+    }
+
+    if (typeof node === 'object') {
+      const obj = node as Record<string, unknown>;
+      const values = Object.values(obj);
+      const hasPrimitiveValue = values.some(v =>
+        v == null || (typeof v !== 'object' && !Array.isArray(v)),
+      );
+      if (hasPrimitiveValue) {
+        out.push(obj);
+      }
+      values.forEach(v => collect(v));
+    }
+  };
+
+  collect(dicData);
+  return out;
 }
 
 export function parseV8Payload(payload: Record<string, unknown>): {
@@ -87,6 +149,35 @@ export function parseV8Payload(payload: Record<string, unknown>): {
 
   const dicData = parseDictDataUnknown(payload.dicData);
   let entries = dicData.map(mapEntry);
+
+  const infoSources: Record<string, unknown>[] = [payload, ...dicData];
+  const normalizeKey = (key: string) => key.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  const readAnyKey = (source: Record<string, unknown>, key: string): unknown => {
+    if (Object.prototype.hasOwnProperty.call(source, key)) return source[key];
+    const target = normalizeKey(key);
+    for (const [k, v] of Object.entries(source)) {
+      if (normalizeKey(k) === target) return v;
+    }
+    return undefined;
+  };
+  const pickText = (...keys: string[]): string | null => {
+    for (const source of infoSources) {
+      for (const key of keys) {
+        const val = toText(readAnyKey(source, key));
+        if (val != null) return val;
+      }
+    }
+    return null;
+  };
+  const pickNum = (...keys: string[]): number | null => {
+    for (const source of infoSources) {
+      for (const key of keys) {
+        const val = toNum(readAnyKey(source, key));
+        if (val != null) return val;
+      }
+    }
+    return null;
+  };
 
   // iOS sometimes puts live fields directly in payload instead of dicData.
   if (entries.length === 0) {
@@ -105,27 +196,21 @@ export function parseV8Payload(payload: Record<string, unknown>): {
   }
 
   const infoPatch: Partial<V8DeviceInfo> = {
-    imei:
-      toText(payload.imei) ?? toText(payload.imeiNumber) ?? toText(payload.deviceId) ??
-      toText(payload.IMEI) ?? toText(payload.deviceID) ?? toText(payload.imeiStr) ??
-      toText(payload.ID) ?? toText(payload.id),
-    deviceName:
-      toText(payload.deviceName) ?? toText(payload.name) ?? toText(payload.deviceNameValue) ??
-      toText(payload.device_name) ?? toText(payload.Name),
-    mac:
-      toText(payload.mac) ?? toText(payload.macAddress) ?? toText(payload.deviceMac) ??
-      toText(payload.MAC) ?? toText(payload.macAddr) ?? toText(payload.mac_address),
-    firmwareVersion:
-      toText(payload.version) ?? toText(payload.firmwareVersion) ??
-      toText(payload.versionName) ?? toText(payload.versionCode) ?? toText(payload.ver) ??
-      toText(payload.hardwareVersion) ?? toText(payload.softwareVersion),
-    batteryPercent:
-      toNum(payload.battery) ?? toNum(payload.batteryLevel) ?? toNum(payload.electricity) ??
-      toNum(payload.electricQuantity) ?? toNum(payload.electric) ?? toNum(payload.power) ??
-      toNum(payload.batteryValue),
-    deviceTime:
-      toText(payload.time) ?? toText(payload.deviceTime) ??
-      toText(payload.dateTime) ?? toText(payload.currentTime) ?? toText(payload.clock),
+    imei: pickText(
+      'imei', 'imeiNumber', 'deviceId', 'IMEI', 'deviceID', 'imeiStr',
+      'ID', 'id', 'serialNumber', 'sn', 'SN', 'deviceIdentifier', 'identifier',
+    ),
+    deviceName: pickText('deviceName', 'name', 'deviceNameValue', 'device_name', 'Name'),
+    mac: pickText('mac', 'macAddress', 'deviceMac', 'MAC', 'macAddr', 'mac_address'),
+    firmwareVersion: pickText(
+      'version', 'firmwareVersion', 'versionName', 'versionCode',
+      'ver', 'hardwareVersion', 'softwareVersion',
+    ),
+    batteryPercent: pickNum(
+      'battery', 'batteryLevel', 'electricity', 'electricQuantity',
+      'electric', 'power', 'batteryValue', 'bat', 'Battery',
+    ),
+    deviceTime: pickText('time', 'deviceTime', 'dateTime', 'currentTime', 'clock'),
     updatedAt: Date.now(),
   };
 
