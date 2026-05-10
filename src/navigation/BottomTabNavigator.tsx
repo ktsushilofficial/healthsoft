@@ -4,9 +4,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 
-// Import screens (we'll create these next)
 import HomeScreen from '../screens/HomeScreen';
-import ActivityScreen from '../screens/ActivityScreen';
 import DeviceScreen from '../screens/DeviceScreen';
 import AccountScreen from '../screens/AccountScreen';
 
@@ -22,8 +20,6 @@ const BottomTabNavigator = () => {
 
           if (route.name === 'Home') {
             iconName = focused ? 'home' : 'home-outline';
-          } else if (route.name === 'Activity') {
-            iconName = focused ? 'fitness' : 'fitness-outline';
           } else if (route.name === 'Device') {
             iconName = focused ? 'watch' : 'watch-outline';
           } else if (route.name === 'Account') {
@@ -49,7 +45,6 @@ const BottomTabNavigator = () => {
         headerShown: false,
       })}>
       <Tab.Screen name="Home" component={HomeScreen} />
-      <Tab.Screen name="Activity" component={ActivityScreen} />
       <Tab.Screen name="Device" component={DeviceScreen} />
       <Tab.Screen name="Account" component={AccountScreen} />
     </Tab.Navigator>

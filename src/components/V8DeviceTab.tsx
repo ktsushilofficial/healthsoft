@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
@@ -19,13 +19,20 @@ const V8DeviceTab = () => {
     stopScan,
     connect,
     disconnect,
+    clearSavedSession,
     ensureAutoConnect,
   } = useV8DeviceManager();
+  const [clearingSession, setClearingSession] = useState(false);
+
+  const ensureAutoConnectRef = useRef(ensureAutoConnect);
+  useEffect(() => {
+    ensureAutoConnectRef.current = ensureAutoConnect;
+  }, [ensureAutoConnect]);
 
   useFocusEffect(
-    React.useCallback(() => {
-      ensureAutoConnect();
-    }, [ensureAutoConnect]),
+    useCallback(() => {
+      ensureAutoConnectRef.current().catch(() => {});
+    }, []),
   );
 
   return (
@@ -39,6 +46,24 @@ const V8DeviceTab = () => {
         {isScanning ? <ActivityIndicator color="#fff" /> : <Icon name="bluetooth" size={18} color="#fff" />}
         <Text style={styles.primaryButtonText}>
           {isScanning ? 'Scanning Hand Band...' : bleState === 'PoweredOn' ? 'Scan Hand Band Devices' : 'Enable Bluetooth'}
+        </Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.clearSessionButton, clearingSession ? styles.disabled : null]}
+        disabled={clearingSession}
+        onPress={async () => {
+          setClearingSession(true);
+          try {
+            await clearSavedSession();
+          } finally {
+            setClearingSession(false);
+          }
+        }}
+      >
+        {clearingSession ? <ActivityIndicator color="#8B5E34" /> : <Icon name="trash-outline" size={16} color="#8B5E34" />}
+        <Text style={styles.clearSessionButtonText}>
+          {clearingSession ? 'Clearing Saved Session...' : 'Clear Saved Device Session'}
         </Text>
       </TouchableOpacity>
 
@@ -133,6 +158,23 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '600',
     marginLeft: 6,
+  },
+  clearSessionButton: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#D7C3AB',
+    backgroundColor: '#F8EFE5',
+    paddingVertical: 10,
+    marginBottom: 12,
+  },
+  clearSessionButtonText: {
+    color: '#8B5E34',
+    fontWeight: '700',
+    marginLeft: 6,
+    fontSize: 13,
   },
   warningText: {
     color: '#B00020',

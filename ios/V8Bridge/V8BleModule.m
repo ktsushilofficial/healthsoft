@@ -10,6 +10,7 @@ static NSString * const kV8DataEvent = @"V8Data";
 @interface V8BleModule () <CBCentralManagerDelegate, CBPeripheralDelegate>
 @property(nonatomic, strong) CBCentralManager *central;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, CBPeripheral *> *seenPeripherals;
+@property(nonatomic, strong) NSArray<NSString *> *scanNameFilters;
 @property(nonatomic, strong) CBPeripheral *activePeripheral;
 @property(nonatomic, strong) CBCharacteristic *writeCharacteristic;
 @property(nonatomic, strong) CBCharacteristic *notifyCharacteristic;
@@ -27,6 +28,7 @@ RCT_EXPORT_MODULE();
 - (instancetype)init {
   if (self = [super init]) {
     _seenPeripherals = [NSMutableDictionary new];
+    _scanNameFilters = @[@"v8", @"jstyle", @"band"];
     dispatch_queue_t queue = dispatch_get_main_queue();
     _central = [[CBCentralManager alloc] initWithDelegate:self queue:queue];
     _writeQueue = [NSMutableArray new];
@@ -68,9 +70,43 @@ RCT_REMAP_METHOD(startScan,
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
   if (self.central.state != CBManagerStatePoweredOn) {
-    reject(@"BLE_OFF", @"Bluetooth is off", nil);
+    NSString *reason = @"Bluetooth is unavailable";
+    switch (self.central.state) {
+      case CBManagerStatePoweredOff:
+        reason = @"Bluetooth is off";
+        break;
+      case CBManagerStateUnauthorized:
+        reason = @"Bluetooth permission is not granted";
+        break;
+      case CBManagerStateUnsupported:
+        reason = @"Bluetooth is unsupported on this device";
+        break;
+      case CBManagerStateResetting:
+        reason = @"Bluetooth is resetting";
+        break;
+      case CBManagerStateUnknown:
+      default:
+        reason = @"Bluetooth state is unknown";
+        break;
+    }
+    reject(@"BLE_UNAVAILABLE", reason, nil);
     return;
   }
+
+  NSMutableArray<NSString *> *normalizedFilters = [NSMutableArray array];
+  for (id item in nameFilters) {
+    if (![item isKindOfClass:[NSString class]]) continue;
+    NSString *trimmed = [[(NSString *)item lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length > 0) {
+      [normalizedFilters addObject:trimmed];
+    }
+  }
+  if (normalizedFilters.count == 0) {
+    [normalizedFilters addObjectsFromArray:@[@"v8", @"jstyle", @"band"]];
+  } else if (![normalizedFilters containsObject:@"band"]) {
+    [normalizedFilters addObject:@"band"];
+  }
+  self.scanNameFilters = [normalizedFilters copy];
 
   [self.seenPeripherals removeAllObjects];
   [self.central scanForPeripheralsWithServices:nil options:@{CBCentralManagerScanOptionAllowDuplicatesKey: @NO}];
@@ -324,11 +360,14 @@ RCT_REMAP_METHOD(requestTemperature,
                                type:CBCharacteristicWriteWithResponse];
 }
 
-- (BOOL)looksLikeV8:(CBPeripheral *)peripheral {
-  NSString *name = [peripheral.name lowercaseString];
-  if (name.length > 0 &&
-      ([name containsString:@"v8"] || [name containsString:@"jstyle"] || [name containsString:@"band"])) {
-    return YES;
+- (BOOL)matchesConfiguredNameFilters:(NSString *)candidate {
+  if (candidate.length == 0) return NO;
+  NSString *lower = [candidate lowercaseString];
+  NSArray<NSString *> *filters = self.scanNameFilters.count > 0 ? self.scanNameFilters : @[@"v8", @"jstyle", @"band"];
+  for (NSString *filter in filters) {
+    if (filter.length > 0 && [lower containsString:filter]) {
+      return YES;
+    }
   }
   return NO;
 }
@@ -343,9 +382,20 @@ RCT_REMAP_METHOD(requestTemperature,
  didDiscoverPeripheral:(CBPeripheral *)peripheral
      advertisementData:(NSDictionary<NSString *, id> *)advertisementData
                   RSSI:(NSNumber *)RSSI {
-  BOOL matchedByName = [self looksLikeV8:peripheral];
+  NSString *peripheralName = peripheral.name ?: @"";
+  NSString *advertisedLocalName = advertisementData[CBAdvertisementDataLocalNameKey];
+  BOOL matchedByName = [self matchesConfiguredNameFilters:peripheralName] || [self matchesConfiguredNameFilters:advertisedLocalName ?: @""];
   BOOL matchedByService = NO;
-  NSArray<CBUUID *> *serviceUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey];
+  NSMutableArray<CBUUID *> *serviceUUIDs = [NSMutableArray array];
+  NSArray<CBUUID *> *primaryServiceUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey];
+  if ([primaryServiceUUIDs isKindOfClass:[NSArray class]]) {
+    [serviceUUIDs addObjectsFromArray:primaryServiceUUIDs];
+  }
+  NSArray<CBUUID *> *overflowServiceUUIDs = advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey];
+  if ([overflowServiceUUIDs isKindOfClass:[NSArray class]]) {
+    [serviceUUIDs addObjectsFromArray:overflowServiceUUIDs];
+  }
+
   for (CBUUID *uuid in serviceUUIDs) {
     NSString *uuidString = [uuid.UUIDString lowercaseString];
     if ([uuidString isEqualToString:@"fff0"] ||
@@ -362,7 +412,7 @@ RCT_REMAP_METHOD(requestTemperature,
   [self emitEvent:kV8ScanEvent body:@{
     @"id": deviceId ?: @"",
     @"name": peripheral.name ?: [NSNull null],
-    @"localName": peripheral.name ?: [NSNull null],
+    @"localName": advertisedLocalName ?: (peripheral.name ?: [NSNull null]),
     @"rssi": RSSI ?: @0
   }];
 }

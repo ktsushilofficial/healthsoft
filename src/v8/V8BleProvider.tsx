@@ -39,9 +39,11 @@ type V8BleContextValue = {
   requestHistoryBundle: () => Promise<void>;
   requestTotalActivityRange: (fromDate: string, toDate: string) => Promise<void>;
   buildDailyVitalsRange: (fromDate: string, toDate: string) => Promise<V8DailyVitalSummary[]>;
+  syncDailyVitalsToBackend: (fromDate: string, toDate: string, days: V8DailyVitalSummary[]) => Promise<{ days: number }>;
   syncVitalsRangeToBackend: (fromDate: string, toDate: string) => Promise<{ days: number }>;
   requestLiveSnapshot: () => Promise<void>;
   clearSavedData: () => Promise<void>;
+  clearSavedSession: () => Promise<void>;
   ensureAutoConnect: () => Promise<void>;
 };
 
@@ -103,6 +105,14 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   const [liveModeEnabled, setLiveModeEnabled] = useState(false);
   const liveSnapshotInFlightRef = useRef(false);
   const liveSnapshotPromiseRef = useRef<Promise<void> | null>(null);
+  const scanStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (scanStopTimerRef.current) {
+      clearTimeout(scanStopTimerRef.current);
+      scanStopTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     historyByTypeRef.current = historyByType;
@@ -289,15 +299,24 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   }, []);
 
   const startScan = useCallback(async () => {
-    if (!v8Native) {
+    const native = v8Native;
+    if (!native) {
       setScanError('Vendor V8 native module is unavailable on this platform.');
       return;
+    }
+    if (scanStopTimerRef.current) {
+      clearTimeout(scanStopTimerRef.current);
+      scanStopTimerRef.current = null;
     }
     try {
       setScanError(null);
       setIsScanning(true);
-      await v8Native.startScan(['v8', 'jstyle']);
-      setTimeout(() => setIsScanning(false), 10000);
+      await native.startScan(['v8', 'jstyle', 'band']);
+      scanStopTimerRef.current = setTimeout(() => {
+        native.stopScan().catch(() => {});
+        setIsScanning(false);
+        scanStopTimerRef.current = null;
+      }, 12000);
     } catch (error) {
       setIsScanning(false);
       setScanError(error instanceof Error ? error.message : 'Failed to scan for V8 devices.');
@@ -305,14 +324,27 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   }, []);
 
   const stopScan = useCallback(async () => {
-    if (!v8Native) return;
-    await v8Native.stopScan();
+    if (scanStopTimerRef.current) {
+      clearTimeout(scanStopTimerRef.current);
+      scanStopTimerRef.current = null;
+    }
+    if (!v8Native) {
+      setIsScanning(false);
+      return;
+    }
+    await v8Native.stopScan().catch(() => {});
     setIsScanning(false);
   }, []);
 
   const connect = useCallback(async (deviceId: string) => {
     if (!v8Native) return;
     const normalizedTargetId = normalizeId(deviceId);
+    if (scanStopTimerRef.current) {
+      clearTimeout(scanStopTimerRef.current);
+      scanStopTimerRef.current = null;
+    }
+    await v8Native.stopScan().catch(() => {});
+    setIsScanning(false);
     const currentlyActive = activeDeviceId ? normalizeId(activeDeviceId) : null;
     if (currentlyActive && currentlyActive !== normalizedTargetId) {
       try {
@@ -719,12 +751,15 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       }));
   }, [v8Native]);
 
-  const syncVitalsRangeToBackend = useCallback(async (fromDate: string, toDate: string): Promise<{ days: number }> => {
+  const syncDailyVitalsToBackend = useCallback(async (
+    fromDate: string,
+    toDate: string,
+    days: V8DailyVitalSummary[],
+  ): Promise<{ days: number }> => {
     const seniorId = (selectedSenior?.userId ?? (user?.role === 'SENIOR' ? user.user_id : '')).trim();
     if (!seniorId) {
       throw new Error('Select a senior before syncing vitals.');
     }
-    const days = await buildDailyVitalsRange(fromDate, toDate);
     const payload: V8DailyVitalsSyncPayload = {
       seniorId,
       platform: Platform.OS === 'ios' ? 'ios' : 'android',
@@ -741,7 +776,12 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     };
     await syncV8DailyVitals(seniorId, payload);
     return { days: days.length };
-  }, [buildDailyVitalsRange, deviceInfo.deviceName, deviceInfo.firmwareVersion, deviceInfo.imei, deviceInfo.mac, selectedSenior?.userId, syncV8DailyVitals, user?.role, user?.user_id]);
+  }, [deviceInfo.deviceName, deviceInfo.firmwareVersion, deviceInfo.imei, deviceInfo.mac, selectedSenior?.userId, syncV8DailyVitals, user?.role, user?.user_id]);
+
+  const syncVitalsRangeToBackend = useCallback(async (fromDate: string, toDate: string): Promise<{ days: number }> => {
+    const days = await buildDailyVitalsRange(fromDate, toDate);
+    return syncDailyVitalsToBackend(fromDate, toDate, days);
+  }, [buildDailyVitalsRange, syncDailyVitalsToBackend]);
 
   const clearSavedData = useCallback(async () => {
     setHistoryByType({});
@@ -763,9 +803,39 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     }
   }, []);
 
+  const clearSavedSession = useCallback(async () => {
+    try {
+      if (v8Native && activeDeviceId) {
+        await v8Native.disconnect().catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
+    setActiveDeviceId(null);
+    setLiveModeEnabled(false);
+    setConnectionStates({});
+    setDevicesById({});
+    setLastConnectedDeviceId(null);
+    setSuppressAutoConnectUntil(Date.now() + 60_000);
+    if (scanStopTimerRef.current) {
+      clearTimeout(scanStopTimerRef.current);
+      scanStopTimerRef.current = null;
+    }
+    setIsScanning(false);
+    try {
+      if (v8Native) {
+        await v8Native.stopScan().catch(() => {});
+      }
+      await Keychain.resetGenericPassword({ service: V8_SESSION_SERVICE });
+    } catch {
+      // ignore
+    }
+  }, [activeDeviceId]);
+
   const ensureAutoConnect = useCallback(async () => {
     if (Date.now() < suppressAutoConnectUntil) return;
     if (!v8Native || !lastConnectedDeviceId) return;
+    if (isScanning) return;
     const state = connectionStates[normalizeId(lastConnectedDeviceId)];
     if (state === 'connected' || state === 'connecting') return;
     try {
@@ -777,7 +847,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         // ignore
       }
     }
-  }, [connect, connectionStates, lastConnectedDeviceId, startScan, suppressAutoConnectUntil]);
+  }, [connect, connectionStates, isScanning, lastConnectedDeviceId, startScan, suppressAutoConnectUntil]);
 
   useEffect(() => {
     if (!lastConnectedDeviceId || !v8Native) return;
@@ -840,9 +910,11 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     requestHistoryBundle,
     requestTotalActivityRange,
     buildDailyVitalsRange,
+    syncDailyVitalsToBackend,
     syncVitalsRangeToBackend,
     requestLiveSnapshot,
     clearSavedData,
+    clearSavedSession,
     ensureAutoConnect,
   };
 };
