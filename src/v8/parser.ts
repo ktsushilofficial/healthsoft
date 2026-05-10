@@ -90,6 +90,9 @@ function mapEntry(record: Record<string, unknown>): V8VitalSample {
     steps: toNum(record.steps) ?? toNum(record.step) ?? toNum(record.stepCount),
     distanceKm: distanceRaw != null && distanceRaw > 1000 ? distanceRaw / 1000 : distanceRaw,
     caloriesKcal: toNum(record.calories) ?? toNum(record.kcal) ?? toNum(record.calorie),
+    exerciseMinutes: toNum(record.exerciseMinutes) ?? toNum(record.sportMinutes),
+    activeMinutes: toNum(record.activeMinutes) ?? toNum(record.StrengthTrainingTime),
+    goalPercent: toNum(record.goal) ?? toNum(record.goalPercent),
   };
 }
 
@@ -140,11 +143,26 @@ function parseDictDataUnknown(dicData: unknown): Record<string, unknown>[] {
   return out;
 }
 
+function detectDataTypeFromPayload(payload: Record<string, unknown>): string | null {
+  const raw = payload.dicData;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const keys = Object.keys(raw);
+  if (keys.includes('arrayTotalActivityData')) return 'totalActivity';
+  if (keys.includes('arrayDetailActivityData')) return 'detailActivity';
+  if (keys.includes('arrayDetailSleepData')) return 'sleep';
+  if (keys.includes('arrayContinuousHR')) return 'dynamicHR';
+  if (keys.includes('arraySingleHR')) return 'staticHR';
+  if (keys.includes('arrayHrvData')) return 'hrv';
+  if (keys.includes('arrayAutomaticSpo2Data') || keys.includes('arrayManualSpo2Data')) return 'spo2';
+  if (keys.includes('arrayemperatureData') || keys.includes('arrayTemperatureData')) return 'temperature';
+  return null;
+}
+
 export function parseV8Payload(payload: Record<string, unknown>): {
   history: V8HistoryBucket | null;
   infoPatch: Partial<V8DeviceInfo>;
 } {
-  const dataType = toText(payload.dataType);
+  const dataType = detectDataTypeFromPayload(payload) ?? toText(payload.dataType);
   const dataEnd = payload.dataEnd === true || String(payload.dataEnd).toLowerCase() === 'true';
 
   const dicData = parseDictDataUnknown(payload.dicData);

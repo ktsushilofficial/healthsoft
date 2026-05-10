@@ -11,6 +11,9 @@ export type V8VitalSample = {
   steps: number | null;
   distanceKm: number | null;
   caloriesKcal: number | null;
+  exerciseMinutes: number | null;
+  activeMinutes: number | null;
+  goalPercent: number | null;
 };
 
 export type V8DeviceInfo = {
@@ -28,4 +31,45 @@ export type V8HistoryBucket = {
   entries: V8VitalSample[];
   completed: boolean;
   updatedAt: number;
+};
+
+export type V8DailyVitalSummary = {
+  date: string;
+  steps: number | null;
+  distanceKm: number | null;
+  caloriesKcal: number | null;
+  exerciseMinutes: number | null;
+  activeMinutes: number | null;
+  goalPercent: number | null;
+  heartRateAvg: number | null;
+  heartRateMin: number | null;
+  heartRateMax: number | null;
+  heartRateLatest: number | null;
+  spo2Avg: number | null;
+  spo2Min: number | null;
+  spo2Latest: number | null;
+  hrvAvg: number | null;
+  hrvLatest: number | null;
+  systolicBpAvg: number | null;
+  diastolicBpAvg: number | null;
+  systolicBpLatest: number | null;
+  diastolicBpLatest: number | null;
+  temperatureAvgC: number | null;
+  temperatureLatestC: number | null;
+  stressAvg: number | null;
+};
+
+export type V8DailyVitalsSyncPayload = {
+  seniorId: string;
+  platform: 'ios' | 'android';
+  syncedAt: number;
+  fromDate: string;
+  toDate: string;
+  device: {
+    imei: string | null;
+    mac: string | null;
+    deviceName: string | null;
+    firmwareVersion: string | null;
+  };
+  days: V8DailyVitalSummary[];
 };

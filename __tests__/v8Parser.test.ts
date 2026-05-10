@@ -27,6 +27,36 @@ describe('parseV8Payload', () => {
     expect(entries.some(entry => entry.systolicBp === 121 && entry.diastolicBp === 79)).toBe(true);
   });
 
+  it('normalizes total activity payload and maps total activity fields', () => {
+    const payload = {
+      dataType: '25',
+      dataEnd: true,
+      dicData: {
+        arrayTotalActivityData: [
+          {
+            date: '2026.05.09',
+            step: 7654,
+            distance: 5.8,
+            calories: 320,
+            exerciseMinutes: 64,
+            activeMinutes: 22,
+            goal: 76,
+          },
+        ],
+      },
+    };
+
+    const { history } = parseV8Payload(payload as any);
+    expect(history?.dataType).toBe('totalActivity');
+    const entry = history?.entries[0];
+    expect(entry?.steps).toBe(7654);
+    expect(entry?.distanceKm).toBe(5.8);
+    expect(entry?.caloriesKcal).toBe(320);
+    expect(entry?.exerciseMinutes).toBe(64);
+    expect(entry?.activeMinutes).toBe(22);
+    expect(entry?.goalPercent).toBe(76);
+  });
+
   it('parses stringified dictionary records used by android payloads', () => {
     const payload = {
       dataType: 'spo2',

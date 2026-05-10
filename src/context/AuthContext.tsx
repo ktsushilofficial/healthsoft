@@ -9,6 +9,7 @@ import { clearAllCachedAssignedDeviceMatches } from '../utils/assignedDeviceMatc
 import type { SeniorDashboardApiResponse } from '../types/seniorDashboard';
 import type { GuardianDashboardApiResponse } from '../types/guardianDashboard';
 import { API_BASE_URL } from '../config/api';
+import type { V8DailyVitalsSyncPayload } from '../v8/models';
 
 const TOKEN_STORAGE_SERVICE = 'healthsoft.auth.tokens';
 const TOKEN_STORAGE_USERNAME = 'healthsoft-auth';
@@ -86,6 +87,7 @@ interface AuthContextType {
   getAssignedDevicesForSenior: (seniorId: string) => Promise<SeniorAssignedDevice[]>;
   getSeniorDashboard: (seniorId: string) => Promise<SeniorDashboardApiResponse>;
   getGuardianDashboard: (guardianUserId: string) => Promise<GuardianDashboardApiResponse>;
+  syncV8DailyVitals: (seniorId: string, payload: V8DailyVitalsSyncPayload) => Promise<void>;
 }
 
 interface SignupData {
@@ -195,6 +197,9 @@ const fallbackAuthContext: AuthContextType = {
     throw missingProviderError();
   },
   getGuardianDashboard: async () => {
+    throw missingProviderError();
+  },
+  syncV8DailyVitals: async () => {
     throw missingProviderError();
   },
 };
@@ -1168,6 +1173,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const syncV8DailyVitals = useCallback(async (seniorId: string, payload: V8DailyVitalsSyncPayload): Promise<void> => {
+    const trimmed = seniorId.trim();
+    if (!trimmed) {
+      throw new Error('Senior ID is required for V8 daily vitals sync.');
+    }
+    await authorizedRequest<void>(
+      `/api/v1/seniors/${encodeURIComponent(trimmed)}/v8/vitals/daily-sync`,
+      'POST',
+      payload,
+      {
+        Accept: '*/*',
+        'Content-Type': 'application/json',
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Clear seniors cache when user is not a caretaker/guardian
   useEffect(() => {
     if (user && !(user.role === CARETAKER_ROLE || user.role === GUARDIAN_ROLE)) {
@@ -1206,12 +1228,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       getAssignedDevicesForSenior,
       getSeniorDashboard,
       getGuardianDashboard,
+      syncV8DailyVitals,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       user, isAuthenticated, isInitializing, isCaretaker, authMethod,
       seniors, selectedSenior, refreshUserProfile, getMySeniors, getAssignedDevicesForSenior,
-      getSeniorDashboard, getGuardianDashboard,
+      getSeniorDashboard, getGuardianDashboard, syncV8DailyVitals,
     ],
   );
 

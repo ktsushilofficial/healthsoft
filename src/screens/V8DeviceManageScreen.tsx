@@ -6,6 +6,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -20,6 +21,7 @@ const fmt = (v: unknown, suffix = '') =>
   v != null && v !== '' ? `${v}${suffix}` : '—';
 const fmtNum = (v: number | null | undefined, decimals = 0, suffix = '') =>
   v != null && !Number.isNaN(v) ? `${Number(v).toFixed(decimals)}${suffix}` : '—';
+const toYmd = (date: Date) => date.toISOString().slice(0, 10);
 
 const sampleDayKey = (sample: { timestamp: string | null; receivedAt: number | null }): string | null => {
   const raw = sample.timestamp?.trim();
@@ -96,6 +98,7 @@ const V8DeviceManageScreen = () => {
     connectionStates, disconnect,
     requestBattery, requestDeviceMac, requestPersonalInfo,
     setRealtimeStepEnabled, requestHistoryBundle, requestLiveSnapshot,
+    requestTotalActivityRange, syncVitalsRangeToBackend,
     liveModeEnabled, latestLiveData, historyByType, deviceInfo, clearSavedData,
   } = useV8DeviceManager();
 
@@ -105,6 +108,13 @@ const V8DeviceManageScreen = () => {
   const [syncing, setSyncing] = useState(false);
   const [refreshingLive, setRefreshingLive] = useState(false);
   const [clearingSaved, setClearingSaved] = useState(false);
+  const [rangeSyncing, setRangeSyncing] = useState(false);
+  const [backendSyncing, setBackendSyncing] = useState(false);
+  const [fromDate, setFromDate] = useState(() => {
+    const d = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000);
+    return toYmd(d);
+  });
+  const [toDate, setToDate] = useState(() => toYmd(new Date()));
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const deviceInfoRef = useRef(deviceInfo);
 
@@ -158,6 +168,32 @@ const V8DeviceManageScreen = () => {
     }
   }, [clearSavedData]);
 
+  const handleFetchTotalActivityRange = useCallback(async () => {
+    setRangeSyncing(true);
+    setActionStatus(null);
+    try {
+      await requestTotalActivityRange(fromDate, toDate);
+      setActionStatus('Total activity range sync completed');
+    } catch (error) {
+      setActionStatus(error instanceof Error ? error.message : 'Failed to fetch total activity range');
+    } finally {
+      setRangeSyncing(false);
+    }
+  }, [fromDate, requestTotalActivityRange, toDate]);
+
+  const handleSyncVitalsToBackend = useCallback(async () => {
+    setBackendSyncing(true);
+    setActionStatus(null);
+    try {
+      const result = await syncVitalsRangeToBackend(fromDate, toDate);
+      setActionStatus(`Vitals synced to backend for ${result.days} day(s)`);
+    } catch (error) {
+      setActionStatus(error instanceof Error ? error.message : 'Failed to sync vitals to backend');
+    } finally {
+      setBackendSyncing(false);
+    }
+  }, [fromDate, syncVitalsRangeToBackend, toDate]);
+
   const batteryIcon = useMemo(() => {
     const pct = deviceInfo.batteryPercent;
     if (pct == null) return 'battery-dead-outline';
@@ -187,6 +223,54 @@ const V8DeviceManageScreen = () => {
     () => historyEntries.reduce((sum, b) => sum + b.count, 0),
     [historyEntries],
   );
+
+  const totalActivityRowsForRange = useMemo(() => {
+    const ymdRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!ymdRegex.test(fromDate) || !ymdRegex.test(toDate)) return [];
+    const fromTs = new Date(`${fromDate}T00:00:00`).getTime();
+    const toTs = new Date(`${toDate}T23:59:59`).getTime();
+    if (!Number.isFinite(fromTs) || !Number.isFinite(toTs) || fromTs > toTs) return [];
+
+    const entries = historyByType.totalActivity?.entries ?? [];
+    const rows = entries
+      .map(entry => {
+        const day = sampleDayKey(entry);
+        if (!day) return null;
+        const ts = new Date(`${day}T00:00:00`).getTime();
+        if (!Number.isFinite(ts) || ts < fromTs || ts > toTs) return null;
+        return {
+          day,
+          ts,
+          steps: entry.steps,
+          distanceKm: entry.distanceKm,
+          caloriesKcal: entry.caloriesKcal,
+          exerciseMinutes: entry.exerciseMinutes,
+          activeMinutes: entry.activeMinutes,
+          goalPercent: entry.goalPercent,
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => row != null);
+
+    const dedup = new Map<string, (typeof rows)[number]>();
+    rows.forEach(row => {
+      const prev = dedup.get(row.day);
+      if (!prev) {
+        dedup.set(row.day, row);
+        return;
+      }
+      dedup.set(row.day, {
+        ...row,
+        steps: row.steps ?? prev.steps,
+        distanceKm: row.distanceKm ?? prev.distanceKm,
+        caloriesKcal: row.caloriesKcal ?? prev.caloriesKcal,
+        exerciseMinutes: row.exerciseMinutes ?? prev.exerciseMinutes,
+        activeMinutes: row.activeMinutes ?? prev.activeMinutes,
+        goalPercent: row.goalPercent ?? prev.goalPercent,
+      });
+    });
+
+    return Array.from(dedup.values()).sort((a, b) => b.ts - a.ts);
+  }, [fromDate, historyByType, toDate]);
 
   const todayMotionFallback = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
@@ -480,6 +564,105 @@ const V8DeviceManageScreen = () => {
           </TouchableOpacity>
         </View>
 
+        {/* ── Total Activity Range ── */}
+        <View style={s.card}>
+          <View style={s.sectionHeaderRow}>
+            <View style={s.sectionTitleRow}>
+              <Icon name="calendar-outline" size={16} color="#F28C28" />
+              <Text style={s.sectionTitle}>Total Activity Range</Text>
+            </View>
+            <Text style={s.sectionMeta}>{totalActivityRowsForRange.length} days</Text>
+          </View>
+          <Text style={s.sectionDescription}>
+            Fetch daily total activity for selected range (YYYY-MM-DD).
+          </Text>
+
+          <View style={s.rangeInputRow}>
+            <View style={s.rangeInputWrap}>
+              <Text style={s.rangeInputLabel}>From</Text>
+              <TextInput
+                value={fromDate}
+                onChangeText={setFromDate}
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder="YYYY-MM-DD"
+                style={s.rangeInput}
+              />
+            </View>
+            <View style={s.rangeInputWrap}>
+              <Text style={s.rangeInputLabel}>To</Text>
+              <TextInput
+                value={toDate}
+                onChangeText={setToDate}
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder="YYYY-MM-DD"
+                style={s.rangeInput}
+              />
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={[s.syncBtn, !connected ? s.disabled : null]}
+            disabled={!connected || rangeSyncing}
+            onPress={handleFetchTotalActivityRange}
+            activeOpacity={0.7}
+          >
+            {rangeSyncing
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Icon name="download-outline" size={18} color="#fff" />}
+            <Text style={s.syncBtnText}>{rangeSyncing ? 'Fetching...' : 'Fetch Total Activity'}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[s.backendSyncBtn, (!connected || backendSyncing) ? s.disabled : null]}
+            disabled={!connected || backendSyncing}
+            onPress={handleSyncVitalsToBackend}
+            activeOpacity={0.7}
+          >
+            {backendSyncing
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Icon name="cloud-upload-outline" size={18} color="#fff" />}
+            <Text style={s.syncBtnText}>{backendSyncing ? 'Uploading...' : 'Sync Vitals to Backend'}</Text>
+          </TouchableOpacity>
+
+          {totalActivityRowsForRange.length === 0 ? (
+            <View style={s.emptyState}>
+              <Icon name="today-outline" size={28} color="#D0C8BF" />
+              <Text style={s.emptyText}>No total activity rows in this range</Text>
+            </View>
+          ) : (
+            <View style={s.tableWrap}>
+              <View style={s.tableHeaderRow}>
+                <Text style={[s.tableHeaderCell, { flex: 1.2 }]}>Date</Text>
+                <Text style={s.tableHeaderCell}>Steps</Text>
+                <Text style={s.tableHeaderCell}>Dist</Text>
+                <Text style={s.tableHeaderCell}>Kcal</Text>
+                <Text style={s.tableHeaderCell}>ExMin</Text>
+                <Text style={s.tableHeaderCell}>ActMin</Text>
+                <Text style={s.tableHeaderCell}>Goal%</Text>
+              </View>
+              {totalActivityRowsForRange.map(row => (
+                <View key={row.day} style={s.tableDataRow}>
+                  <Text style={[s.tableDataCell, { flex: 1.2 }]} numberOfLines={1}>{row.day}</Text>
+                  <Text style={s.tableDataCell}>{fmtNum(row.steps, 0)}</Text>
+                  <Text style={s.tableDataCell}>{fmtNum(row.distanceKm, 2)}</Text>
+                  <Text style={s.tableDataCell}>{fmtNum(row.caloriesKcal, 0)}</Text>
+                  <Text style={s.tableDataCell}>{fmtNum(row.exerciseMinutes, 0)}</Text>
+                  <Text style={s.tableDataCell}>{fmtNum(row.activeMinutes, 0)}</Text>
+                  <Text style={s.tableDataCell}>{fmtNum(row.goalPercent, 0)}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
+
+        {actionStatus ? (
+          <View style={s.statusBanner}>
+            <Text style={s.statusBannerText}>{actionStatus}</Text>
+          </View>
+        ) : null}
+
         {/* ── Disconnect ── */}
         <TouchableOpacity
           style={[s.disconnectBtn, !connected ? s.disabled : null]}
@@ -640,6 +823,11 @@ const s = StyleSheet.create({
     paddingVertical: 12, alignItems: 'center',
     flexDirection: 'row', justifyContent: 'center',
   },
+  backendSyncBtn: {
+    marginTop: 8, backgroundColor: '#3E7CB1', borderRadius: 16,
+    paddingVertical: 12, alignItems: 'center',
+    flexDirection: 'row', justifyContent: 'center',
+  },
   syncBtnText: { color: '#fff', fontWeight: '700', fontSize: 14, marginLeft: 8 },
   clearBtn: {
     marginTop: 10,
@@ -657,6 +845,69 @@ const s = StyleSheet.create({
     fontWeight: '700',
     fontSize: 13,
     marginLeft: 6,
+  },
+  rangeInputRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  rangeInputWrap: { flex: 1 },
+  rangeInputLabel: { fontSize: 11, color: '#8A8078', marginBottom: 4 },
+  rangeInput: {
+    borderWidth: 1,
+    borderColor: '#E9DFD5',
+    borderRadius: 10,
+    backgroundColor: '#FAF8F5',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    color: '#2E2A27',
+    fontSize: 13,
+  },
+  tableWrap: {
+    borderWidth: 1,
+    borderColor: '#EFE6DD',
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginTop: 10,
+  },
+  tableHeaderRow: {
+    flexDirection: 'row',
+    backgroundColor: '#FFF5E9',
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0E7DD',
+    paddingVertical: 7,
+    paddingHorizontal: 8,
+  },
+  tableHeaderCell: {
+    flex: 1,
+    fontSize: 10,
+    color: '#7B5835',
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  tableDataRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: '#F8F2EC',
+    paddingVertical: 7,
+    paddingHorizontal: 8,
+  },
+  tableDataCell: {
+    flex: 1,
+    fontSize: 11,
+    color: '#2E2A27',
+    textAlign: 'center',
+  },
+  statusBanner: {
+    marginHorizontal: 16,
+    marginBottom: 12,
+    backgroundColor: '#EEF7FF',
+    borderColor: '#CFE6F8',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  statusBannerText: {
+    color: '#2C5D87',
+    fontSize: 12,
+    fontWeight: '600',
   },
 
   /* disconnect */
