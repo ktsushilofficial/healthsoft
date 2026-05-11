@@ -47,5 +47,41 @@ target 'HealthsoftApp' do
         build_configuration.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++17'
       end
     end
+
+    # Vendor V8 static library currently ships as iphoneos-only arm64.
+    # Keep it for device builds, but strip it from simulator link flags so
+    # `run-ios` can build without linker platform mismatch errors.
+    pods_xcconfig_glob = File.join(__dir__, 'Pods', 'Target Support Files', 'Pods-HealthsoftApp', 'Pods-HealthsoftApp*.xcconfig')
+    Dir.glob(pods_xcconfig_glob).each do |xcconfig_path|
+      next unless File.file?(xcconfig_path)
+
+      lines = File.read(xcconfig_path).lines
+      updated_lines = []
+      changed = false
+      injected = false
+
+      lines.each do |line|
+        if line.start_with?('OTHER_LDFLAGS[sdk=iphonesimulator*] = ') || line.start_with?('OTHER_LDFLAGS[sdk=iphoneos*] = ')
+          changed = true
+          next
+        end
+
+        unless line.start_with?('OTHER_LDFLAGS = ')
+          updated_lines << line
+          next
+        end
+
+        flags = line.sub('OTHER_LDFLAGS = ', '').strip
+        simulator_flags = flags.gsub(/\s-l\"BleSDK\"/, '')
+        updated_lines << "OTHER_LDFLAGS = #{simulator_flags}\n"
+        updated_lines << "OTHER_LDFLAGS[sdk=iphoneos*] = $(inherited) -l\"BleSDK\"\n"
+        injected = true
+        changed = true
+      end
+
+      if changed && injected
+        File.write(xcconfig_path, updated_lines.join)
+      end
+    end
   end
 end

@@ -1,7 +1,10 @@
 #import "V8BleModule.h"
+#import <TargetConditionals.h>
 #import <CoreBluetooth/CoreBluetooth.h>
+#if !TARGET_OS_SIMULATOR
 #import <V8SDK/BleSDK_V8.h>
 #import <V8SDK/DeviceData_V8.h>
+#endif
 
 static NSString * const kV8ScanEvent = @"V8ScanResult";
 static NSString * const kV8ConnectionEvent = @"V8ConnectionState";
@@ -63,6 +66,14 @@ RCT_EXPORT_MODULE();
     body[@"deviceId"] = deviceId;
   }
   [self emitEvent:kV8ConnectionEvent body:body];
+}
+
+- (void)rejectSimulatorUnsupported:(RCTPromiseRejectBlock)reject method:(NSString *)method {
+  reject(
+    @"NOT_SUPPORTED",
+    [NSString stringWithFormat:@"%@ is unavailable on iOS Simulator. Use a physical iPhone for V8 BLE commands.", method],
+    nil
+  );
 }
 
 RCT_REMAP_METHOD(startScan,
@@ -154,22 +165,34 @@ RCT_REMAP_METHOD(disconnect,
 RCT_REMAP_METHOD(requestDeviceVersion,
                  requestDeviceVersionWithResolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"requestDeviceVersion"];
+#else
   NSData *cmd = [[BleSDK_V8 sharedManager] GetDeviceVersion];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(requestBattery,
                  requestBatteryWithResolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"requestBattery"];
+#else
   NSData *cmd = [[BleSDK_V8 sharedManager] GetDeviceBatteryLevel];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(requestDeviceMac,
                  requestDeviceMacWithResolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"requestDeviceMac"];
+#else
   NSData *cmd = [[BleSDK_V8 sharedManager] GetDeviceMacAddress];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(requestDeviceName,
@@ -195,13 +218,20 @@ RCT_REMAP_METHOD(setDeviceId,
 RCT_REMAP_METHOD(requestDeviceTime,
                  requestDeviceTimeWithResolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"requestDeviceTime"];
+#else
   NSData *cmd = [[BleSDK_V8 sharedManager] GetDeviceTime];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(syncDeviceTime,
                  syncDeviceTimeWithResolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"syncDeviceTime"];
+#else
   NSDateComponents *components = [[NSCalendar currentCalendar]
       components:(NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay |
                   NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitSecond)
@@ -215,13 +245,18 @@ RCT_REMAP_METHOD(syncDeviceTime,
   dt.second = (int)components.second;
   NSData *cmd = [[BleSDK_V8 sharedManager] SetDeviceTime:dt];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(requestPersonalInfo,
                  requestPersonalInfoWithResolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"requestPersonalInfo"];
+#else
   NSData *cmd = [[BleSDK_V8 sharedManager] GetPersonalInfo];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(setPersonalInfo,
@@ -232,6 +267,9 @@ RCT_REMAP_METHOD(setPersonalInfo,
                  stepLength:(nonnull NSNumber *)stepLength
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"setPersonalInfo"];
+#else
   MyPersonalInfo_V8 info;
   info.gender = [sex intValue];
   info.age = [age intValue];
@@ -240,6 +278,7 @@ RCT_REMAP_METHOD(setPersonalInfo,
   info.stride = [stepLength intValue];
   NSData *cmd = [[BleSDK_V8 sharedManager] SetPersonalInfo:info];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(setRealtimeStepEnabled,
@@ -247,8 +286,12 @@ RCT_REMAP_METHOD(setRealtimeStepEnabled,
                  includeTemperature:(BOOL)includeTemperature
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"setRealtimeStepEnabled"];
+#else
   NSData *cmd = [[BleSDK_V8 sharedManager] RealTimeDataWithType:(enabled ? 1 : 0)];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(requestTotalActivity,
@@ -256,9 +299,13 @@ RCT_REMAP_METHOD(requestTotalActivity,
                  startDateEpochMs:(nonnull NSNumber *)startDateEpochMs
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"requestTotalActivity"];
+#else
   NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetTotalActivityDataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(requestDetailActivity,
@@ -266,9 +313,13 @@ RCT_REMAP_METHOD(requestDetailActivity,
                  startDateEpochMs:(nonnull NSNumber *)startDateEpochMs
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"requestDetailActivity"];
+#else
   NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetDetailActivityDataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(requestSleep,
@@ -276,9 +327,13 @@ RCT_REMAP_METHOD(requestSleep,
                  startDateEpochMs:(nonnull NSNumber *)startDateEpochMs
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"requestSleep"];
+#else
   NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetDetailSleepDataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(requestDynamicHR,
@@ -286,9 +341,13 @@ RCT_REMAP_METHOD(requestDynamicHR,
                  startDateEpochMs:(nonnull NSNumber *)startDateEpochMs
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"requestDynamicHR"];
+#else
   NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetContinuousHRDataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(requestStaticHR,
@@ -296,9 +355,13 @@ RCT_REMAP_METHOD(requestStaticHR,
                  startDateEpochMs:(nonnull NSNumber *)startDateEpochMs
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"requestStaticHR"];
+#else
   NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetSingleHRDataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(requestHRV,
@@ -306,9 +369,13 @@ RCT_REMAP_METHOD(requestHRV,
                  startDateEpochMs:(nonnull NSNumber *)startDateEpochMs
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"requestHRV"];
+#else
   NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetHRVDataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(requestSpo2,
@@ -316,9 +383,13 @@ RCT_REMAP_METHOD(requestSpo2,
                  startDateEpochMs:(nonnull NSNumber *)startDateEpochMs
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"requestSpo2"];
+#else
   NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetAutomaticSpo2DataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 RCT_REMAP_METHOD(requestTemperature,
@@ -326,9 +397,13 @@ RCT_REMAP_METHOD(requestTemperature,
                  startDateEpochMs:(nonnull NSNumber *)startDateEpochMs
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"requestTemperature"];
+#else
   NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetTemperatureDataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
 }
 
 - (void)enqueueCommand:(NSData *)cmd
@@ -486,9 +561,12 @@ didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic
   if (error || characteristic.value.length == 0) return;
 
   NSData *value = characteristic.value;
-  DeviceData_V8 *parsed = [[BleSDK_V8 sharedManager] DataParsingWithData:value];
   NSMutableDictionary *body = [NSMutableDictionary new];
-
+#if TARGET_OS_SIMULATOR
+  body[@"type"] = @"raw";
+  body[@"payloadHex"] = [self hexStringFromData:value];
+#else
+  DeviceData_V8 *parsed = [[BleSDK_V8 sharedManager] DataParsingWithData:value];
   if (parsed) {
     body[@"type"] = @"parsed";
     body[@"payload"] = @{
@@ -500,6 +578,7 @@ didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic
     body[@"type"] = @"raw";
     body[@"payloadHex"] = [self hexStringFromData:value];
   }
+#endif
 
   [self emitEvent:kV8DataEvent body:body];
 }

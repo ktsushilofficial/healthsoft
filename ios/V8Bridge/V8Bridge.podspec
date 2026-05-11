@@ -11,5 +11,4 @@ Pod::Spec.new do |s|
   s.source_files = '*.{h,m}'
   s.requires_arc = true
   s.dependency 'React-Core'
-  s.dependency 'V8SDK'
 end
