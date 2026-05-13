@@ -1,6 +1,3 @@
-// ============================================
-// src/screens/ActivityScreen.tsx
-// ============================================
 import React, { useMemo, useState } from 'react';
 import {
   View,
@@ -9,68 +6,136 @@ import {
   ScrollView,
   ActivityIndicator,
   TouchableOpacity,
-  Platform,
 } from 'react-native';
 import { InteractionManager } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
-import { useV8DeviceManager } from '../v8/useV8DeviceManager';
-import type { V8VitalSample } from '../v8/models';
+import { useAuth } from '../context/AuthContext';
+import { isMacAddressLike } from '../utils/deviceAssignments';
 
-const sampleDayKey = (sample: V8VitalSample): string | null => {
-  const raw = sample.timestamp?.trim();
-  if (raw) {
-    if (/^\d{10,13}$/.test(raw)) {
-      const epoch = raw.length === 13 ? Number(raw) : Number(raw) * 1000;
-      if (Number.isFinite(epoch)) return new Date(epoch).toISOString().slice(0, 10);
-    }
-
-    const normalized = raw.replace(/\//g, '-').replace(/\./g, '-');
-    const direct = normalized.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
-    if (direct) {
-      const y = direct[1];
-      const m = direct[2].padStart(2, '0');
-      const d = direct[3].padStart(2, '0');
-      return `${y}-${m}-${d}`;
-    }
-
-    // Handle compact yyyymmdd formats.
-    const compact = normalized.match(/\b(\d{4})(\d{2})(\d{2})\b/);
-    if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
-
-    // Handle mm-dd-yyyy / m-d-yyyy variants.
-    const usLike = normalized.match(/\b(\d{1,2})-(\d{1,2})-(\d{4})\b/);
-    if (usLike) {
-      const y = usLike[3];
-      const m = usLike[1].padStart(2, '0');
-      const d = usLike[2].padStart(2, '0');
-      return `${y}-${m}-${d}`;
-    }
-
-    const parsed = new Date(normalized);
-    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
-
-    // iOS SDK sometimes returns non-standard date strings; fall back to receive
-    // time there so we still surface rows instead of dropping all entries.
-    if (Platform.OS === 'ios' && sample.receivedAt != null) {
-      return new Date(sample.receivedAt).toISOString().slice(0, 10);
-    }
-    // On Android keep strict behavior to avoid stale cross-day carry-over.
-    return null;
-  }
-
-  if (sample.receivedAt != null) return new Date(sample.receivedAt).toISOString().slice(0, 10);
-  return null;
+type VitalsSummaryRow = {
+  recordDate: string;
+  steps: number | null;
+  hrAvg: number | null;
+  spo2Avg: number | null;
+  tempAvg: number | null;
+  systolicBpAvg: number | null;
+  diastolicBpAvg: number | null;
 };
 
+type ActivityRangeKey =
+  | 'last_1_day'
+  | 'last_2_days'
+  | 'last_7_days'
+  | 'this_week'
+  | 'this_month'
+  | 'last_month'
+  | 'entire';
+
+type ActivityRangeOption = {
+  key: ActivityRangeKey;
+  label: string;
+  queryDays: number;
+};
+
+const RANGE_OPTIONS: ActivityRangeOption[] = [
+  { key: 'last_1_day', label: '1 Day', queryDays: 1 },
+  { key: 'last_2_days', label: '2 Days', queryDays: 2 },
+  { key: 'last_7_days', label: '7 Days', queryDays: 7 },
+  { key: 'this_week', label: 'This Week', queryDays: 7 },
+  { key: 'this_month', label: 'This Month', queryDays: 31 },
+  { key: 'last_month', label: 'Last Month', queryDays: 62 },
+  { key: 'entire', label: 'Entire', queryDays: 365 },
+];
+
+function ymdDate(value: string): Date | null {
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function asString(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeSummaryRows(payload: unknown): VitalsSummaryRow[] {
+  const root = asRecord(payload);
+  const candidates: unknown[] =
+    Array.isArray(payload)
+      ? payload
+      : Array.isArray(root?.vitalSummaries)
+        ? root?.vitalSummaries
+        : Array.isArray(root?.summaries)
+          ? root?.summaries
+          : Array.isArray(root?.data)
+            ? root?.data
+            : Array.isArray(asRecord(root?.data)?.vitalSummaries)
+              ? (asRecord(root?.data)?.vitalSummaries as unknown[])
+              : [];
+
+  return candidates
+    .map(item => {
+      const row = asRecord(item);
+      if (!row) return null;
+      const recordDate = asString(row.recordDate) ?? asString(row.date);
+      if (!recordDate) return null;
+      return {
+        recordDate,
+        steps: asNumber(row.steps),
+        hrAvg: asNumber(row.hrAvg) ?? asNumber(row.heartRateAvg),
+        spo2Avg: asNumber(row.spo2Avg),
+        tempAvg: asNumber(row.tempAvg) ?? asNumber(row.temperatureAvgC),
+        systolicBpAvg: asNumber(row.systolicBpAvg),
+        diastolicBpAvg: asNumber(row.diastolicBpAvg),
+      };
+    })
+    .filter((row): row is VitalsSummaryRow => row !== null)
+    .sort((a, b) => b.recordDate.localeCompare(a.recordDate));
+}
+
 const ActivityScreen = () => {
-  const { connectionStates, latestLiveData, historyByType, requestLiveSnapshot } = useV8DeviceManager();
-  const isHandBandConnected = Object.values(connectionStates).some(state => state === 'connected');
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const {
+    user,
+    isCaretaker,
+    selectedSenior,
+    getAssignedDevicesForSenior,
+    getV8VitalsSummary,
+  } = useAuth();
+
   const [showSevenDayTable, setShowSevenDayTable] = useState(false);
-  // Defer heavy content until after the tab transition animation finishes.
   const [ready, setReady] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [rows, setRows] = useState<VitalsSummaryRow[]>([]);
+  const [activeDeviceUuid, setActiveDeviceUuid] = useState<string | null>(null);
+  const [selectedRange, setSelectedRange] = useState<ActivityRangeKey>('last_1_day');
+
+  const activeSeniorId = useMemo(() => {
+    if (isCaretaker) {
+      return selectedSenior?.userId ?? null;
+    }
+    return user?.role === 'SENIOR' ? user.user_id : null;
+  }, [isCaretaker, selectedSenior?.userId, user?.role, user?.user_id]);
+
+  const selectedRangeOption = useMemo(
+    () => RANGE_OPTIONS.find(option => option.key === selectedRange) ?? RANGE_OPTIONS[0],
+    [selectedRange],
+  );
 
   useFocusEffect(
     React.useCallback(() => {
@@ -81,202 +146,86 @@ const ActivityScreen = () => {
     }, []),
   );
 
-  // Only tick while screen is focused to avoid re-renders when on other tabs.
   useFocusEffect(
     React.useCallback(() => {
-      if (!isHandBandConnected) return undefined;
-      setNowMs(Date.now());
-      const timer = setInterval(() => setNowMs(Date.now()), 5000);
-      return () => clearInterval(timer);
-    }, [isHandBandConnected]),
-  );
+      let cancelled = false;
 
-  const fallbackFromHistory = useMemo<V8VitalSample | null>(() => {
-    const all = Object.values(historyByType).flatMap(bucket => bucket.entries);
-    if (all.length === 0) return null;
-    return all.reduce<V8VitalSample | null>((latest, current) => {
-      if (!latest) return current;
-      return (current.receivedAt ?? 0) > (latest.receivedAt ?? 0) ? current : latest;
-    }, null);
-  }, [historyByType]);
-
-  const effectiveLiveData = latestLiveData ?? fallbackFromHistory;
-
-  const metricFallback = useMemo(() => {
-    const all = Object.values(historyByType).flatMap(bucket => bucket.entries);
-    const todayKey = new Date().toISOString().slice(0, 10);
-    const todaySamples = all.filter(sample => sampleDayKey(sample) === todayKey);
-
-    const latestNonNull = <T,>(pick: (s: V8VitalSample) => T | null | undefined): T | null => {
-      let value: T | null = null;
-      let latestTs = 0;
-      for (const sample of all) {
-        const current = pick(sample);
-        if (current == null) continue;
-        const ts = sample.receivedAt ?? 0;
-        if (ts >= latestTs) {
-          latestTs = ts;
-          value = current as T;
+      const loadVitalsSummary = async () => {
+        if (!activeSeniorId) {
+          setError(isCaretaker ? 'Select a senior to view activity.' : 'Profile unavailable.');
+          setRows([]);
+          setActiveDeviceUuid(null);
+          return;
         }
-      }
-      return value;
-    };
-    const maxToday = (pick: (s: V8VitalSample) => number | null | undefined): number | null => {
-      let best: number | null = null;
-      for (const sample of todaySamples) {
-        const current = pick(sample);
-        if (current == null) continue;
-        if (best == null || current > best) best = current;
-      }
-      return best;
-    };
-    const latestBp = latestNonNull<{ systolic: number; diastolic: number }>(s =>
-      s.systolicBp != null && s.diastolicBp != null
-        ? { systolic: s.systolicBp, diastolic: s.diastolicBp }
-        : null,
-    );
-    return {
-      heartRate: latestNonNull<number>(s => s.heartRate),
-      spo2: latestNonNull<number>(s => s.spo2),
-      temperatureC: latestNonNull<number>(s => s.temperatureC),
-      steps: maxToday(s => s.steps),
-      distanceKm: maxToday(s => s.distanceKm),
-      systolicBp: latestBp?.systolic ?? null,
-      diastolicBp: latestBp?.diastolic ?? null,
-    };
-  }, [historyByType]);
 
-  const lastUpdateLabel = useMemo(() => {
-    if (!isHandBandConnected) return null;
-    const receivedAt = effectiveLiveData?.receivedAt ?? null;
-    if (!receivedAt) return 'Waiting for first live packet...';
-    const diffSec = Math.max(0, Math.floor((nowMs - receivedAt) / 1000));
-    return `Last update: ${diffSec}s ago`;
-  }, [isHandBandConnected, effectiveLiveData?.receivedAt, nowMs]);
+        setLoading(true);
+        setError(null);
 
-  // Read directly from latestLiveData — it now merges all fields from different
-  // data types (HR, SpO2, steps, etc.), so the expensive allSamples flatMap +
-  // backward scan through all history entries is no longer needed.
-  const isSampleFromToday = (sample: V8VitalSample | null | undefined): boolean => {
-    if (!sample) return false;
-    const today = new Date().toISOString().slice(0, 10);
-    return sampleDayKey(sample) === today;
-  };
+        try {
+          const assigned = await getAssignedDevicesForSenior(activeSeniorId);
+          const handBandAssignment = assigned.find(
+            device => !!device.deviceId && isMacAddressLike(device.deviceIdentifier),
+          );
 
-  const displaySteps = isSampleFromToday(effectiveLiveData)
-    ? (effectiveLiveData?.steps ?? metricFallback.steps)
-    : metricFallback.steps;
-  const displayDistanceKm = isSampleFromToday(effectiveLiveData)
-    ? (effectiveLiveData?.distanceKm ?? metricFallback.distanceKm)
-    : metricFallback.distanceKm;
-  const displayTemperatureC = effectiveLiveData?.temperatureC ?? metricFallback.temperatureC;
-  const displaySystolic = effectiveLiveData?.systolicBp ?? metricFallback.systolicBp;
-  const displayDiastolic = effectiveLiveData?.diastolicBp ?? metricFallback.diastolicBp;
-  const displaySpo2 = effectiveLiveData?.spo2 ?? metricFallback.spo2;
-  const displayHeartRate = effectiveLiveData?.heartRate ?? metricFallback.heartRate;
+          const deviceUUID = handBandAssignment?.deviceId?.trim() ?? '';
+          if (!deviceUUID) {
+            throw new Error('No assigned hand band device found for selected senior.');
+          }
 
-  const sevenDayRows = useMemo(() => {
-    type DailyAgg = {
-      day: string;
-      stepsTotal: number;
-      hrSum: number;
-      hrCount: number;
-      spo2Sum: number;
-      spo2Count: number;
-      tempSum: number;
-      tempCount: number;
-      sysSum: number;
-      diaSum: number;
-      bpCount: number;
-    };
+          const payload = await getV8VitalsSummary(deviceUUID, selectedRangeOption.queryDays);
 
-    const all = Object.values(historyByType).flatMap(bucket => bucket.entries);
-    const byDay: Record<string, DailyAgg> = {};
-
-    for (const sample of all) {
-      const day = sampleDayKey(sample);
-      if (!day) continue;
-      if (!byDay[day]) {
-        byDay[day] = {
-          day,
-          stepsTotal: 0,
-          hrSum: 0,
-          hrCount: 0,
-          spo2Sum: 0,
-          spo2Count: 0,
-          tempSum: 0,
-          tempCount: 0,
-          sysSum: 0,
-          diaSum: 0,
-          bpCount: 0,
-        };
-      }
-      const agg = byDay[day];
-      if (sample.steps != null) agg.stepsTotal = Math.max(agg.stepsTotal, sample.steps);
-      if (sample.heartRate != null) {
-        agg.hrSum += sample.heartRate;
-        agg.hrCount += 1;
-      }
-      if (sample.spo2 != null) {
-        agg.spo2Sum += sample.spo2;
-        agg.spo2Count += 1;
-      }
-      if (sample.temperatureC != null) {
-        agg.tempSum += sample.temperatureC;
-        agg.tempCount += 1;
-      }
-      if (sample.systolicBp != null && sample.diastolicBp != null) {
-        agg.sysSum += sample.systolicBp;
-        agg.diaSum += sample.diastolicBp;
-        agg.bpCount += 1;
-      }
-    }
-
-    const days: string[] = Array.from({ length: 7 }, (_, i) => {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      return d.toISOString().slice(0, 10);
-    }).reverse();
-
-    return days.map(day => {
-      const agg = byDay[day];
-      if (!agg) {
-        return { day, steps: null, hr: null, spo2: null, temp: null, bp: null as string | null };
-      }
-      const hr = agg.hrCount > 0 ? Math.round(agg.hrSum / agg.hrCount) : null;
-      const spo2 = agg.spo2Count > 0 ? Math.round(agg.spo2Sum / agg.spo2Count) : null;
-      const temp = agg.tempCount > 0 ? Number((agg.tempSum / agg.tempCount).toFixed(1)) : null;
-      const bp = agg.bpCount > 0
-        ? `${Math.round(agg.sysSum / agg.bpCount)}/${Math.round(agg.diaSum / agg.bpCount)}`
-        : null;
-      return {
-        day,
-        steps: agg.stepsTotal > 0 ? agg.stepsTotal : null,
-        hr,
-        spo2,
-        temp,
-        bp,
+          if (cancelled) return;
+          setActiveDeviceUuid(deviceUUID);
+          setRows(normalizeSummaryRows(payload));
+        } catch (e) {
+          if (cancelled) return;
+          setRows([]);
+          setActiveDeviceUuid(null);
+          setError(e instanceof Error ? e.message : 'Failed to load activity summary.');
+        } finally {
+          if (!cancelled) {
+            setLoading(false);
+          }
+        }
       };
-    });
-  }, [historyByType]);
 
-  useFocusEffect(
-    React.useCallback(() => {
-      if (!isHandBandConnected) return undefined;
-      const initialTask = InteractionManager.runAfterInteractions(() => {
-        requestLiveSnapshot().catch(() => {});
-      });
-      const interval = setInterval(() => {
-        InteractionManager.runAfterInteractions(() => {
-          requestLiveSnapshot().catch(() => {});
-        });
-      }, 45000);
+      loadVitalsSummary();
+
       return () => {
-        initialTask.cancel();
-        clearInterval(interval);
+        cancelled = true;
       };
-    }, [isHandBandConnected, requestLiveSnapshot]),
+    }, [activeSeniorId, getAssignedDevicesForSenior, getV8VitalsSummary, isCaretaker, selectedRangeOption.queryDays]),
   );
+
+  const visibleRows = useMemo(() => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfWeek = new Date(today);
+    startOfWeek.setDate(today.getDate() - today.getDay());
+    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    const startOfLastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const endOfLastMonth = new Date(today.getFullYear(), today.getMonth(), 0);
+
+    const inRange = (date: Date): boolean => {
+      switch (selectedRange) {
+        case 'this_week':
+          return date >= startOfWeek && date <= today;
+        case 'this_month':
+          return date >= startOfMonth && date <= today;
+        case 'last_month':
+          return date >= startOfLastMonth && date <= endOfLastMonth;
+        default:
+          return true;
+      }
+    };
+
+    return rows.filter(row => {
+      const date = ymdDate(row.recordDate);
+      return date ? inRange(date) : false;
+    });
+  }, [rows, selectedRange]);
+
+  const todayRow = visibleRows[0] ?? null;
 
   if (!ready) {
     return (
@@ -299,26 +248,51 @@ const ActivityScreen = () => {
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Health Activity</Text>
-          {isHandBandConnected ? (
-            <>
-              <View style={styles.liveBadge}>
-                <Icon name="watch-outline" size={14} color="#1D8A45" />
-                <Text style={styles.liveBadgeText}>Live from Hand Band</Text>
-              </View>
-              {lastUpdateLabel ? <Text style={styles.liveMeta}>{lastUpdateLabel}</Text> : null}
-            </>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.rangeChipsRow}
+          >
+            {RANGE_OPTIONS.map(option => {
+              const active = option.key === selectedRange;
+              return (
+                <TouchableOpacity
+                  key={option.key}
+                  style={[styles.rangeChip, active ? styles.rangeChipActive : null]}
+                  onPress={() => setSelectedRange(option.key)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.rangeChipText, active ? styles.rangeChipTextActive : null]}>
+                    {option.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+
+          {activeDeviceUuid ? (
+            <View style={styles.liveBadge}>
+              <Icon name="hardware-chip-outline" size={14} color="#1D8A45" />
+              <Text style={styles.liveBadgeText}>Device UUID: {activeDeviceUuid}</Text>
+            </View>
           ) : null}
+
+          {loading ? (
+            <View style={styles.inlineLoading}>
+              <ActivityIndicator size="small" color="#F28C28" />
+              <Text style={styles.inlineLoadingText}>Loading activity summary...</Text>
+            </View>
+          ) : null}
+
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
           <View style={[styles.metricCard, styles.metricSteps]}>
             <View style={styles.metricIconWrap}>
               <Icon name="footsteps" size={26} color="#F28C28" />
             </View>
             <View style={styles.metricInfo}>
-              <Text style={styles.metricValue}>
-                {isHandBandConnected
-                  ? (displaySteps != null ? `${displaySteps}` : 'NA')
-                  : 'NA'}
-              </Text>
+              <Text style={styles.metricValue}>{todayRow?.steps != null ? `${todayRow.steps}` : 'NA'}</Text>
               <Text style={styles.metricLabel}>Today Step Count</Text>
               <View style={styles.progressTrack}>
                 <View style={styles.progressFill} />
@@ -336,8 +310,8 @@ const ActivityScreen = () => {
             <View style={styles.metricInfo}>
               <View style={styles.inlineRow}>
                 <Text style={styles.metricValue}>
-                  {isHandBandConnected && displaySystolic != null && displayDiastolic != null
-                    ? `${displaySystolic}/${displayDiastolic}`
+                  {todayRow?.systolicBpAvg != null && todayRow?.diastolicBpAvg != null
+                    ? `${Math.round(todayRow.systolicBpAvg)}/${Math.round(todayRow.diastolicBpAvg)}`
                     : 'NA'}
                 </Text>
                 <Text style={styles.metricUnit}>mmHg</Text>
@@ -351,11 +325,7 @@ const ActivityScreen = () => {
               <Icon name="water" size={24} color="#F28C28" />
             </View>
             <View style={styles.metricInfo}>
-              <Text style={styles.metricValue}>
-                {isHandBandConnected
-                  ? (displaySpo2 != null ? `${displaySpo2}%` : 'NA')
-                  : 'NA'}
-              </Text>
+              <Text style={styles.metricValue}>{todayRow?.spo2Avg != null ? `${Math.round(todayRow.spo2Avg)}%` : 'NA'}</Text>
               <Text style={styles.metricLabel}>Blood Oxygen</Text>
             </View>
           </View>
@@ -366,31 +336,10 @@ const ActivityScreen = () => {
             </View>
             <View style={styles.metricInfo}>
               <View style={styles.inlineRow}>
-                <Text style={styles.metricValue}>
-                  {isHandBandConnected
-                    ? (displayHeartRate != null ? `${displayHeartRate}` : 'NA')
-                    : 'NA'}
-                </Text>
+                <Text style={styles.metricValue}>{todayRow?.hrAvg != null ? `${Math.round(todayRow.hrAvg)}` : 'NA'}</Text>
                 <Text style={styles.metricUnit}>BPM</Text>
               </View>
               <Text style={styles.metricLabel}>Heart Rate</Text>
-            </View>
-          </View>
-
-          <View style={styles.metricCard}>
-            <View style={styles.metricIconWrap}>
-              <Icon name="resize" size={24} color="#F28C28" />
-            </View>
-            <View style={styles.metricInfo}>
-              <View style={styles.inlineRow}>
-                <Text style={styles.metricValue}>
-                  {isHandBandConnected && displayDistanceKm != null
-                    ? `${displayDistanceKm.toFixed(2)}`
-                    : 'NA'}
-                </Text>
-                <Text style={styles.metricUnit}>km</Text>
-              </View>
-              <Text style={styles.metricLabel}>Distance Today</Text>
             </View>
           </View>
 
@@ -401,9 +350,7 @@ const ActivityScreen = () => {
             <View style={styles.metricInfo}>
               <View style={styles.inlineRow}>
                 <Text style={styles.metricValue}>
-                  {isHandBandConnected && displayTemperatureC != null
-                    ? `${displayTemperatureC.toFixed(1)}`
-                    : 'NA'}
+                  {todayRow?.tempAvg != null ? `${todayRow.tempAvg.toFixed(1)}` : 'NA'}
                 </Text>
                 <Text style={styles.metricUnit}>°C</Text>
               </View>
@@ -412,8 +359,8 @@ const ActivityScreen = () => {
           </View>
 
           <TouchableOpacity
-            style={[styles.sevenDayBtn, !isHandBandConnected ? styles.sevenDayBtnDisabled : null]}
-            disabled={!isHandBandConnected}
+            style={[styles.sevenDayBtn, visibleRows.length === 0 ? styles.sevenDayBtnDisabled : null]}
+            disabled={visibleRows.length === 0}
             onPress={() => setShowSevenDayTable(prev => !prev)}
             activeOpacity={0.75}
           >
@@ -433,14 +380,18 @@ const ActivityScreen = () => {
                 <Text style={[styles.tableCell, styles.tableHeaderText]}>Temp</Text>
                 <Text style={[styles.tableCell, styles.tableHeaderText]}>BP</Text>
               </View>
-              {sevenDayRows.map(row => (
-                <View key={row.day} style={styles.tableRow}>
-                  <Text style={[styles.tableCell, styles.tableCellDay]}>{row.day.slice(5)}</Text>
+              {visibleRows.map(row => (
+                <View key={row.recordDate} style={styles.tableRow}>
+                  <Text style={[styles.tableCell, styles.tableCellDay]}>{row.recordDate.slice(5)}</Text>
                   <Text style={styles.tableCell}>{row.steps != null ? `${row.steps}` : '--'}</Text>
-                  <Text style={styles.tableCell}>{row.hr != null ? `${row.hr}` : '--'}</Text>
-                  <Text style={styles.tableCell}>{row.spo2 != null ? `${row.spo2}%` : '--'}</Text>
-                  <Text style={styles.tableCell}>{row.temp != null ? `${row.temp}` : '--'}</Text>
-                  <Text style={styles.tableCell}>{row.bp ?? '--'}</Text>
+                  <Text style={styles.tableCell}>{row.hrAvg != null ? `${Math.round(row.hrAvg)}` : '--'}</Text>
+                  <Text style={styles.tableCell}>{row.spo2Avg != null ? `${Math.round(row.spo2Avg)}%` : '--'}</Text>
+                  <Text style={styles.tableCell}>{row.tempAvg != null ? `${row.tempAvg.toFixed(1)}` : '--'}</Text>
+                  <Text style={styles.tableCell}>
+                    {row.systolicBpAvg != null && row.diastolicBpAvg != null
+                      ? `${Math.round(row.systolicBpAvg)}/${Math.round(row.diastolicBpAvg)}`
+                      : '--'}
+                  </Text>
                 </View>
               ))}
             </View>
@@ -506,17 +457,49 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     marginBottom: 12,
   },
+  rangeChipsRow: {
+    paddingBottom: 10,
+  },
+  rangeChip: {
+    backgroundColor: '#FFF5E9',
+    borderWidth: 1,
+    borderColor: '#F8DDBB',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    marginRight: 8,
+  },
+  rangeChipActive: {
+    backgroundColor: '#F28C28',
+    borderColor: '#F28C28',
+  },
+  rangeChipText: {
+    color: '#C07320',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  rangeChipTextActive: {
+    color: '#FFFFFF',
+  },
   liveBadgeText: {
     marginLeft: 6,
     color: '#1D8A45',
     fontSize: 12,
     fontWeight: '700',
   },
-  liveMeta: {
-    fontSize: 12,
-    color: '#5E8A6C',
+  inlineLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
     marginBottom: 10,
-    marginLeft: 2,
+  },
+  inlineLoadingText: {
+    marginLeft: 8,
+    color: '#7A726A',
+    fontSize: 12,
+  },
+  errorText: {
+    color: '#B00020',
+    marginBottom: 10,
   },
   metricCard: {
     backgroundColor: '#FAF8F5',

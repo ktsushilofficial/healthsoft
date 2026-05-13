@@ -4,12 +4,17 @@ import { Platform } from 'react-native';
 import axios, { Method } from 'axios';
 import * as Keychain from 'react-native-keychain';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
-import { extractSeniorAssignedDevices, type SeniorAssignedDevice } from '../utils/deviceAssignments';
+import {
+  extractSeniorAssignedDevices,
+  isMacAddressLike,
+  normalizeMacAddress,
+  type SeniorAssignedDevice,
+} from '../utils/deviceAssignments';
 import { clearAllCachedAssignedDeviceMatches } from '../utils/assignedDeviceMatchCache';
 import type { SeniorDashboardApiResponse } from '../types/seniorDashboard';
 import type { GuardianDashboardApiResponse } from '../types/guardianDashboard';
 import { API_BASE_URL } from '../config/api';
-import type { V8DailyVitalsSyncPayload } from '../v8/models';
+import type { V8DailyVitalsSyncPayload, V8WebVitalsSyncPayload } from '../v8/models';
 
 const TOKEN_STORAGE_SERVICE = 'healthsoft.auth.tokens';
 const TOKEN_STORAGE_USERNAME = 'healthsoft-auth';
@@ -82,12 +87,15 @@ interface AuthContextType {
   resetPassword: (otp: string, newPassword: string, confirmPassword: string, shortLivedToken: string) => Promise<void>;
   seniors: Senior[];
   selectedSenior: Senior | null;
+  selectedSeniorHandBandMacs: string[];
   getMySeniors: () => Promise<Senior[]>;
   selectSenior: (seniorId: string) => Promise<void>;
   getAssignedDevicesForSenior: (seniorId: string) => Promise<SeniorAssignedDevice[]>;
   getSeniorDashboard: (seniorId: string) => Promise<SeniorDashboardApiResponse>;
   getGuardianDashboard: (guardianUserId: string) => Promise<GuardianDashboardApiResponse>;
   syncV8DailyVitals: (seniorId: string, payload: V8DailyVitalsSyncPayload) => Promise<void>;
+  syncV8VitalsByDevice: (payload: V8WebVitalsSyncPayload) => Promise<void>;
+  getV8VitalsSummary: (deviceUUID: string, days: number) => Promise<unknown>;
 }
 
 interface SignupData {
@@ -184,6 +192,7 @@ const fallbackAuthContext: AuthContextType = {
   },
   seniors: [],
   selectedSenior: null,
+  selectedSeniorHandBandMacs: [],
   getMySeniors: async () => {
     throw missingProviderError();
   },
@@ -200,6 +209,12 @@ const fallbackAuthContext: AuthContextType = {
     throw missingProviderError();
   },
   syncV8DailyVitals: async () => {
+    throw missingProviderError();
+  },
+  syncV8VitalsByDevice: async () => {
+    throw missingProviderError();
+  },
+  getV8VitalsSummary: async () => {
     throw missingProviderError();
   },
 };
@@ -397,6 +412,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [_tokens, setTokens] = useState<AuthTokens | null>(null);
   const [seniors, setSeniors] = useState<Senior[]>([]);
   const [selectedSenior, setSelectedSenior] = useState<Senior | null>(null);
+  const [selectedSeniorHandBandMacs, setSelectedSeniorHandBandMacs] = useState<string[]>([]);
   const [authMethod, setAuthMethod] = useState<AuthMethod>('unknown');
 
   // Configure Google Sign-In
@@ -1137,6 +1153,53 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSelectedSeniorHandBandMacs = async () => {
+      const targetSeniorId = isCaretaker
+        ? selectedSenior?.userId?.trim() ?? ''
+        : user?.role === SENIOR_ROLE
+          ? user.user_id.trim()
+          : '';
+
+      if (!targetSeniorId) {
+        if (!cancelled) {
+          setSelectedSeniorHandBandMacs([]);
+        }
+        return;
+      }
+
+      try {
+        const assigned = await getAssignedDevicesForSenior(targetSeniorId);
+        if (cancelled) {
+          return;
+        }
+
+        const nextMacs = Array.from(
+          new Set(
+            assigned
+              .filter(device => isMacAddressLike(device.deviceIdentifier))
+              .map(device => normalizeMacAddress(device.deviceIdentifier))
+              .filter((value): value is string => !!value),
+          ),
+        );
+
+        setSelectedSeniorHandBandMacs(nextMacs);
+      } catch {
+        if (!cancelled) {
+          setSelectedSeniorHandBandMacs([]);
+        }
+      }
+    };
+
+    void loadSelectedSeniorHandBandMacs();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [getAssignedDevicesForSenior, isCaretaker, selectedSenior?.userId, user?.role, user?.user_id]);
+
   const getSeniorDashboard = useCallback(async (seniorId: string): Promise<SeniorDashboardApiResponse> => {
     const trimmed = seniorId.trim();
     if (!trimmed) {
@@ -1190,11 +1253,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const syncV8VitalsByDevice = useCallback(async (payload: V8WebVitalsSyncPayload): Promise<void> => {
+    await authorizedRequest<void>(
+      '/api/v1/vitals/sync',
+      'POST',
+      payload,
+      {
+        Accept: 'application/json, text/plain, */*',
+        'Content-Type': 'application/json',
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const getV8VitalsSummary = useCallback(async (deviceUUID: string, days: number): Promise<unknown> => {
+    const uuid = deviceUUID.trim();
+    if (!uuid) {
+      throw new Error('Device UUID is required for vitals summary.');
+    }
+    const normalizedDays = Number.isFinite(days) && days > 0 ? Math.floor(days) : 1;
+    return await authorizedRequest<unknown>(
+      `/api/v1/vitals/summary?deviceUUID=${encodeURIComponent(uuid)}&days=${normalizedDays}`,
+      'GET',
+      undefined,
+      { Accept: 'application/json, text/plain, */*' },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Clear seniors cache when user is not a caretaker/guardian
   useEffect(() => {
     if (user && !(user.role === CARETAKER_ROLE || user.role === GUARDIAN_ROLE)) {
       setSeniors([]);
       setSelectedSenior(null);
+    }
+    if (!user) {
+      setSelectedSeniorHandBandMacs([]);
     }
   }, [user?.role]);
 
@@ -1223,18 +1317,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       resetPassword,
       seniors,
       selectedSenior,
+      selectedSeniorHandBandMacs,
       getMySeniors,
       selectSenior,
       getAssignedDevicesForSenior,
       getSeniorDashboard,
       getGuardianDashboard,
       syncV8DailyVitals,
+      syncV8VitalsByDevice,
+      getV8VitalsSummary,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       user, isAuthenticated, isInitializing, isCaretaker, authMethod,
-      seniors, selectedSenior, refreshUserProfile, getMySeniors, getAssignedDevicesForSenior,
-      getSeniorDashboard, getGuardianDashboard, syncV8DailyVitals,
+      seniors, selectedSenior, selectedSeniorHandBandMacs, refreshUserProfile, getMySeniors, getAssignedDevicesForSenior,
+      getSeniorDashboard, getGuardianDashboard, syncV8DailyVitals, syncV8VitalsByDevice, getV8VitalsSummary,
     ],
   );
 

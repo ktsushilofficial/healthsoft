@@ -1,14 +1,22 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { DeviceStackParamList } from '../types/navigation';
+import { useAuth } from '../context/AuthContext';
+import { normalizeMacAddress } from '../utils/deviceAssignments';
 
 const V8DeviceTab = () => {
   const normalizeId = (id?: string | null) => (id ?? '').trim().toLowerCase();
+  const compactMac = (value?: string | null) => normalizeMacAddress(value);
+  const macSuffix6 = (value?: string | null) => {
+    const normalized = compactMac(value);
+    return normalized ? normalized.slice(-6) : null;
+  };
   const navigation = useNavigation<NativeStackNavigationProp<DeviceStackParamList>>();
+  const { selectedSeniorHandBandMacs } = useAuth();
   const {
     bleState,
     devices,
@@ -21,6 +29,7 @@ const V8DeviceTab = () => {
     disconnect,
     clearSavedSession,
     ensureAutoConnect,
+    deviceInfo,
   } = useV8DeviceManager();
   const [clearingSession, setClearingSession] = useState(false);
 
@@ -34,6 +43,114 @@ const V8DeviceTab = () => {
       ensureAutoConnectRef.current().catch(() => {});
     }, []),
   );
+
+  const selectedSeniorMacSet = useMemo(
+    () => new Set(selectedSeniorHandBandMacs),
+    [selectedSeniorHandBandMacs],
+  );
+
+  const matchedDeviceIds = useMemo(() => {
+    const matched = new Set<string>();
+    const selectedMacSuffixes = new Set(
+      selectedSeniorHandBandMacs
+        .map(mac => macSuffix6(mac))
+        .filter((value): value is string => !!value),
+    );
+    devices.forEach(device => {
+      const candidates = [
+        compactMac(device.id),
+        compactMac(device.name),
+        compactMac(device.localName),
+      ];
+      const suffixCandidates = [
+        macSuffix6(device.id),
+        macSuffix6(device.name),
+        macSuffix6(device.localName),
+      ].filter((value): value is string => !!value);
+
+      const directMatch = candidates.some(
+        candidate => !!candidate && selectedSeniorMacSet.has(candidate),
+      );
+      const suffixMatch = suffixCandidates.some(suffix => selectedMacSuffixes.has(suffix));
+
+      if (directMatch || suffixMatch) {
+        matched.add(device.id);
+      }
+    });
+
+    const connectedDeviceMac = compactMac(deviceInfo.mac);
+    if (connectedDeviceMac && selectedSeniorMacSet.has(connectedDeviceMac)) {
+      const normalizedActiveId = normalizeId(deviceInfo.imei);
+      const byImeiDevice = devices.find(d => normalizeId(d.id) === normalizedActiveId);
+      if (byImeiDevice) {
+        matched.add(byImeiDevice.id);
+      } else if (devices.length === 1) {
+        // Single scanned device + confirmed connected MAC match -> treat it as selected senior device.
+        matched.add(devices[0].id);
+      }
+    }
+
+    return matched;
+  }, [deviceInfo.imei, deviceInfo.mac, devices, selectedSeniorHandBandMacs, selectedSeniorMacSet]);
+
+  const myHandBandDevices = useMemo(
+    () => devices.filter(device => matchedDeviceIds.has(device.id)),
+    [devices, matchedDeviceIds],
+  );
+
+  const otherHandBandDevices = useMemo(
+    () => devices.filter(device => !matchedDeviceIds.has(device.id)),
+    [devices, matchedDeviceIds],
+  );
+
+  const renderDeviceRow = (device: (typeof devices)[number]) => {
+    const state = connectionStates[normalizeId(device.id)] ?? 'disconnected';
+    const busy = state === 'connecting' || state === 'disconnecting';
+    const connected = state === 'connected';
+    const matchesSelectedSenior = matchedDeviceIds.has(device.id);
+    return (
+      <View key={device.id} style={styles.deviceRow}>
+        <View style={styles.deviceInfo}>
+          <Text style={styles.deviceName}>{device.name ?? device.localName ?? 'Hand Band'}</Text>
+          <Text style={styles.deviceMeta}>{typeof device.rssi === 'number' ? `RSSI: ${device.rssi}` : 'Available'}</Text>
+          <Text style={styles.deviceMeta}>ID: {device.id}</Text>
+          {matchesSelectedSenior ? (
+            <Text style={styles.matchChip}>Assigned to selected senior</Text>
+          ) : null}
+        </View>
+        <TouchableOpacity
+          style={[styles.linkButton, connected ? styles.linkButtonSecondary : null, busy ? styles.disabled : null]}
+          disabled={busy}
+          onPress={async () => {
+            if (connected) {
+              await disconnect(device.id);
+              return;
+            }
+            await connect(device.id);
+            navigation.navigate('V8DeviceManage', {
+              deviceId: device.id,
+              deviceName: device.name ?? device.localName ?? 'Hand Band',
+            });
+          }}
+        >
+          <Text style={styles.linkButtonText}>
+            {connected ? 'Disconnect' : busy ? 'Working...' : 'Connect'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.linkButton, { marginLeft: 8, backgroundColor: '#EDE4DA' }]}
+          onPress={() =>
+            navigation.navigate('V8DeviceManage', {
+              deviceId: device.id,
+              deviceName: device.name ?? device.localName ?? 'Hand Band',
+            })
+          }
+        >
+          <Text style={[styles.linkButtonText, { color: '#7B5835' }]}>Manage</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
 
   return (
     <View style={styles.card}>
@@ -68,52 +185,29 @@ const V8DeviceTab = () => {
       </TouchableOpacity>
 
       {scanError ? <Text style={styles.warningText}>{scanError}</Text> : null}
+      {selectedSeniorHandBandMacs.length > 0 ? (
+        <View style={styles.assignedInfoBox}>
+          <Text style={styles.assignedInfoTitle}>Selected senior hand bands</Text>
+          <Text style={styles.assignedInfoText}>
+            {selectedSeniorHandBandMacs.length} assigned · {matchedDeviceIds.size} in scan range
+          </Text>
+        </View>
+      ) : null}
       {devices.length === 0 ? <Text style={styles.cardSubtitle}>No Hand Band device detected yet.</Text> : null}
 
-      {devices.map(device => {
-        const state = connectionStates[normalizeId(device.id)] ?? 'disconnected';
-        const busy = state === 'connecting' || state === 'disconnecting';
-        const connected = state === 'connected';
-        return (
-          <View key={device.id} style={styles.deviceRow}>
-            <View style={styles.deviceInfo}>
-              <Text style={styles.deviceName}>{device.name ?? device.localName ?? 'Hand Band'}</Text>
-              <Text style={styles.deviceMeta}>{typeof device.rssi === 'number' ? `RSSI: ${device.rssi}` : 'Available'}</Text>
-              <Text style={styles.deviceMeta}>ID: {device.id}</Text>
-            </View>
-            <TouchableOpacity
-              style={[styles.linkButton, connected ? styles.linkButtonSecondary : null, busy ? styles.disabled : null]}
-              disabled={busy}
-              onPress={async () => {
-                if (connected) {
-                  await disconnect(device.id);
-                  return;
-                }
-                await connect(device.id);
-                navigation.navigate('V8DeviceManage', {
-                  deviceId: device.id,
-                  deviceName: device.name ?? device.localName ?? 'Hand Band',
-                });
-              }}
-            >
-              <Text style={styles.linkButtonText}>
-                {connected ? 'Disconnect' : busy ? 'Working...' : 'Connect'}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.linkButton, { marginLeft: 8, backgroundColor: '#EDE4DA' }]}
-              onPress={() =>
-                navigation.navigate('V8DeviceManage', {
-                  deviceId: device.id,
-                  deviceName: device.name ?? device.localName ?? 'Hand Band',
-                })
-              }
-            >
-              <Text style={[styles.linkButtonText, { color: '#7B5835' }]}>Manage</Text>
-            </TouchableOpacity>
-          </View>
-        );
-      })}
+      {myHandBandDevices.length > 0 ? (
+        <>
+          <Text style={styles.sectionTitle}>My Hand Band</Text>
+          {myHandBandDevices.map(renderDeviceRow)}
+        </>
+      ) : null}
+
+      {otherHandBandDevices.length > 0 ? (
+        <>
+          <Text style={styles.sectionTitle}>Other Hand Bands</Text>
+          {otherHandBandDevices.map(renderDeviceRow)}
+        </>
+      ) : null}
     </View>
   );
 };
@@ -181,6 +275,34 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 10,
   },
+  assignedInfoBox: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#B6E3C6',
+    backgroundColor: '#F1FFF6',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 12,
+  },
+  assignedInfoTitle: {
+    color: '#1D6D3E',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  assignedInfoText: {
+    color: '#2F7A4D',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  sectionTitle: {
+    marginTop: 4,
+    marginBottom: 8,
+    color: '#6A5643',
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
   deviceRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -201,6 +323,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#7A726A',
     marginTop: 2,
+  },
+  matchChip: {
+    marginTop: 6,
+    alignSelf: 'flex-start',
+    color: '#0B7A43',
+    fontSize: 11,
+    fontWeight: '700',
+    backgroundColor: '#E2F7EA',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
   },
   linkButton: {
     backgroundColor: '#F28C28',

@@ -4,8 +4,16 @@ import * as Keychain from 'react-native-keychain';
 import { useAuth } from '../context/AuthContext';
 import type { V8ConnectionState, V8Device } from './types';
 import { isV8NativeAvailable, v8Emitter, v8Native } from './nativeV8';
-import type { V8DailyVitalSummary, V8DailyVitalsSyncPayload, V8DeviceInfo, V8HistoryBucket, V8VitalSample } from './models';
+import type {
+  V8DailyVitalSummary,
+  V8DeviceInfo,
+  V8HistoryBucket,
+  V8VitalSample,
+  V8WebVitalSummary,
+  V8WebVitalsSyncPayload,
+} from './models';
 import { parseV8Payload } from './parser';
+import { normalizeMacAddress } from '../utils/deviceAssignments';
 
 type ParsedData = {
   type: 'parsed' | 'raw';
@@ -80,8 +88,51 @@ const sampleDayKey = (sample: V8VitalSample): string | null => {
   return null;
 };
 
+const subtractDaysYmdUtc = (ymd: string, days: number): string => {
+  const match = ymd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return ymd;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const utcMs = Date.UTC(year, month - 1, day);
+  const shifted = new Date(utcMs - days * 24 * 60 * 60 * 1000);
+  const y = shifted.getUTCFullYear();
+  const m = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const addDaysYmdUtc = (ymd: string, days: number): string => {
+  const match = ymd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return ymd;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const utcMs = Date.UTC(year, month - 1, day);
+  const shifted = new Date(utcMs + days * 24 * 60 * 60 * 1000);
+  const y = shifted.getUTCFullYear();
+  const m = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const diffDaysYmdUtc = (fromYmd: string, toYmd: string): number => {
+  const fromMatch = fromYmd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const toMatch = toYmd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!fromMatch || !toMatch) return 0;
+  const fromMs = Date.UTC(Number(fromMatch[1]), Number(fromMatch[2]) - 1, Number(fromMatch[3]));
+  const toMs = Date.UTC(Number(toMatch[1]), Number(toMatch[2]) - 1, Number(toMatch[3]));
+  return Math.max(0, Math.floor((toMs - fromMs) / (24 * 60 * 60 * 1000)));
+};
+
 const useV8BleManagerInternal = (): V8BleContextValue => {
-  const { selectedSenior, user, syncV8DailyVitals } = useAuth();
+  const {
+    selectedSenior,
+    user,
+    syncV8VitalsByDevice,
+    getAssignedDevicesForSenior,
+    selectedSeniorHandBandMacs,
+  } = useAuth();
   const [devicesById, setDevicesById] = useState<Record<string, V8Device>>({});
   const [connectionStates, setConnectionStates] = useState<Record<string, V8ConnectionState>>({});
   const [scanError, setScanError] = useState<string | null>(null);
@@ -576,24 +627,37 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       spo2Sum: number;
       spo2Count: number;
       spo2Min: number | null;
+      spo2Max: number | null;
       spo2Latest: number | null;
       spo2LatestTs: number;
       hrvSum: number;
       hrvCount: number;
+      hrvMin: number | null;
+      hrvMax: number | null;
       hrvLatest: number | null;
       hrvLatestTs: number;
       sysSum: number;
       diaSum: number;
       bpCount: number;
+      sysMin: number | null;
+      sysMax: number | null;
+      diaMin: number | null;
+      diaMax: number | null;
       sysLatest: number | null;
       diaLatest: number | null;
       bpLatestTs: number;
       tempSum: number;
       tempCount: number;
+      tempMin: number | null;
+      tempMax: number | null;
       tempLatest: number | null;
       tempLatestTs: number;
       stressSum: number;
       stressCount: number;
+      stressMin: number | null;
+      stressMax: number | null;
+      stressLatest: number | null;
+      stressLatestTs: number;
     };
 
     const fromTs = new Date(`${fromDate}T00:00:00`).getTime();
@@ -619,24 +683,37 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         spo2Sum: 0,
         spo2Count: 0,
         spo2Min: null,
+        spo2Max: null,
         spo2Latest: null,
         spo2LatestTs: 0,
         hrvSum: 0,
         hrvCount: 0,
+        hrvMin: null,
+        hrvMax: null,
         hrvLatest: null,
         hrvLatestTs: 0,
         sysSum: 0,
         diaSum: 0,
         bpCount: 0,
+        sysMin: null,
+        sysMax: null,
+        diaMin: null,
+        diaMax: null,
         sysLatest: null,
         diaLatest: null,
         bpLatestTs: 0,
         tempSum: 0,
         tempCount: 0,
+        tempMin: null,
+        tempMax: null,
         tempLatest: null,
         tempLatestTs: 0,
         stressSum: 0,
         stressCount: 0,
+        stressMin: null,
+        stressMax: null,
+        stressLatest: null,
+        stressLatestTs: 0,
       };
       aggs.set(day, created);
       return created;
@@ -665,6 +742,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           agg.spo2Sum += sample.spo2;
           agg.spo2Count += 1;
           agg.spo2Min = agg.spo2Min == null ? sample.spo2 : Math.min(agg.spo2Min, sample.spo2);
+          agg.spo2Max = agg.spo2Max == null ? sample.spo2 : Math.max(agg.spo2Max, sample.spo2);
           if (sampleTs >= agg.spo2LatestTs) {
             agg.spo2LatestTs = sampleTs;
             agg.spo2Latest = sample.spo2;
@@ -673,6 +751,8 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         if (sample.hrv != null) {
           agg.hrvSum += sample.hrv;
           agg.hrvCount += 1;
+          agg.hrvMin = agg.hrvMin == null ? sample.hrv : Math.min(agg.hrvMin, sample.hrv);
+          agg.hrvMax = agg.hrvMax == null ? sample.hrv : Math.max(agg.hrvMax, sample.hrv);
           if (sampleTs >= agg.hrvLatestTs) {
             agg.hrvLatestTs = sampleTs;
             agg.hrvLatest = sample.hrv;
@@ -682,6 +762,10 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           agg.sysSum += sample.systolicBp;
           agg.diaSum += sample.diastolicBp;
           agg.bpCount += 1;
+          agg.sysMin = agg.sysMin == null ? sample.systolicBp : Math.min(agg.sysMin, sample.systolicBp);
+          agg.sysMax = agg.sysMax == null ? sample.systolicBp : Math.max(agg.sysMax, sample.systolicBp);
+          agg.diaMin = agg.diaMin == null ? sample.diastolicBp : Math.min(agg.diaMin, sample.diastolicBp);
+          agg.diaMax = agg.diaMax == null ? sample.diastolicBp : Math.max(agg.diaMax, sample.diastolicBp);
           if (sampleTs >= agg.bpLatestTs) {
             agg.bpLatestTs = sampleTs;
             agg.sysLatest = sample.systolicBp;
@@ -691,6 +775,8 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         if (sample.temperatureC != null) {
           agg.tempSum += sample.temperatureC;
           agg.tempCount += 1;
+          agg.tempMin = agg.tempMin == null ? sample.temperatureC : Math.min(agg.tempMin, sample.temperatureC);
+          agg.tempMax = agg.tempMax == null ? sample.temperatureC : Math.max(agg.tempMax, sample.temperatureC);
           if (sampleTs >= agg.tempLatestTs) {
             agg.tempLatestTs = sampleTs;
             agg.tempLatest = sample.temperatureC;
@@ -699,6 +785,12 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         if (sample.stress != null) {
           agg.stressSum += sample.stress;
           agg.stressCount += 1;
+          agg.stressMin = agg.stressMin == null ? sample.stress : Math.min(agg.stressMin, sample.stress);
+          agg.stressMax = agg.stressMax == null ? sample.stress : Math.max(agg.stressMax, sample.stress);
+          if (sampleTs >= agg.stressLatestTs) {
+            agg.stressLatestTs = sampleTs;
+            agg.stressLatest = sample.stress;
+          }
         }
 
         if (key === 'totalActivity') {
@@ -738,16 +830,28 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         heartRateLatest: day.hrLatest,
         spo2Avg: day.spo2Count > 0 ? Math.round(day.spo2Sum / day.spo2Count) : null,
         spo2Min: day.spo2Min,
+        spo2Max: day.spo2Max,
         spo2Latest: day.spo2Latest,
         hrvAvg: day.hrvCount > 0 ? Math.round(day.hrvSum / day.hrvCount) : null,
+        hrvMin: day.hrvMin,
+        hrvMax: day.hrvMax,
         hrvLatest: day.hrvLatest,
+        systolicBpMin: day.sysMin,
+        systolicBpMax: day.sysMax,
         systolicBpAvg: day.bpCount > 0 ? Math.round(day.sysSum / day.bpCount) : null,
+        diastolicBpMin: day.diaMin,
+        diastolicBpMax: day.diaMax,
         diastolicBpAvg: day.bpCount > 0 ? Math.round(day.diaSum / day.bpCount) : null,
         systolicBpLatest: day.sysLatest,
         diastolicBpLatest: day.diaLatest,
+        temperatureMinC: day.tempMin,
+        temperatureMaxC: day.tempMax,
         temperatureAvgC: day.tempCount > 0 ? Number((day.tempSum / day.tempCount).toFixed(1)) : null,
         temperatureLatestC: day.tempLatest,
+        stressMin: day.stressMin,
+        stressMax: day.stressMax,
         stressAvg: day.stressCount > 0 ? Math.round(day.stressSum / day.stressCount) : null,
+        stressLatest: day.stressLatest,
       }));
   }, [v8Native]);
 
@@ -760,23 +864,148 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     if (!seniorId) {
       throw new Error('Select a senior before syncing vitals.');
     }
-    const payload: V8DailyVitalsSyncPayload = {
-      seniorId,
-      platform: Platform.OS === 'ios' ? 'ios' : 'android',
-      syncedAt: Date.now(),
-      fromDate,
-      toDate,
-      device: {
-        imei: deviceInfo.imei,
-        mac: deviceInfo.mac,
-        deviceName: deviceInfo.deviceName,
-        firmwareVersion: deviceInfo.firmwareVersion,
-      },
-      days,
+    const connectedMac = normalizeMacAddress(deviceInfo.mac);
+    if (!connectedMac) {
+      throw new Error('Connected Hand Band MAC is unavailable. Open Manage and refresh device info.');
+    }
+
+    const seniorAssignedMacs = selectedSeniorHandBandMacs
+      .map(value => normalizeMacAddress(value))
+      .filter((value): value is string => !!value);
+    const ownsConnectedMac = seniorAssignedMacs.includes(connectedMac);
+    if (!ownsConnectedMac) {
+      throw new Error('This Hand Band is not assigned to the selected senior. Sync is blocked.');
+    }
+
+    const assignedDevices = await getAssignedDevicesForSenior(seniorId);
+    const assignedMacDebug = assignedDevices.map(device => ({
+      deviceId: device.deviceId,
+      deviceIdentifier: device.deviceIdentifier,
+      normalizedIdentifier: normalizeMacAddress(device.deviceIdentifier),
+      status: device.status,
+    }));
+    console.log('[V8 Sync Debug] Candidate assigned devices:', assignedMacDebug);
+
+    const matchedAssigned = assignedDevices.find(device =>
+      normalizeMacAddress(device.deviceIdentifier) === connectedMac,
+    );
+    const deviceUUID = matchedAssigned?.deviceId?.trim();
+    if (!deviceUUID) {
+      throw new Error('Assigned Hand Band device UUID was not found for selected senior.');
+    }
+
+    const allVitalSummaries: V8WebVitalSummary[] = days.map(day => ({
+      recordDate: day.date,
+      steps: day.steps,
+      distanceKm: day.distanceKm,
+      caloriesKcal: day.caloriesKcal,
+      exerciseMinutes: day.exerciseMinutes,
+      activeMinutes: day.activeMinutes,
+      goalPercent: day.goalPercent,
+      hrMin: day.heartRateMin,
+      hrMax: day.heartRateMax,
+      hrAvg: day.heartRateAvg,
+      hrLatest: day.heartRateLatest,
+      spo2Min: day.spo2Min,
+      spo2Max: day.spo2Max ?? null,
+      spo2Avg: day.spo2Avg,
+      spo2Latest: day.spo2Latest,
+      hrvMin: day.hrvMin ?? null,
+      hrvMax: day.hrvMax ?? null,
+      hrvAvg: day.hrvAvg,
+      hrvLatest: day.hrvLatest,
+      systolicBpMin: day.systolicBpMin ?? null,
+      systolicBpMax: day.systolicBpMax ?? null,
+      systolicBpAvg: day.systolicBpAvg,
+      systolicBpLatest: day.systolicBpLatest,
+      diastolicBpMin: day.diastolicBpMin ?? null,
+      diastolicBpMax: day.diastolicBpMax ?? null,
+      diastolicBpAvg: day.diastolicBpAvg,
+      diastolicBpLatest: day.diastolicBpLatest,
+      tempMin: day.temperatureMinC ?? null,
+      tempMax: day.temperatureMaxC ?? null,
+      tempAvg: day.temperatureAvgC,
+      tempLatest: day.temperatureLatestC,
+      stressMin: day.stressMin ?? null,
+      stressMax: day.stressMax ?? null,
+      stressAvg: day.stressAvg,
+      stressLatest: day.stressLatest ?? null,
+    }));
+
+    const requestedSyncDays = Math.max(1, diffDaysYmdUtc(fromDate, toDate));
+    const syncDays = requestedSyncDays;
+    const syncFromComputed = subtractDaysYmdUtc(toDate, syncDays);
+    const byRecordDate = new Map(allVitalSummaries.map(summary => [summary.recordDate, summary]));
+    const effectiveSummaries: V8WebVitalSummary[] = Array.from({ length: syncDays }, (_, i) => {
+      const date = addDaysYmdUtc(syncFromComputed, i);
+      const row = byRecordDate.get(date);
+      if (row) {
+        return row;
+      }
+      return {
+        recordDate: date,
+        steps: null,
+        distanceKm: null,
+        caloriesKcal: null,
+        exerciseMinutes: null,
+        activeMinutes: null,
+        goalPercent: null,
+        hrMin: null,
+        hrMax: null,
+        hrAvg: null,
+        hrLatest: null,
+        spo2Min: null,
+        spo2Max: null,
+        spo2Avg: null,
+        spo2Latest: null,
+        hrvMin: null,
+        hrvMax: null,
+        hrvAvg: null,
+        hrvLatest: null,
+        systolicBpMin: null,
+        systolicBpMax: null,
+        systolicBpAvg: null,
+        systolicBpLatest: null,
+        diastolicBpMin: null,
+        diastolicBpMax: null,
+        diastolicBpAvg: null,
+        diastolicBpLatest: null,
+        tempMin: null,
+        tempMax: null,
+        tempAvg: null,
+        tempLatest: null,
+        stressMin: null,
+        stressMax: null,
+        stressAvg: null,
+        stressLatest: null,
+      };
+    });
+
+    const webPayload: V8WebVitalsSyncPayload = {
+      deviceUUID,
+      syncDays,
+      syncFrom: syncFromComputed,
+      syncTo: toDate,
+      vitalSummaries: effectiveSummaries,
     };
-    await syncV8DailyVitals(seniorId, payload);
+
+    console.log('[V8 Sync Debug] Sync request info:', {
+      endpoint: '/api/v1/vitals/sync',
+      seniorId,
+      connectedMac,
+      selectedSeniorHandBandMacs,
+      resolvedDeviceUUID: deviceUUID,
+      syncDays: webPayload.syncDays,
+      syncFrom: webPayload.syncFrom,
+      syncTo: webPayload.syncTo,
+      rows: webPayload.vitalSummaries.length,
+      firstRecordDate: webPayload.vitalSummaries[0]?.recordDate ?? null,
+      lastRecordDate: webPayload.vitalSummaries[webPayload.vitalSummaries.length - 1]?.recordDate ?? null,
+    });
+
+    await syncV8VitalsByDevice(webPayload);
     return { days: days.length };
-  }, [deviceInfo.deviceName, deviceInfo.firmwareVersion, deviceInfo.imei, deviceInfo.mac, selectedSenior?.userId, syncV8DailyVitals, user?.role, user?.user_id]);
+  }, [deviceInfo.mac, getAssignedDevicesForSenior, selectedSenior?.userId, selectedSeniorHandBandMacs, syncV8VitalsByDevice, user?.role, user?.user_id]);
 
   const syncVitalsRangeToBackend = useCallback(async (fromDate: string, toDate: string): Promise<{ days: number }> => {
     const days = await buildDailyVitalsRange(fromDate, toDate);

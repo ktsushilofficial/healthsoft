@@ -364,6 +364,7 @@ const HomeScreen = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [guardianWelcomeVisible, setGuardianWelcomeVisible] = useState(false);
   const shownGuardianWelcomeForUser = useRef<string | null>(null);
+  const pendingSeniorPickerOpenRef = useRef(false);
   const isMountedRef = useRef(true);
   const dashboardRequestIdRef = useRef(0);
   const lastLoadedDashboardContextKeyRef = useRef<string>('');
@@ -629,6 +630,33 @@ const HomeScreen = () => {
       return () => clearInterval(intervalId);
     }, [dashboardContextKey, fetchDashboardData, showTelemetryBar])
   );
+
+  const openSeniorSelectionModal = useCallback(() => {
+    if (!isCaretaker || seniors.length === 0) {
+      return;
+    }
+
+    if (guardianWelcomeVisible) {
+      pendingSeniorPickerOpenRef.current = true;
+      setGuardianWelcomeVisible(false);
+      return;
+    }
+
+    setModalVisible(true);
+  }, [guardianWelcomeVisible, isCaretaker, seniors.length]);
+
+  useEffect(() => {
+    if (guardianWelcomeVisible) {
+      return;
+    }
+    if (!pendingSeniorPickerOpenRef.current) {
+      return;
+    }
+    pendingSeniorPickerOpenRef.current = false;
+    if (isCaretaker && seniors.length > 0) {
+      setModalVisible(true);
+    }
+  }, [guardianWelcomeVisible, isCaretaker, seniors.length]);
 
   useEffect(() => {
     if (!user || user.role !== GUARDIAN_ROLE) {
@@ -898,7 +926,8 @@ const HomeScreen = () => {
       void selectSenior(seniors[0].userId)
         .then(() => setModalVisible(false))
         .catch(() => {
-          setModalVisible(false);
+          // Keep the picker reachable when automatic selection fails.
+          setModalVisible(true);
         });
       return;
     }
@@ -1057,12 +1086,8 @@ const HomeScreen = () => {
           {isCaretaker && (
             <TouchableOpacity
               style={styles.headerRight}
-              onPress={() => {
-                if (seniors.length > 1) {
-                  setModalVisible(true);
-                }
-              }}
-              disabled={seniors.length <= 1}
+              onPress={openSeniorSelectionModal}
+              disabled={seniors.length === 0}
             >
               <View style={{ marginRight: 8, alignItems: 'flex-end' }}>
                 <Text style={{ fontSize: 14, fontWeight: '600', color: '#333' }}>
@@ -1199,7 +1224,7 @@ const HomeScreen = () => {
                 {showGuardianSelectionButton ? (
                   <TouchableOpacity
                     style={styles.guardianSelectionButton}
-                    onPress={() => setModalVisible(true)}
+                    onPress={openSeniorSelectionModal}
                     activeOpacity={0.85}
                   >
                     <Text style={styles.guardianSelectionButtonText}>Open senior selection</Text>

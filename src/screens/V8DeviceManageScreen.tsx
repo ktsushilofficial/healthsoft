@@ -116,6 +116,7 @@ const V8DeviceManageScreen = () => {
   const [refreshingLive, setRefreshingLive] = useState(false);
   const [rangeVitalsFetching, setRangeVitalsFetching] = useState(false);
   const [backendSyncing, setBackendSyncing] = useState(false);
+  const [todaySyncing, setTodaySyncing] = useState(false);
   const [fromDate, setFromDate] = useState(() => {
     const d = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000);
     return toYmd(d);
@@ -239,6 +240,39 @@ const V8DeviceManageScreen = () => {
       setRangeVitalsFetching(false);
     }
   }, [buildDailyVitalsRange, currentRangeKey, fromDate, toDate]);
+
+  const handleFetchAndSyncToday = useCallback(async () => {
+    if (!connected) {
+      setActionStatus('Connect the hand band before syncing today data.');
+      return;
+    }
+
+    const today = toYmd(new Date());
+    setTodaySyncing(true);
+    setActionStatus(null);
+
+    try {
+      setFromDate(today);
+      setToDate(today);
+
+      const todayRows = await buildDailyVitalsRange(today, today);
+      setFetchedVitalsRows(todayRows);
+      setFetchedVitalsRangeKey(`${today}|${today}`);
+
+      const exactTodayRows = todayRows.filter(row => row.date === today);
+      const rowsToSync = exactTodayRows.length > 0 ? exactTodayRows : todayRows;
+      if (rowsToSync.length === 0) {
+        throw new Error('No today vitals data available to sync.');
+      }
+
+      const result = await syncDailyVitalsToBackend(today, today, rowsToSync);
+      setActionStatus(`Today vitals synced to backend for ${result.days} day(s)`);
+    } catch (error) {
+      setActionStatus(error instanceof Error ? error.message : 'Failed to fetch and sync today vitals');
+    } finally {
+      setTodaySyncing(false);
+    }
+  }, [buildDailyVitalsRange, connected, syncDailyVitalsToBackend]);
 
   const vitalsRowsForTable = useMemo(
     () => [...fetchedVitalsRows].sort((a, b) => b.date.localeCompare(a.date)),
@@ -574,6 +608,20 @@ const V8DeviceManageScreen = () => {
             </Text>
           </TouchableOpacity>
 
+          <TouchableOpacity
+            style={[s.todaySyncBtn, (!connected || todaySyncing || rangeVitalsFetching || backendSyncing) ? s.disabled : null]}
+            disabled={!connected || todaySyncing || rangeVitalsFetching || backendSyncing}
+            onPress={handleFetchAndSyncToday}
+            activeOpacity={0.7}
+          >
+            {todaySyncing
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Icon name="flash-outline" size={18} color="#fff" />}
+            <Text style={s.syncBtnText}>
+              {todaySyncing ? 'Syncing Today...' : 'Fetch + Sync Today Data'}
+            </Text>
+          </TouchableOpacity>
+
           <Text style={s.rangeHintText}>
             {hasFetchedVitalsForCurrentRange
               ? `Fetched vitals rows: ${fetchedVitalsRows.length}. Review table below, then sync.`
@@ -776,6 +824,11 @@ const s = StyleSheet.create({
     flexDirection: 'row', justifyContent: 'center',
   },
   fetchVitalsBtn: {
+    marginTop: 8, backgroundColor: '#2F8A66', borderRadius: 16,
+    paddingVertical: 12, alignItems: 'center',
+    flexDirection: 'row', justifyContent: 'center',
+  },
+  todaySyncBtn: {
     marginTop: 8, backgroundColor: '#2F8A66', borderRadius: 16,
     paddingVertical: 12, alignItems: 'center',
     flexDirection: 'row', justifyContent: 'center',

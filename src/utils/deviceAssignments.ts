@@ -60,7 +60,15 @@ function normalizeImei(value?: string | null): string | null {
 function normalizeMac(value?: string | null): string | null {
   if (!value) return null;
   const hexOnly = value.replace(/[^0-9a-fA-F]/g, '').toUpperCase();
-  return hexOnly.length > 0 ? hexOnly : null;
+  return hexOnly.length === 12 ? hexOnly : null;
+}
+
+export function normalizeMacAddress(value?: string | null): string | null {
+  return normalizeMac(value);
+}
+
+export function isMacAddressLike(value?: string | null): boolean {
+  return normalizeMac(value) !== null;
 }
 
 function normalizeLabel(value?: string | null): string | null {

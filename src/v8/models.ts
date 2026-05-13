@@ -57,6 +57,18 @@ export type V8DailyVitalSummary = {
   temperatureAvgC: number | null;
   temperatureLatestC: number | null;
   stressAvg: number | null;
+  stressLatest?: number | null;
+  spo2Max?: number | null;
+  hrvMin?: number | null;
+  hrvMax?: number | null;
+  systolicBpMin?: number | null;
+  systolicBpMax?: number | null;
+  diastolicBpMin?: number | null;
+  diastolicBpMax?: number | null;
+  temperatureMinC?: number | null;
+  temperatureMaxC?: number | null;
+  stressMin?: number | null;
+  stressMax?: number | null;
 };
 
 export type V8DailyVitalsSyncPayload = {
@@ -72,4 +84,50 @@ export type V8DailyVitalsSyncPayload = {
     firmwareVersion: string | null;
   };
   days: V8DailyVitalSummary[];
+};
+
+export type V8WebVitalSummary = {
+  recordDate: string;
+  steps: number | null;
+  distanceKm: number | null;
+  caloriesKcal: number | null;
+  exerciseMinutes: number | null;
+  activeMinutes: number | null;
+  goalPercent: number | null;
+  hrMin: number | null;
+  hrMax: number | null;
+  hrAvg: number | null;
+  hrLatest: number | null;
+  spo2Min: number | null;
+  spo2Max: number | null;
+  spo2Avg: number | null;
+  spo2Latest: number | null;
+  hrvMin: number | null;
+  hrvMax: number | null;
+  hrvAvg: number | null;
+  hrvLatest: number | null;
+  systolicBpMin: number | null;
+  systolicBpMax: number | null;
+  systolicBpAvg: number | null;
+  systolicBpLatest: number | null;
+  diastolicBpMin: number | null;
+  diastolicBpMax: number | null;
+  diastolicBpAvg: number | null;
+  diastolicBpLatest: number | null;
+  tempMin: number | null;
+  tempMax: number | null;
+  tempAvg: number | null;
+  tempLatest: number | null;
+  stressMin: number | null;
+  stressMax: number | null;
+  stressAvg: number | null;
+  stressLatest: number | null;
+};
+
+export type V8WebVitalsSyncPayload = {
+  deviceUUID: string;
+  syncDays: number;
+  syncFrom: string;
+  syncTo: string;
+  vitalSummaries: V8WebVitalSummary[];
 };
