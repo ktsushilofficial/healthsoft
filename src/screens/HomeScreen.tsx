@@ -365,6 +365,7 @@ const HomeScreen = () => {
   const [guardianWelcomeVisible, setGuardianWelcomeVisible] = useState(false);
   const shownGuardianWelcomeForUser = useRef<string | null>(null);
   const pendingSeniorPickerOpenRef = useRef(false);
+  const pendingGuardianSelectionPromptRef = useRef(false);
   const isMountedRef = useRef(true);
   const dashboardRequestIdRef = useRef(0);
   const lastLoadedDashboardContextKeyRef = useRef<string>('');
@@ -914,6 +915,16 @@ const HomeScreen = () => {
   useEffect(() => {
     if (!isCaretaker) {
       setModalVisible(false);
+      pendingGuardianSelectionPromptRef.current = false;
+      return;
+    }
+
+    if (user?.role === GUARDIAN_ROLE && pendingGuardianSelectionPromptRef.current && seniors.length > 1) {
+      if (guardianWelcomeVisible) {
+        return;
+      }
+      pendingGuardianSelectionPromptRef.current = false;
+      setModalVisible(true);
       return;
     }
 
@@ -933,7 +944,7 @@ const HomeScreen = () => {
     }
 
     setModalVisible(seniors.length > 1);
-  }, [selectedSenior, seniors, isCaretaker, selectSenior]);
+  }, [selectedSenior, seniors, isCaretaker, selectSenior, user?.role, guardianWelcomeVisible]);
 
   // Only rotate hero images and tick the clock while this screen is visible,
   // so we don't trigger re-renders when the user is on another tab.
@@ -959,6 +970,7 @@ const HomeScreen = () => {
     if (!user || user.role !== GUARDIAN_ROLE || !user.user_id) {
       shownGuardianWelcomeForUser.current = null;
       setGuardianWelcomeVisible(false);
+      pendingGuardianSelectionPromptRef.current = false;
     }
   }, [user]);
 
@@ -973,6 +985,9 @@ const HomeScreen = () => {
       }
 
       shownGuardianWelcomeForUser.current = user.user_id;
+      // Keep this pending until we can confirm senior count after fresh login data loads.
+      // This prevents missing the picker when seniors arrive after the welcome modal opens.
+      pendingGuardianSelectionPromptRef.current = true;
       setGuardianWelcomeVisible(true);
     }, [user])
   );

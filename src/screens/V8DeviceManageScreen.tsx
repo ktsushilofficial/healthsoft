@@ -14,6 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { useAuth } from '../context/AuthContext';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import type { V8DailyVitalSummary } from '../v8/models';
 
@@ -23,6 +24,8 @@ const fmt = (v: unknown, suffix = '') =>
   v != null && v !== '' ? `${v}${suffix}` : '—';
 const fmtNum = (v: number | null | undefined, decimals = 0, suffix = '') =>
   v != null && !Number.isNaN(v) ? `${Number(v).toFixed(decimals)}${suffix}` : '—';
+const MAX_RANGE_DAYS = 31;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const toYmd = (date: Date) => date.toISOString().slice(0, 10);
 const parseYmdDate = (value: string): Date | null => {
   const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -30,6 +33,18 @@ const parseYmdDate = (value: string): Date | null => {
   const parsed = new Date(`${match[1]}-${match[2]}-${match[3]}T00:00:00`);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
+const startOfDayMs = (date: Date) => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+const addDays = (date: Date, days: number) => new Date(startOfDayMs(date) + (days * MS_PER_DAY));
+const clampDate = (value: Date, min?: Date, max?: Date) => {
+  const time = startOfDayMs(value);
+  const minTime = min ? startOfDayMs(min) : null;
+  const maxTime = max ? startOfDayMs(max) : null;
+  if (minTime != null && time < minTime) return min;
+  if (maxTime != null && time > maxTime) return max;
+  return value;
+};
+const rangeDaysBetween = (from: Date, to: Date) =>
+  Math.round((startOfDayMs(to) - startOfDayMs(from)) / MS_PER_DAY);
 
 const sampleDayKey = (sample: { timestamp: string | null; receivedAt: number | null }): string | null => {
   const raw = sample.timestamp?.trim();
@@ -97,6 +112,7 @@ const ActionBtn = ({
 /* ── main screen ───────────────────────────────────────── */
 
 const V8DeviceManageScreen = () => {
+  const { user } = useAuth();
   const normalizeId = (id?: string | null) => (id ?? '').trim().toLowerCase();
   const navigation = useNavigation();
   const route = useRoute();
@@ -112,6 +128,7 @@ const V8DeviceManageScreen = () => {
 
   const state = connectionStates[normalizeId(deviceId)] ?? 'disconnected';
   const connected = state === 'connected';
+  const isSeniorUser = user?.role === 'SENIOR';
 
   const [refreshingLive, setRefreshingLive] = useState(false);
   const [rangeVitalsFetching, setRangeVitalsFetching] = useState(false);
@@ -132,21 +149,46 @@ const V8DeviceManageScreen = () => {
 
   const fromDateValue = useMemo(() => parseYmdDate(fromDate) ?? new Date(), [fromDate]);
   const toDateValue = useMemo(() => parseYmdDate(toDate) ?? new Date(), [toDate]);
+  const fromPickerMinDate = useMemo(
+    () => addDays(toDateValue, -MAX_RANGE_DAYS),
+    [toDateValue],
+  );
+  const toPickerMaxDate = useMemo(
+    () => addDays(fromDateValue, MAX_RANGE_DAYS),
+    [fromDateValue],
+  );
+  const isRangeWithinOneMonth = useMemo(
+    () => {
+      const diffDays = rangeDaysBetween(fromDateValue, toDateValue);
+      return diffDays >= 0 && diffDays <= MAX_RANGE_DAYS;
+    },
+    [fromDateValue, toDateValue],
+  );
 
   const applyPickedDate = useCallback((target: 'from' | 'to', value: Date) => {
-    const normalized = toYmd(value);
     if (target === 'from') {
-      setFromDate(normalized);
-      if (normalized > toDate) {
-        setToDate(normalized);
+      const maxFrom = toDateValue;
+      const minFrom = addDays(maxFrom, -MAX_RANGE_DAYS);
+      const nextFromValue = clampDate(value, minFrom, maxFrom) ?? value;
+      const wasClamped = startOfDayMs(nextFromValue) !== startOfDayMs(value);
+
+      setFromDate(toYmd(nextFromValue));
+      if (wasClamped) {
+        setActionStatus('Date range is limited to one month.');
       }
       return;
     }
-    setToDate(normalized);
-    if (normalized < fromDate) {
-      setFromDate(normalized);
+
+    const minTo = fromDateValue;
+    const maxTo = addDays(minTo, MAX_RANGE_DAYS);
+    const nextToValue = clampDate(value, minTo, maxTo) ?? value;
+    const wasClamped = startOfDayMs(nextToValue) !== startOfDayMs(value);
+
+    setToDate(toYmd(nextToValue));
+    if (wasClamped) {
+      setActionStatus('Date range is limited to one month.');
     }
-  }, [fromDate, toDate]);
+  }, [fromDateValue, toDateValue]);
 
   const openDatePicker = useCallback((target: 'from' | 'to') => {
     setPickerTarget(target);
@@ -206,6 +248,14 @@ const V8DeviceManageScreen = () => {
   }, [requestBattery, requestDeviceMac, requestLiveSnapshot, requestPersonalInfo]);
 
   const handleSyncVitalsToBackend = useCallback(async () => {
+    if (!isSeniorUser) {
+      setActionStatus('Only senior users can sync wrist band data.');
+      return;
+    }
+    if (!isRangeWithinOneMonth) {
+      setActionStatus('Please select a date range within one month to sync.');
+      return;
+    }
     if (fetchedVitalsRangeKey !== currentRangeKey) {
       setActionStatus('Fetch vitals for selected date range first, then sync.');
       return;
@@ -224,9 +274,17 @@ const V8DeviceManageScreen = () => {
     } finally {
       setBackendSyncing(false);
     }
-  }, [currentRangeKey, fetchedVitalsRangeKey, fetchedVitalsRows, fromDate, syncDailyVitalsToBackend, toDate]);
+  }, [currentRangeKey, fetchedVitalsRangeKey, fetchedVitalsRows, fromDate, isRangeWithinOneMonth, isSeniorUser, syncDailyVitalsToBackend, toDate]);
 
   const handleFetchVitalsRange = useCallback(async () => {
+    if (!isSeniorUser) {
+      setActionStatus('Only senior users can sync wrist band data.');
+      return;
+    }
+    if (!isRangeWithinOneMonth) {
+      setActionStatus('Please select a date range within one month to fetch vitals.');
+      return;
+    }
     setRangeVitalsFetching(true);
     setActionStatus(null);
     try {
@@ -239,9 +297,13 @@ const V8DeviceManageScreen = () => {
     } finally {
       setRangeVitalsFetching(false);
     }
-  }, [buildDailyVitalsRange, currentRangeKey, fromDate, toDate]);
+  }, [buildDailyVitalsRange, currentRangeKey, fromDate, isRangeWithinOneMonth, isSeniorUser, toDate]);
 
   const handleFetchAndSyncToday = useCallback(async () => {
+    if (!isSeniorUser) {
+      setActionStatus('Only senior users can sync wrist band data.');
+      return;
+    }
     if (!connected) {
       setActionStatus('Connect the hand band before syncing today data.');
       return;
@@ -272,7 +334,7 @@ const V8DeviceManageScreen = () => {
     } finally {
       setTodaySyncing(false);
     }
-  }, [buildDailyVitalsRange, connected, syncDailyVitalsToBackend]);
+  }, [buildDailyVitalsRange, connected, isSeniorUser, syncDailyVitalsToBackend]);
 
   const vitalsRowsForTable = useMemo(
     () => [...fetchedVitalsRows].sort((a, b) => b.date.localeCompare(a.date)),
@@ -281,7 +343,7 @@ const V8DeviceManageScreen = () => {
   const hasFetchedVitalsForCurrentRange =
     fetchedVitalsRangeKey === currentRangeKey;
   const canSyncFetchedVitals =
-    connected && hasFetchedVitalsForCurrentRange && fetchedVitalsRows.length > 0 && !backendSyncing;
+    isSeniorUser && connected && hasFetchedVitalsForCurrentRange && fetchedVitalsRows.length > 0 && !backendSyncing;
 
   const batteryIcon = useMemo(() => {
     const pct = deviceInfo.batteryPercent;
@@ -500,6 +562,7 @@ const V8DeviceManageScreen = () => {
           <Text style={s.sectionDescription}>
             Select date range, fetch daily vitals table, review rows, then sync.
           </Text>
+          <Text style={s.sectionMeta}>Maximum selectable range is one month.</Text>
 
           <View style={s.rangeInputRow}>
             <View style={s.rangeInputWrap}>
@@ -561,8 +624,8 @@ const V8DeviceManageScreen = () => {
                     themeVariant="light"
                     accentColor="#2F8A66"
                     textColor="#1F1F1F"
-                    maximumDate={pickerTarget === 'from' ? toDateValue : undefined}
-                    minimumDate={pickerTarget === 'to' ? fromDateValue : undefined}
+                    maximumDate={pickerTarget === 'from' ? toDateValue : toPickerMaxDate}
+                    minimumDate={pickerTarget === 'to' ? fromDateValue : fromPickerMinDate}
                     onChange={handleDatePickerChange}
                     style={s.iosDatePicker}
                   />
@@ -576,15 +639,15 @@ const V8DeviceManageScreen = () => {
               value={pickerTarget === 'from' ? fromDateValue : toDateValue}
               mode="date"
               display="default"
-              maximumDate={pickerTarget === 'from' ? toDateValue : undefined}
-              minimumDate={pickerTarget === 'to' ? fromDateValue : undefined}
+              maximumDate={pickerTarget === 'from' ? toDateValue : toPickerMaxDate}
+              minimumDate={pickerTarget === 'to' ? fromDateValue : fromPickerMinDate}
               onChange={handleDatePickerChange}
             />
           ) : null}
 
           <TouchableOpacity
-            style={[s.fetchVitalsBtn, (!connected || rangeVitalsFetching) ? s.disabled : null]}
-            disabled={!connected || rangeVitalsFetching}
+            style={[s.fetchVitalsBtn, (!isSeniorUser || !connected || rangeVitalsFetching) ? s.disabled : null]}
+            disabled={!isSeniorUser || !connected || rangeVitalsFetching}
             onPress={handleFetchVitalsRange}
             activeOpacity={0.7}
           >
@@ -609,8 +672,8 @@ const V8DeviceManageScreen = () => {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[s.todaySyncBtn, (!connected || todaySyncing || rangeVitalsFetching || backendSyncing) ? s.disabled : null]}
-            disabled={!connected || todaySyncing || rangeVitalsFetching || backendSyncing}
+            style={[s.todaySyncBtn, (!isSeniorUser || !connected || todaySyncing || rangeVitalsFetching || backendSyncing) ? s.disabled : null]}
+            disabled={!isSeniorUser || !connected || todaySyncing || rangeVitalsFetching || backendSyncing}
             onPress={handleFetchAndSyncToday}
             activeOpacity={0.7}
           >
@@ -623,7 +686,9 @@ const V8DeviceManageScreen = () => {
           </TouchableOpacity>
 
           <Text style={s.rangeHintText}>
-            {hasFetchedVitalsForCurrentRange
+            {!isSeniorUser
+              ? 'Only senior users can fetch and sync wrist band data.'
+              : hasFetchedVitalsForCurrentRange
               ? `Fetched vitals rows: ${fetchedVitalsRows.length}. Review table below, then sync.`
               : 'Fetch vitals table first for this date range, then sync to backend.'}
           </Text>

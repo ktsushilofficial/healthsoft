@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -25,13 +25,10 @@ type VitalsSummaryRow = {
 };
 
 type ActivityRangeKey =
-  | 'last_1_day'
-  | 'last_2_days'
-  | 'last_7_days'
+  | 'today'
+  | 'yesterday'
   | 'this_week'
-  | 'this_month'
-  | 'last_month'
-  | 'entire';
+  | 'last_one_month';
 
 type ActivityRangeOption = {
   key: ActivityRangeKey;
@@ -40,13 +37,10 @@ type ActivityRangeOption = {
 };
 
 const RANGE_OPTIONS: ActivityRangeOption[] = [
-  { key: 'last_1_day', label: '1 Day', queryDays: 1 },
-  { key: 'last_2_days', label: '2 Days', queryDays: 2 },
-  { key: 'last_7_days', label: '7 Days', queryDays: 7 },
+  { key: 'today', label: 'Today', queryDays: 1 },
+  { key: 'yesterday', label: 'Yesterday', queryDays: 2 },
   { key: 'this_week', label: 'This Week', queryDays: 7 },
-  { key: 'this_month', label: 'This Month', queryDays: 31 },
-  { key: 'last_month', label: 'Last Month', queryDays: 62 },
-  { key: 'entire', label: 'Entire', queryDays: 365 },
+  { key: 'last_one_month', label: 'Last 1 Month', queryDays: 31 },
 ];
 
 function ymdDate(value: string): Date | null {
@@ -123,7 +117,12 @@ const ActivityScreen = () => {
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<VitalsSummaryRow[]>([]);
   const [activeDeviceUuid, setActiveDeviceUuid] = useState<string | null>(null);
-  const [selectedRange, setSelectedRange] = useState<ActivityRangeKey>('last_1_day');
+  const [selectedRange, setSelectedRange] = useState<ActivityRangeKey>('today');
+  const getAssignedDevicesForSeniorRef = useRef(getAssignedDevicesForSenior);
+  const getV8VitalsSummaryRef = useRef(getV8VitalsSummary);
+  const deviceUuidBySeniorRef = useRef<Record<string, string>>({});
+  const rowsCacheRef = useRef<Record<string, { rows: VitalsSummaryRow[]; deviceUuid: string }>>({});
+  const inFlightRequestKeyRef = useRef<string | null>(null);
 
   const activeSeniorId = useMemo(() => {
     if (isCaretaker) {
@@ -136,6 +135,16 @@ const ActivityScreen = () => {
     () => RANGE_OPTIONS.find(option => option.key === selectedRange) ?? RANGE_OPTIONS[0],
     [selectedRange],
   );
+
+  useEffect(() => {
+    getAssignedDevicesForSeniorRef.current = getAssignedDevicesForSenior;
+    getV8VitalsSummaryRef.current = getV8VitalsSummary;
+  }, [getAssignedDevicesForSenior, getV8VitalsSummary]);
+
+  useEffect(() => {
+    rowsCacheRef.current = {};
+    inFlightRequestKeyRef.current = null;
+  }, [activeSeniorId]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -158,31 +167,56 @@ const ActivityScreen = () => {
           return;
         }
 
+        const requestKey = `${activeSeniorId}:${selectedRangeOption.queryDays}`;
+        const cached = rowsCacheRef.current[requestKey];
+        if (cached) {
+          setError(null);
+          setRows(cached.rows);
+          setActiveDeviceUuid(cached.deviceUuid);
+          setLoading(false);
+          return;
+        }
+        if (inFlightRequestKeyRef.current === requestKey) {
+          return;
+        }
+
+        inFlightRequestKeyRef.current = requestKey;
         setLoading(true);
         setError(null);
 
         try {
-          const assigned = await getAssignedDevicesForSenior(activeSeniorId);
-          const handBandAssignment = assigned.find(
-            device => !!device.deviceId && isMacAddressLike(device.deviceIdentifier),
-          );
-
-          const deviceUUID = handBandAssignment?.deviceId?.trim() ?? '';
+          let deviceUUID = deviceUuidBySeniorRef.current[activeSeniorId]?.trim() ?? '';
+          if (!deviceUUID) {
+            const assigned = await getAssignedDevicesForSeniorRef.current(activeSeniorId);
+            const handBandAssignment = assigned.find(
+              device => !!device.deviceId && isMacAddressLike(device.deviceIdentifier),
+            );
+            deviceUUID = handBandAssignment?.deviceId?.trim() ?? '';
+          }
           if (!deviceUUID) {
             throw new Error('No assigned hand band device found for selected senior.');
           }
+          deviceUuidBySeniorRef.current[activeSeniorId] = deviceUUID;
 
-          const payload = await getV8VitalsSummary(deviceUUID, selectedRangeOption.queryDays);
+          const payload = await getV8VitalsSummaryRef.current(deviceUUID, selectedRangeOption.queryDays);
+          const normalizedRows = normalizeSummaryRows(payload);
 
           if (cancelled) return;
+          rowsCacheRef.current[requestKey] = {
+            rows: normalizedRows,
+            deviceUuid: deviceUUID,
+          };
           setActiveDeviceUuid(deviceUUID);
-          setRows(normalizeSummaryRows(payload));
+          setRows(normalizedRows);
         } catch (e) {
           if (cancelled) return;
           setRows([]);
           setActiveDeviceUuid(null);
           setError(e instanceof Error ? e.message : 'Failed to load activity summary.');
         } finally {
+          if (inFlightRequestKeyRef.current === requestKey) {
+            inFlightRequestKeyRef.current = null;
+          }
           if (!cancelled) {
             setLoading(false);
           }
@@ -194,26 +228,29 @@ const ActivityScreen = () => {
       return () => {
         cancelled = true;
       };
-    }, [activeSeniorId, getAssignedDevicesForSenior, getV8VitalsSummary, isCaretaker, selectedRangeOption.queryDays]),
+    }, [activeSeniorId, isCaretaker, selectedRangeOption.queryDays]),
   );
 
   const visibleRows = useMemo(() => {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
     const startOfWeek = new Date(today);
     startOfWeek.setDate(today.getDate() - today.getDay());
-    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-    const startOfLastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-    const endOfLastMonth = new Date(today.getFullYear(), today.getMonth(), 0);
+    const lastOneMonthStart = new Date(today);
+    lastOneMonthStart.setDate(today.getDate() - 30);
 
     const inRange = (date: Date): boolean => {
       switch (selectedRange) {
+        case 'today':
+          return date.getTime() === today.getTime();
+        case 'yesterday':
+          return date.getTime() === yesterday.getTime();
         case 'this_week':
           return date >= startOfWeek && date <= today;
-        case 'this_month':
-          return date >= startOfMonth && date <= today;
-        case 'last_month':
-          return date >= startOfLastMonth && date <= endOfLastMonth;
+        case 'last_one_month':
+          return date >= lastOneMonthStart && date <= today;
         default:
           return true;
       }
@@ -260,7 +297,11 @@ const ActivityScreen = () => {
                 <TouchableOpacity
                   key={option.key}
                   style={[styles.rangeChip, active ? styles.rangeChipActive : null]}
-                  onPress={() => setSelectedRange(option.key)}
+                  onPress={() => {
+                    if (!active) {
+                      setSelectedRange(option.key);
+                    }
+                  }}
                   activeOpacity={0.8}
                 >
                   <Text style={[styles.rangeChipText, active ? styles.rangeChipTextActive : null]}>
@@ -366,7 +407,7 @@ const ActivityScreen = () => {
           >
             <Icon name="calendar-outline" size={16} color="#F28C28" />
             <Text style={styles.sevenDayBtnText}>
-              {showSevenDayTable ? 'Hide Seven Days Data' : 'Seven Days Data'}
+              {showSevenDayTable ? 'Hide Activity Data' : 'Show Activity Data'}
             </Text>
           </TouchableOpacity>
 

@@ -932,9 +932,10 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       stressLatest: day.stressLatest ?? null,
     }));
 
-    const requestedSyncDays = Math.max(1, diffDaysYmdUtc(fromDate, toDate));
+    // Sync window should be inclusive of both fromDate and toDate.
+    const requestedSyncDays = Math.max(1, diffDaysYmdUtc(fromDate, toDate) + 1);
     const syncDays = requestedSyncDays;
-    const syncFromComputed = subtractDaysYmdUtc(toDate, syncDays);
+    const syncFromComputed = subtractDaysYmdUtc(toDate, syncDays - 1);
     const byRecordDate = new Map(allVitalSummaries.map(summary => [summary.recordDate, summary]));
     const effectiveSummaries: V8WebVitalSummary[] = Array.from({ length: syncDays }, (_, i) => {
       const date = addDaysYmdUtc(syncFromComputed, i);
