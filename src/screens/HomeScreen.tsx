@@ -1227,7 +1227,7 @@ const HomeScreen = () => {
             <Text style={styles.greetingMessage}>
               {bannerDisplayName.subtitleDay
                 ? weekdayLine
-                : `Make today a great one — ${greeting.title.toLowerCase()} from Healthsoft.`}
+                : `Make today a great one — ${greeting.title.toLowerCase()} from Guardians.`}
             </Text>
             {user?.role === GUARDIAN_ROLE ? (
               <View style={styles.guardianSelectionCard}>
