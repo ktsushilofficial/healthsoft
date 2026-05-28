@@ -30,7 +30,6 @@ import {
   mapSeniorDashboardDeviceToSnapshot,
 } from '../utils/mapSeniorDashboardDeviceToSnapshot';
 import { isMacAddressLike } from '../utils/deviceAssignments';
-import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import type { SeniorHomeSnapshot } from '../types/seniorHomeSnapshot';
 
 const HERO_IMAGES = [
@@ -519,7 +518,6 @@ const HomeScreen = () => {
     getAssignedDevicesForSenior,
     getV8VitalsSummary,
   } = useAuth();
-  const { deviceInfo: v8DeviceInfo } = useV8DeviceManager();
   const [modalVisible, setModalVisible] = useState(false);
   const [heroIndex, setHeroIndex] = useState(0);
   const [nowTick, setNowTick] = useState(() => new Date());
@@ -1267,12 +1265,29 @@ const HomeScreen = () => {
   }, [user, guardianSeniorDisplay, selectedSenior, seniors.length]);
 
   const showGuardianSelectionButton = !!user && user.role === GUARDIAN_ROLE && seniors.length > 1;
+  const homeGreetingLine = useMemo(() => {
+    const viewerName = user?.first_name?.trim()
+      ? capitalizeWord(user.first_name.trim())
+      : 'User';
+
+    if (user?.role === SENIOR_ROLE) {
+      return {
+        viewerName,
+        action: 'viewing',
+        target: 'own health dashboard',
+      };
+    }
+
+    return {
+      viewerName,
+      action: 'checking on',
+      target: caretakerHeaderSenior.firstName || 'your loved one',
+    };
+  }, [caretakerHeaderSenior.firstName, user?.first_name, user?.role]);
   const homeHeartValue = formatHomeMetric(todayVitals?.hrAvg);
   const homeStepsValue = formatHomeSteps(todayVitals?.steps);
   const homeBpValue = formatHomeBp(todayVitals);
   const healthCardStatus = formatDeviceActivityStatus(activeDeviceRecord);
-  const v8BatteryValue = formatBatteryPercent(v8DeviceInfo.batteryPercent);
-  const v8BatteryIcon = batteryIconFor(v8DeviceInfo.batteryPercent);
 
   const openLastPositionMap = useCallback(() => {
     const lat = liveSnapshot.latitude;
@@ -1350,11 +1365,11 @@ const HomeScreen = () => {
             {greeting.title},
           </Text>
           <Text style={styles.greetingSub}>
-            {user ? `${user.first_name || 'User'} ` : 'User '}
+            {homeGreetingLine.viewerName}{' '}
             <Text style={styles.greetingDot}>·</Text>
-            <Text style={styles.greetingChecking}> checking on </Text>
+            <Text style={styles.greetingChecking}> {homeGreetingLine.action} </Text>
             <Text style={styles.greetingSeniorName}>
-              {caretakerHeaderSenior.firstName || 'your loved one'}
+              {homeGreetingLine.target}
             </Text>
           </Text>
         </View>
@@ -1437,7 +1452,6 @@ const HomeScreen = () => {
                 dashboardDevices,
                 activeSeniorId: activeDashboardSeniorId || user?.user_id || null,
                 showV8HandBand: selectedSeniorHandBandMacs.length > 0,
-                v8HeartValue: homeHeartValue,
               })
             }
           >
@@ -1509,18 +1523,8 @@ const HomeScreen = () => {
                 <Icon name="heart" size={22} color="#EF4444" />
               </View>
               <View style={styles.deviceRowTextCol}>
-                <Text style={styles.deviceRowName}>V8 Smart Band</Text>
-                <Text style={styles.deviceRowSub}>Heart rate · Live</Text>
-              </View>
-              <View style={styles.deviceRowStatusCol}>
-                <Text style={styles.deviceRowV8HeartText}>
-                  {homeHeartValue}
-                  {homeHeartValue !== NA ? ' bpm' : ''}
-                </Text>
-                <View style={styles.deviceRowBatteryWrap}>
-                  <Icon name={v8BatteryIcon} size={14} color="#8A827A" />
-                  <Text style={styles.deviceRowBatteryText}>{v8BatteryValue}</Text>
-                </View>
+                <Text style={styles.deviceRowName}>Smart Band</Text>
+                <Text style={styles.deviceRowSub}>Heart rate</Text>
               </View>
             </TouchableOpacity>
           )}
@@ -1792,11 +1796,6 @@ const styles = StyleSheet.create({
   },
   deviceRowStatusActive: {
     color: '#10B981',
-  },
-  deviceRowV8HeartText: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#EF4444',
   },
   deviceRowBatteryWrap: {
     flexDirection: 'row',

@@ -13,7 +13,6 @@ import {
   getSeniorDashboardDeviceLabel,
   mapSeniorDashboardDeviceToSnapshot,
 } from '../utils/mapSeniorDashboardDeviceToSnapshot';
-import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import type { SeniorDashboardDeviceRecord } from '../types/seniorDashboard';
 
 const NA = 'NA';
@@ -22,7 +21,6 @@ type HomeDevicesRouteParams = {
   dashboardDevices?: SeniorDashboardDeviceRecord[];
   activeSeniorId?: string | null;
   showV8HandBand?: boolean;
-  v8HeartValue?: string | null;
 };
 
 function capitalizeWord(value: string) {
@@ -97,11 +95,7 @@ const HomeDevicesScreen = () => {
     [params.dashboardDevices],
   );
   const showV8HandBand = params.showV8HandBand === true;
-  const { deviceInfo: v8DeviceInfo } = useV8DeviceManager();
 
-  const v8HeartValue = params.v8HeartValue?.trim() || NA;
-  const v8BatteryValue = formatBatteryPercent(v8DeviceInfo.batteryPercent);
-  const v8BatteryIcon = batteryIconFor(v8DeviceInfo.batteryPercent);
   const hasAnyDevice = dashboardDevices.length > 0 || showV8HandBand;
 
   const pendantRows = useMemo(
@@ -184,18 +178,8 @@ const HomeDevicesScreen = () => {
               <Icon name="heart" size={22} color="#EF4444" />
             </View>
             <View style={styles.deviceRowTextCol}>
-              <Text style={styles.deviceRowName}>V8 Smart Band</Text>
-              <Text style={styles.deviceRowSub}>Heart rate · Live</Text>
-            </View>
-            <View style={styles.deviceRowStatusCol}>
-              <Text style={styles.deviceRowV8HeartText}>
-                {v8HeartValue}
-                {v8HeartValue !== NA ? ' bpm' : ''}
-              </Text>
-              <View style={styles.deviceRowBatteryWrap}>
-                <Icon name={v8BatteryIcon} size={14} color="#8A827A" />
-                <Text style={styles.deviceRowBatteryText}>{v8BatteryValue}</Text>
-              </View>
+              <Text style={styles.deviceRowName}>Smart Band</Text>
+              <Text style={styles.deviceRowSub}>Heart rate</Text>
             </View>
           </TouchableOpacity>
         ) : null}
@@ -304,11 +288,6 @@ const styles = StyleSheet.create({
   },
   deviceRowStatusActive: {
     color: '#10B981',
-  },
-  deviceRowV8HeartText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#EF4444',
   },
   deviceRowBatteryWrap: {
     flexDirection: 'row',
