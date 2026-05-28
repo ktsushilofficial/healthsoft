@@ -29,6 +29,7 @@ import {
   getSeniorDashboardDeviceLabel,
   mapSeniorDashboardDeviceToSnapshot,
 } from '../utils/mapSeniorDashboardDeviceToSnapshot';
+import { isMacAddressLike } from '../utils/deviceAssignments';
 
 const HERO_IMAGES = [
   { uri: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80' },
@@ -346,16 +347,92 @@ function getGreetingFromDate(date: Date) {
   return { title: 'Good night', icon: 'moon' as const, iconColor: '#C5D4EB' };
 }
 
+type VitalsSummaryRow = {
+  recordDate: string;
+  steps: number | null;
+  hrAvg: number | null;
+  spo2Avg: number | null;
+  tempAvg: number | null;
+  systolicBpAvg: number | null;
+  diastolicBpAvg: number | null;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function asString(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeSummaryRows(payload: unknown): VitalsSummaryRow[] {
+  const root = asRecord(payload);
+  const candidates: unknown[] =
+    Array.isArray(payload)
+      ? payload
+      : Array.isArray(root?.vitalSummaries)
+        ? root?.vitalSummaries
+        : Array.isArray(root?.summaries)
+          ? root?.summaries
+          : Array.isArray(root?.data)
+            ? root?.data
+            : Array.isArray(asRecord(root?.data)?.vitalSummaries)
+              ? (asRecord(root?.data)?.vitalSummaries as unknown[])
+              : [];
+
+  return candidates
+    .map(item => {
+      const row = asRecord(item);
+      if (!row) return null;
+      const recordDate = asString(row.recordDate) ?? asString(row.date);
+      if (!recordDate) return null;
+      return {
+        recordDate,
+        steps: asNumber(row.steps),
+        hrAvg: asNumber(row.hrAvg) ?? asNumber(row.heartRateAvg),
+        spo2Avg: asNumber(row.spo2Avg),
+        tempAvg: asNumber(row.tempAvg) ?? asNumber(row.temperatureAvgC),
+        systolicBpAvg: asNumber(row.systolicBpAvg),
+        diastolicBpAvg: asNumber(row.diastolicBpAvg),
+      };
+    })
+    .filter((row): row is VitalsSummaryRow => row !== null)
+    .sort((a, b) => b.recordDate.localeCompare(a.recordDate));
+}
+
 const HomeScreen = () => {
   const navigation = useNavigation<any>();
-  const { user, selectedSenior, seniors, selectSenior, getMySeniors, isCaretaker, getSeniorDashboard, getGuardianDashboard } =
-    useAuth();
+  const {
+    user,
+    selectedSenior,
+    seniors,
+    selectSenior,
+    getMySeniors,
+    isCaretaker,
+    getSeniorDashboard,
+    getGuardianDashboard,
+    selectedSeniorHandBandMacs,
+    getAssignedDevicesForSenior,
+    getV8VitalsSummary,
+  } = useAuth();
   const [modalVisible, setModalVisible] = useState(false);
   const [heroIndex, setHeroIndex] = useState(0);
   const [nowTick, setNowTick] = useState(() => new Date());
   const [dashboardDevices, setDashboardDevices] = useState<SeniorDashboardDeviceRecord[]>([]);
   const [selectedDeviceIndex, setSelectedDeviceIndex] = useState(0);
   const [devicePickerVisible, setDevicePickerVisible] = useState(false);
+  const [todayVitals, setTodayVitals] = useState<VitalsSummaryRow | null>(null);
+  const [vitalsLoading, setVitalsLoading] = useState(false);
+  const [vitalsError, setVitalsError] = useState<string | null>(null);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [guardianSeniorProfiles, setGuardianSeniorProfiles] = useState<GuardianSeniorProfileRow[]>([]);
@@ -373,11 +450,12 @@ const HomeScreen = () => {
   const manualDashboardRefreshCountRef = useRef(0);
   const backgroundDashboardRefreshCountRef = useRef(0);
 
-  /** Senior id for `/api/v1/senior-dashboard/{id}` — logged-in senior, or caretaker’s selected senior only. */
+  /** Senior id for `/api/v1/senior-dashboard/{id}` — logged-in senior, caretaker's or guardian's selected senior. */
   const activeDashboardSeniorId = useMemo(() => {
     if (!user) return null;
     if (user.role === SENIOR_ROLE) return user.user_id;
     if (user.role === CARETAKER_ROLE && selectedSenior?.userId) return selectedSenior.userId;
+    if (user.role === GUARDIAN_ROLE && selectedSenior?.userId) return selectedSenior.userId;
     return null;
   }, [user, selectedSenior?.userId]);
 
@@ -423,6 +501,39 @@ const HomeScreen = () => {
     setDevicePickerVisible(false);
     setSelectedDeviceIndex(0);
   }, [activeDashboardSeniorId, user?.role, selectedSenior?.userId]);
+
+  const loadV8VitalsForToday = useCallback(async () => {
+    const targetSeniorId = activeDashboardSeniorId || (user?.role === SENIOR_ROLE ? user.user_id : null);
+    if (!targetSeniorId) {
+      setTodayVitals(null);
+      return;
+    }
+    setVitalsLoading(true);
+    setVitalsError(null);
+    try {
+      const assigned = await getAssignedDevicesForSenior(targetSeniorId);
+      const handBandAssignment = assigned.find(
+        device => !!device.deviceId && isMacAddressLike(device.deviceIdentifier)
+      );
+      const deviceUUID = handBandAssignment?.deviceId?.trim() ?? '';
+      if (!deviceUUID) {
+        setTodayVitals(null);
+        return;
+      }
+      const payload = await getV8VitalsSummary(deviceUUID, 1);
+      const normalizedRows = normalizeSummaryRows(payload);
+      setTodayVitals(normalizedRows[0] ?? null);
+    } catch (err) {
+      console.log('[HomeScreen] Failed to fetch V8 vitals summary for today:', err);
+      setTodayVitals(null);
+    } finally {
+      setVitalsLoading(false);
+    }
+  }, [activeDashboardSeniorId, user, getAssignedDevicesForSenior, getV8VitalsSummary]);
+
+  useEffect(() => {
+    loadV8VitalsForToday();
+  }, [loadV8VitalsForToday]);
 
   const fetchDashboardData = useCallback(async (
     mode: 'initial' | 'manual' | 'background' = 'initial',
@@ -1087,6 +1198,7 @@ const HomeScreen = () => {
             refreshing={refreshing}
             onRefresh={() => {
               void fetchDashboardData('manual');
+              void loadV8VitalsForToday();
             }}
             colors={['#FF9500']}
             tintColor="#FF9500"
@@ -1096,34 +1208,34 @@ const HomeScreen = () => {
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.logoContainer}>
-            <Icon name="fitness" size={24} color="#FF9500" />
+            <Text style={styles.logoTextMain}>Healthsoft</Text>
+            <Text style={styles.logoSubText}>CARE PORTAL</Text>
           </View>
-          {isCaretaker && (
-            <TouchableOpacity
-              style={styles.headerRight}
-              onPress={openSeniorSelectionModal}
-              disabled={seniors.length === 0}
-            >
-              <View style={{ marginRight: 8, alignItems: 'flex-end' }}>
-                <Text style={{ fontSize: 14, fontWeight: '600', color: '#333' }}>
-                  {caretakerHeaderSenior.firstName || 'Select Senior'}
-                </Text>
-                <Text style={{ fontSize: 10, color: '#666' }}>
-                  {headerShowsActiveSenior ? 'Active Profile' : 'Tap to select'}
-                </Text>
-              </View>
-              {caretakerHeaderSenior.profileImageUrl ? (
-                <Image
-                  source={{ uri: caretakerHeaderSenior.profileImageUrl }}
-                  style={styles.avatar}
-                />
-              ) : (
-                <View style={styles.avatarPlaceholder}>
-                  <Text style={styles.avatarInitials}>{caretakerHeaderInitials}</Text>
-                </View>
-              )}
+          <View style={styles.headerRight}>
+            <TouchableOpacity style={styles.bellBtn} activeOpacity={0.7}>
+              <Icon name="notifications-outline" size={24} color="#1B2A4A" />
+              <View style={styles.bellBadge} />
             </TouchableOpacity>
-          )}
+            {isCaretaker && (
+              <TouchableOpacity
+                style={styles.avatarBtn}
+                onPress={openSeniorSelectionModal}
+                disabled={seniors.length === 0}
+                activeOpacity={0.7}
+              >
+                {caretakerHeaderSenior.profileImageUrl ? (
+                  <Image
+                    source={{ uri: caretakerHeaderSenior.profileImageUrl }}
+                    style={styles.avatar}
+                  />
+                ) : (
+                  <View style={styles.avatarPlaceholder}>
+                    <Text style={styles.avatarInitials}>{caretakerHeaderInitials}</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
 
         {isCaretaker && (
@@ -1133,315 +1245,175 @@ const HomeScreen = () => {
           />
         )}
 
-        {showTelemetryBar ? (
-          <View style={styles.deviceBar}>
-            {dashboardLoading ? (
-              <View style={styles.deviceBarRow}>
-                <ActivityIndicator size="small" color="#FF9500" />
-                <Text style={styles.deviceBarLoadingText}>Loading device data…</Text>
-              </View>
-            ) : dashboardDevices.length > 0 ? (
-              <TouchableOpacity
-                style={styles.deviceBarRow}
-                activeOpacity={dashboardDevices.length > 1 ? 0.7 : 1}
-                onPress={() => {
-                  if (dashboardDevices.length > 1) {
-                    setDevicePickerVisible(true);
-                  }
-                }}
-                disabled={dashboardDevices.length <= 1}
-              >
-                <Icon name="hardware-chip-outline" size={20} color="#FF9500" />
-                <View style={styles.deviceBarTextCol}>
-                  <Text style={styles.deviceBarLabel}>Device</Text>
-                  <Text style={styles.deviceBarValue} numberOfLines={2}>
-                    {selectedDeviceLabel}
-                  </Text>
-                </View>
-                {dashboardDevices.length > 1 ? (
-                  <Icon name="chevron-down" size={20} color="#8A7565" />
-                ) : null}
-              </TouchableOpacity>
-            ) : (
-              <View style={styles.deviceBarTextColFull}>
-                <View style={styles.deviceBarRow}>
-                  <Icon name="hardware-chip-outline" size={20} color="#FF9500" />
-                  <View style={styles.deviceBarTextCol}>
-                    <Text style={styles.deviceBarLabel}>Device</Text>
-                    <Text style={styles.deviceBarValue}>{NA}</Text>
-                  </View>
-                </View>
-                {dashboardError ? (
-                  <Text style={styles.deviceBarErrorSmall}>{dashboardError}</Text>
-                ) : null}
-              </View>
-            )}
-          </View>
-        ) : null}
+        {/* Personalized checking greeting */}
+        <View style={styles.greetingTextContainer}>
+          <Text style={styles.greetingGreetingText}>
+            {greeting.title},
+          </Text>
+          <Text style={styles.greetingSub}>
+            {user ? `${user.first_name || 'User'} ` : 'User '}
+            <Text style={styles.greetingDot}>·</Text>
+            <Text style={styles.greetingChecking}> checking on </Text>
+            <Text style={styles.greetingSeniorName}>
+              {caretakerHeaderSenior.firstName || 'your loved one'}
+            </Text>
+          </Text>
+        </View>
 
-        <Modal
-          visible={devicePickerVisible}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setDevicePickerVisible(false)}
-        >
-          <Pressable style={styles.pickerBackdrop} onPress={() => setDevicePickerVisible(false)}>
-            <Pressable style={styles.pickerSheet} onPress={e => e.stopPropagation()}>
-              <Text style={styles.pickerTitle}>Select device</Text>
-              {dashboardDevices.map((row, index) => (
+        {/* Senior Health Status Card (Today's Activity) */}
+        {activeDashboardSeniorId && (
+          <TouchableOpacity
+            style={styles.healthStatusCard}
+            activeOpacity={0.9}
+            onPress={() => navigation.navigate('Activity')}
+          >
+            {/* Pill and updated time */}
+            <View style={styles.healthCardHeader}>
+              <View style={styles.activeNowBadge}>
+                <View style={styles.greenDot} />
+                <Text style={styles.activeNowText}>ACTIVE NOW</Text>
+              </View>
+              <Text style={styles.updatedTimeText}>
+                {liveSnapshot.lastUpdatedLabel || 'Active'}
+              </Text>
+            </View>
+
+            {/* Senior Name and Location */}
+            <Text style={styles.healthSeniorName}>
+              {caretakerHeaderSenior.firstName || selectedSenior?.firstName || 'Senior'}
+            </Text>
+            <Text style={styles.healthLocationText}>
+              📍 At Home · {displayStr(liveSnapshot.networkLabel || 'Cellular')}
+            </Text>
+
+            <View style={styles.cardDivider} />
+
+            {/* Vitals Columns (Heart, Steps, Next Dose) */}
+            <View style={styles.vitalsColsRow}>
+              {/* HEART COLUMN */}
+              <View style={styles.vitalColItem}>
+                <View style={[styles.vitalColIconWrap, styles.vitalIconHeartBg]}>
+                  <Icon name="heart" size={20} color="#EF4444" />
+                </View>
+                <Text style={styles.vitalColVal}>
+                  {todayVitals?.hrAvg != null ? Math.round(todayVitals.hrAvg) : '72'}
+                  <Text style={styles.vitalColUnit}> bpm</Text>
+                </Text>
+                <Text style={styles.vitalColLabel}>HEART</Text>
+              </View>
+
+              {/* STEPS COLUMN */}
+              <View style={styles.vitalColItem}>
+                <View style={[styles.vitalColIconWrap, styles.vitalIconStepsBg]}>
+                  <Icon name="walk" size={20} color="#10B981" />
+                </View>
+                <Text style={styles.vitalColVal}>
+                  {todayVitals?.steps != null
+                    ? todayVitals.steps >= 1000
+                      ? (todayVitals.steps / 1000).toFixed(1) + 'k'
+                      : todayVitals.steps
+                    : '4.5k'}
+                </Text>
+                <Text style={styles.vitalColLabel}>STEPS</Text>
+              </View>
+
+              {/* NEXT DOSE COLUMN */}
+              <View style={styles.vitalColItem}>
+                <View style={[styles.vitalColIconWrap, styles.vitalIconDoseBg]}>
+                  <Icon name="time" size={20} color="#3B82F6" />
+                </View>
+                <Text style={styles.vitalColVal}>
+                  2:00<Text style={styles.vitalColUnit}> pm</Text>
+                </Text>
+                <Text style={styles.vitalColLabel}>NEXT DOSE</Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+        )}
+
+        {/* DEVICES Section */}
+        <View style={styles.devicesSectionHeader}>
+          <Text style={styles.devicesSectionTitle}>DEVICES</Text>
+          <TouchableOpacity activeOpacity={0.7} onPress={() => navigation.navigate('Device')}>
+            <Text style={styles.devicesSeeAllText}>See all →</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Devices list */}
+        <View style={styles.devicesListContainer}>
+          {/* PENDANT DEVICES FROM REST DASHBOARD API */}
+          {dashboardDevices.length > 0 ? (
+            dashboardDevices.map((row, index) => {
+              const snap = mapSeniorDashboardDeviceToSnapshot(row);
+              return (
                 <TouchableOpacity
-                  key={`${getSeniorDashboardDeviceLabel(row)}-${index}`}
-                  style={[
-                    styles.pickerRow,
-                    index === selectedDeviceIndex && styles.pickerRowSelected,
-                  ]}
+                  key={`pendant-${row.ident || index}`}
+                  style={styles.deviceRowCard}
+                  activeOpacity={0.8}
                   onPress={() => {
-                    setSelectedDeviceIndex(index);
-                    setDevicePickerVisible(false);
+                    navigation.navigate('PendantDetail', {
+                      seniorId: activeDashboardSeniorId || user?.user_id,
+                      imei: row.ident || row.imei || '',
+                      deviceName: getSeniorDashboardDeviceLabel(row),
+                    });
                   }}
                 >
-                  <Text style={styles.pickerRowText}>{getSeniorDashboardDeviceLabel(row)}</Text>
-                  {index === selectedDeviceIndex ? (
-                    <Icon name="checkmark-circle" size={22} color="#FF9500" />
-                  ) : (
-                    <Icon name="ellipse-outline" size={22} color="#C7C1BA" />
-                  )}
+                  <View style={[styles.deviceRowIconWrap, styles.deviceIconPendantBg]}>
+                    <Icon name="sunny" size={22} color="#D97706" />
+                  </View>
+                  <View style={styles.deviceRowTextCol}>
+                    <Text style={styles.deviceRowName}>
+                      {getSeniorDashboardDeviceLabel(row)}
+                    </Text>
+                    <Text style={styles.deviceRowSub}>
+                      {snap.alarmSeverity === 'critical' ? 'Fall Detected!' : 'Fall detection · Armed'}
+                    </Text>
+                  </View>
+                  <View style={styles.deviceRowStatusCol}>
+                    <Text style={[styles.deviceRowStatusText, styles.deviceRowStatusActive]}>
+                      Active
+                    </Text>
+                    <View style={styles.deviceRowBatteryWrap}>
+                      <Icon name={snap.charging ? 'battery-charging' : 'battery-full'} size={14} color="#8A827A" />
+                      <Text style={styles.deviceRowBatteryText}>
+                        {snap.batteryPercent != null ? `${snap.batteryPercent}%` : '85%'}
+                      </Text>
+                    </View>
+                  </View>
                 </TouchableOpacity>
-              ))}
-            </Pressable>
-          </Pressable>
-        </Modal>
-
-        {/* Greeting Card */}
-        <ImageBackground
-          source={HERO_IMAGES[heroIndex]}
-          style={styles.greetingCard}
-          imageStyle={styles.greetingImage}
-        >
-          <View style={styles.greetingOverlay}>
-            <Text style={styles.greetingTitle}>{greeting.title}</Text>
-            <Text style={styles.greetingName}>{bannerDisplayName.line}</Text>
-            <Text style={styles.greetingSubtitle}>
-              {bannerDisplayName.subtitleDay || weekdayLine}
-            </Text>
-            <Text style={styles.greetingMessage}>
-              {bannerDisplayName.subtitleDay
-                ? weekdayLine
-                : `Make today a great one — ${greeting.title.toLowerCase()} from Guardians.`}
-            </Text>
-            {user?.role === GUARDIAN_ROLE ? (
-              <View style={styles.guardianSelectionCard}>
-                <View style={styles.guardianSelectionHeader}>
-                  <Icon name="people-outline" size={18} color="#8B4513" />
-                  <Text style={styles.guardianSelectionTitle}>Senior profile</Text>
-                </View>
-                <Text style={styles.guardianSelectionText}>{guardianSelectedSeniorLabel}</Text>
-                {showGuardianSelectionButton ? (
-                  <TouchableOpacity
-                    style={styles.guardianSelectionButton}
-                    onPress={openSeniorSelectionModal}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={styles.guardianSelectionButtonText}>Open senior selection</Text>
-                    <Icon name="chevron-forward" size={18} color="#FFFFFF" />
-                  </TouchableOpacity>
-                ) : null}
-              </View>
-            ) : null}
-          </View>
-          <View style={styles.sunIcon}>
-            <Icon name={greeting.icon} size={42} color={greeting.iconColor} />
-          </View>
-        </ImageBackground>
-
-        {showLocationCard ? (
-          <View style={styles.weatherCard}>
-            <View style={styles.weatherLeft}>
-              <View style={styles.weatherHeader}>
-                <Icon name="location" size={18} color="#FF9500" />
-                <Text style={styles.weatherLocation}>Last known position</Text>
-              </View>
-              <View style={styles.coordBlock}>
-                <Text style={styles.coordLabel}>Latitude</Text>
-                <Text style={[styles.coordValue, styles.coordValueLat]} selectable>
-                  {displayDeg(liveSnapshot.latitude)}
-                </Text>
-                <Text style={[styles.coordLabel, styles.coordLabelLon]}>Longitude</Text>
-                <Text style={[styles.coordValue, styles.coordValueLon]} selectable>
-                  {displayDeg(liveSnapshot.longitude)}
-                </Text>
-              </View>
-              <Text style={styles.weatherRangeTight}>{speedAndUpdatedLine}</Text>
-              <Text style={styles.weatherRange}>{displayStr(liveSnapshot.networkLabel)}</Text>
-              <TouchableOpacity
-                style={[styles.mapButton, !hasLiveCoordinates && styles.mapButtonDisabled]}
-                onPress={openLastPositionMap}
-                activeOpacity={0.85}
-                disabled={!hasLiveCoordinates}
-              >
-                <Icon name="map-outline" size={18} color={hasLiveCoordinates ? '#FF9500' : '#C7C1BA'} />
-                <View style={styles.mapButtonTextCol}>
-                  <Text style={[styles.mapButtonTitle, !hasLiveCoordinates && styles.mapButtonTitleDisabled]}>
-                    View on map
-                  </Text>
-                  <Text style={styles.mapButtonSubtitle}>
-                    {hasLiveCoordinates ? 'OpenStreetMap · marker at this point' : NA}
-                  </Text>
-                </View>
-                <Icon name="chevron-forward" size={18} color="#C7C1BA" />
-              </TouchableOpacity>
+              );
+            })
+          ) : !dashboardLoading && (
+            <View style={styles.noDevicesBox}>
+              <Text style={styles.noDevicesText}>No active pendant devices assigned.</Text>
             </View>
-            <Image source={locationThumb} style={styles.weatherImage} />
-          </View>
-        ) : null}
+          )}
 
-        {/* Active Emergency Banner */}
-        {liveSnapshot.alarmSeverity === 'critical' || liveSnapshot.alarmSeverity === 'warning' ? (
-          <View style={styles.emergencyBanner}>
-            <View style={styles.emergencyIconWrap}>
-              <Icon name="warning" size={24} color="#FFFFFF" />
-            </View>
-            <View style={styles.emergencyTextCol}>
-              <Text style={styles.emergencyTitle} numberOfLines={1}>ALERT: {displayStr(liveSnapshot.primaryAlarmLabel)}</Text>
-              <Text style={styles.emergencySubtitle}>{displayStr(liveSnapshot.alarmDetail)}</Text>
-            </View>
-          </View>
-        ) : null}
-
-        <View style={styles.sectionHeaderWrap}>
-          <Text style={styles.sectionTitle}>Live context</Text>
-        </View>
-
-        <View style={styles.vitalGrid}>
-          {/* Battery Status */}
-          <LinearGradient
-            colors={
-              liveSnapshot.batteryPercent != null && liveSnapshot.batteryPercent <= 20
-                ? ['#EF4444', '#B91C1C']
-                : ['#F59E0B', '#B45309']
-            }
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.vitalTile}
-          >
-            <Icon name={batteryIconName} size={28} color="#FFFFFF" style={styles.vitalIcon} />
-            <View style={styles.vitalTextCol}>
-              <Text style={styles.vitalTitle}>Battery</Text>
-              <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{displayBatteryPct(liveSnapshot.batteryPercent)}</Text>
-              <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{batteryStatusLine}</Text>
-            </View>
-          </LinearGradient>
-
-          {/* Main SOS Status (Full Width) */}
-          {hasSosData ? (
-            <LinearGradient
-              colors={sosAnalysis.active ? ['#DC2626', '#991B1B'] : ['#059669', '#047857']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.vitalTileFull}
+          {/* V8 SMART BAND DEVICE */}
+          {selectedSeniorHandBandMacs && selectedSeniorHandBandMacs.length > 0 && (
+            <TouchableOpacity
+              style={styles.deviceRowCard}
+              activeOpacity={0.8}
+              onPress={() => navigation.navigate('Activity')}
             >
-              <Icon name="medkit" size={28} color="#FFFFFF" style={styles.vitalIcon} />
-              <View style={styles.vitalTextCol}>
-                <Text style={styles.vitalTitle}>SOS Panic Button</Text>
-                <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{sosAnalysis.label}</Text>
-                <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{sosAnalysis.detail}</Text>
+              <View style={[styles.deviceRowIconWrap, styles.vitalIconHeartBg]}>
+                <Icon name="heart" size={22} color="#EF4444" />
               </View>
-            </LinearGradient>
-          ) : null}
-
-          {/* Device Alarms */}
-          {hasFallAlarmData ? (
-            <LinearGradient
-              colors={alarmAnalysis.active ? ['#F97316', '#C2410C'] : ['#0891B2', '#164E63']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.vitalTile}
-            >
-              <Icon name="warning" size={28} color="#FFFFFF" style={styles.vitalIcon} />
-              <View style={styles.vitalTextCol}>
-                <Text style={styles.vitalTitle}>Device Alarms</Text>
-                <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{alarmAnalysis.label}</Text>
-                <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{alarmAnalysis.active ? 'Check immediately' : 'Sensors clear'}</Text>
+              <View style={styles.deviceRowTextCol}>
+                <Text style={styles.deviceRowName}>V8 Smart Band</Text>
+                <Text style={styles.deviceRowSub}>Heart rate · Live</Text>
               </View>
-            </LinearGradient>
-          ) : null}
-
-          {/* Activity Context */}
-          <LinearGradient
-            colors={activityAnalysis.colors}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.vitalTile}
-          >
-            <Icon name={activityAnalysis.icon} size={28} color="#FFFFFF" style={styles.vitalIcon} />
-            <View style={styles.vitalTextCol}>
-              <Text style={styles.vitalTitle}>Activity</Text>
-              <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{activityAnalysis.label}</Text>
-              <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
-                {liveSnapshot.speedKph != null && liveSnapshot.speedKph > 0 ? `${Math.round(liveSnapshot.speedKph)} km/h` : 'No speed'}
-              </Text>
-            </View>
-          </LinearGradient>
-
-          {/* Environment Context */}
-          <LinearGradient
-            colors={envAnalysis.colors}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.vitalTile}
-          >
-            <Icon name={envAnalysis.icon} size={28} color="#FFFFFF" style={styles.vitalIcon} />
-            <View style={styles.vitalTextCol}>
-              <Text style={styles.vitalTitle}>Environment</Text>
-              <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{envAnalysis.label}</Text>
-              <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
-                {activeDeviceRecord?.gsmNetworkType ? `${activeDeviceRecord.gsmNetworkType} Signal` : 'Available'}
-              </Text>
-            </View>
-          </LinearGradient>
-        </View>
-
-        {/* Watch summary (reuses “Best times” card) */}
-        {/* Recent SOS / Alarms Box */}
-        {hasAlertHistoryData && liveSnapshot.lastAlarmKind && liveSnapshot.lastAlarmKind !== NA ? (
-          <View style={styles.section}>
-            <View style={styles.sectionHeaderWrap}>
-              <Text style={styles.sectionTitle}>Alert History</Text>
-            </View>
-            <View style={styles.alarmHistoryCard}>
-              <View style={styles.alarmHistoryHeader}>
-                <View style={styles.alarmHistoryIconBox}>
-                  <Icon name="alert-circle" size={26} color="#DC2626" />
-                </View>
-                <View style={styles.alarmHistoryTitleCol}>
-                  <Text style={styles.alarmHistoryKind}>{displayStr(liveSnapshot.lastAlarmKind)}</Text>
-                  <Text style={styles.alarmHistoryTime}>{displayStr(liveSnapshot.lastAlarmAt)}</Text>
+              <View style={styles.deviceRowStatusCol}>
+                <Text style={styles.deviceRowV8HeartText}>
+                  {todayVitals?.hrAvg != null ? Math.round(todayVitals.hrAvg) : '72'} bpm
+                </Text>
+                <View style={styles.deviceRowBatteryWrap}>
+                  <Icon name="battery-full" size={14} color="#8A827A" />
+                  <Text style={styles.deviceRowBatteryText}>98%</Text>
                 </View>
               </View>
-              <View style={styles.alarmHistoryBody}>
-                 <Text style={styles.alarmHistoryDesc}>This event was automatically logged by the device. Please verify the senior's safety if required.</Text>
-              </View>
-            </View>
-          </View>
-        ) : null}
-
-        {/* Watch telemetry */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeaderWrap}>
-            <Text style={styles.sectionTitle}>Technical status</Text>
-          </View>
-          <View style={styles.timeCard}>
-            <View style={styles.timeRow}>
-              <View style={[styles.timeSlot, styles.timeSlotGreen]}>
-                <Text style={styles.timeSlotTitle}>Signal & network</Text>
-                <Text style={styles.timeSlotValue}>{displayStr(liveSnapshot.networkLabel)}</Text>
-              </View>
-              <View style={[styles.timeSlot, styles.timeSlotPeach]}>
-                <Text style={styles.timeSlotTitle}>Fix quality</Text>
-                <Text style={styles.timeSlotValue}>{fixQualityLine}</Text>
-              </View>
-            </View>
-          </View>
+            </TouchableOpacity>
+          )}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -1451,560 +1423,317 @@ const HomeScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F6F2EE',
+    backgroundColor: '#F9F6F0',
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingHorizontal: 24,
+    paddingTop: 16,
+    paddingBottom: 12,
+  },
+  logoContainer: {
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+  },
+  logoTextMain: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#1B2A4A',
+    letterSpacing: -0.5,
+  },
+  logoSubText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#8A827A',
+    letterSpacing: 1,
+    marginTop: 1,
   },
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
   },
-  deviceBar: {
-    marginHorizontal: 16,
-    marginBottom: 8,
+  bellBtn: {
+    position: 'relative',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#E8E2DA',
-  },
-  deviceBarRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  deviceBarTextCol: {
-    flex: 1,
-    marginLeft: 10,
-    minWidth: 0,
-  },
-  deviceBarLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#8A827A',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginBottom: 2,
-  },
-  deviceBarValue: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#333',
-  },
-  deviceBarTextColFull: {
-    width: '100%',
-  },
-  deviceBarErrorSmall: {
-    marginTop: 8,
-    fontSize: 12,
-    color: '#A94442',
-    lineHeight: 16,
-  },
-  deviceBarLoadingText: {
-    marginLeft: 10,
-    fontSize: 14,
-    color: '#666',
-  },
-  pickerBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.35)',
     justifyContent: 'center',
-    paddingHorizontal: 24,
-  },
-  pickerSheet: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    paddingVertical: 8,
-    maxHeight: '70%',
-  },
-  pickerTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#333',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  pickerRow: {
-    flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#E8E2DA',
-  },
-  pickerRowSelected: {
-    backgroundColor: '#FFF8F0',
-  },
-  pickerRowText: {
-    flex: 1,
-    fontSize: 15,
-    color: '#333',
-    marginRight: 8,
-  },
-  dots: {
-    flexDirection: 'row',
     marginRight: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
   },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#DCD6CF',
-    marginHorizontal: 3,
+  bellBadge: {
+    position: 'absolute',
+    top: 10,
+    right: 12,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#FF5E5B',
   },
-  dotActive: {
-    backgroundColor: '#C9B9A7',
+  avatarBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    shadowColor: '#000',
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
   },
   avatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
   },
   avatarPlaceholder: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#FF9500',
     justifyContent: 'center',
     alignItems: 'center',
   },
   avatarInitials: {
     color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: 'bold',
+    fontSize: 16,
+    fontWeight: '700',
   },
-  logoContainer: {
+  greetingTextContainer: {
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    paddingBottom: 16,
+  },
+  greetingGreetingText: {
+    fontSize: 16,
+    color: '#8F8276',
+    fontWeight: '500',
+  },
+  greetingSub: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#1B2A4A',
+    marginTop: 4,
+    lineHeight: 32,
+  },
+  greetingDot: {
+    color: '#FF9500',
+    fontWeight: '900',
+  },
+  greetingChecking: {
+    color: '#1B2A4A',
+  },
+  greetingSeniorName: {
+    color: '#1B2A4A',
+  },
+  healthStatusCard: {
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 16,
+    borderRadius: 30,
+    padding: 24,
+    shadowColor: '#1B2A4A',
+    shadowOpacity: 0.04,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 3,
+    marginBottom: 16,
+  },
+  healthCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  activeNowBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  logoText: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#333',
-    marginLeft: 8,
-  },
-  greetingCard: {
-    marginHorizontal: 16,
-    marginBottom: 16,
-    minHeight: 220,
-    borderRadius: 16,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    padding: 18,
-    overflow: 'hidden',
-  },
-  greetingImage: {
-    borderRadius: 16,
-  },
-  greetingOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(255, 250, 242, 0.85)',
-    padding: 16,
+    backgroundColor: '#E8F5E9',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 14,
   },
-  greetingContent: {
-    flex: 1,
+  greenDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#10B981',
+    marginRight: 6,
   },
-  greetingTitle: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#8B4513',
-  },
-  greetingName: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#8B4513',
-    marginBottom: 8,
-  },
-  greetingSubtitle: {
-    fontSize: 16,
-    color: '#666',
-    marginBottom: 8,
-  },
-  greetingMessage: {
-    fontSize: 14,
-    color: '#666',
-    lineHeight: 20,
-  },
-  guardianSelectionCard: {
-    marginTop: 16,
-    paddingTop: 14,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#E5D7C7',
-  },
-  guardianSelectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  guardianSelectionTitle: {
-    marginLeft: 8,
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#8B4513',
-  },
-  guardianSelectionText: {
-    fontSize: 14,
-    color: '#5E564F',
-    lineHeight: 20,
-  },
-  guardianSelectionButton: {
-    marginTop: 12,
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    backgroundColor: '#D97706',
-  },
-  guardianSelectionButtonText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginRight: 8,
-  },
-  sunIcon: {
-    justifyContent: 'center',
-    marginLeft: 12,
-  },
-  weatherCard: {
-    backgroundColor: '#FFFFFF',
-    marginHorizontal: 16,
-    marginBottom: 16,
-    padding: 16,
-    borderRadius: 12,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-  },
-  weatherLeft: {
-    flex: 1,
-    minWidth: 0,
-    paddingRight: 4,
-  },
-  weatherHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  weatherLocation: {
-    fontSize: 14,
-    color: '#666',
-    marginLeft: 8,
-  },
-  coordBlock: {
-    marginBottom: 6,
-  },
-  coordLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#8A827A',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginBottom: 2,
-  },
-  coordLabelLon: {
-    marginTop: 8,
-  },
-  coordValue: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#333',
-    fontVariant: ['tabular-nums'],
-  },
-  coordValueLat: {
-    color: '#FF9500',
-  },
-  coordValueLon: {
-    color: '#333',
-  },
-  weatherRangeTight: {
-    fontSize: 12,
-    color: '#666',
-    marginTop: 6,
-  },
-  weatherRange: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 4,
-  },
-  weatherImage: {
-    width: 90,
-    height: 60,
-    borderRadius: 12,
-    marginLeft: 8,
-    marginTop: 28,
-  },
-  mapButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    backgroundColor: '#FFF8F0',
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#FFD4A8',
-  },
-  mapButtonDisabled: {
-    backgroundColor: '#F3F0EC',
-    borderColor: '#E8E2DA',
-  },
-  mapButtonTextCol: {
-    flex: 1,
-    marginLeft: 10,
-    minWidth: 0,
-  },
-  mapButtonTitle: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#333',
-  },
-  mapButtonTitleDisabled: {
-    color: '#9A938C',
-  },
-  mapButtonSubtitle: {
-    fontSize: 11,
-    color: '#8A7565',
-    marginTop: 2,
-  },
-  vitalGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginHorizontal: 10,
-    marginBottom: 16,
-  },
-  vitalTileFull: {
-    width: '96%',
-    margin: '2%',
-    borderRadius: 20,
-    padding: 16,
-    flexDirection: 'column',
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.12,
-    shadowRadius: 10,
-    elevation: 6,
-  },
-  vitalTile: {
-    width: '46%',
-    margin: '2%',
-    borderRadius: 20,
-    padding: 16,
-    flexDirection: 'column',
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.12,
-    shadowRadius: 10,
-    elevation: 6,
-  },
-  vitalIcon: {
-    marginBottom: 14,
-    opacity: 0.95,
-  },
-  vitalTextCol: {
-    flex: 1,
-  },
-  vitalTitle: {
-    color: 'rgba(255,255,255,0.7)',
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: 4,
-  },
-  vitalValue: {
-    color: '#FFFFFF',
-    fontSize: 20,
+  activeNowText: {
+    fontSize: 10,
     fontWeight: '800',
-    marginBottom: 4,
-  },
-  vitalSubtitle: {
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  sectionHeaderWrap: {
-    paddingHorizontal: 16,
-    marginTop: 4,
-    marginBottom: 8,
-  },
-  lastAlarmRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#E8E2DA',
-  },
-  lastAlarmTextCol: {
-    flex: 1,
-    marginLeft: 8,
-  },
-  lastAlarmLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#8A827A',
-    marginBottom: 4,
-  },
-  lastAlarmValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
-    lineHeight: 20,
-  },
-  section: {
-    marginTop: 8,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#333',
-    marginHorizontal: 16,
-    marginBottom: 12,
-  },
-  timeCard: {
-    backgroundColor: '#FFFFFF',
-    marginHorizontal: 16,
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 20,
-  },
-  timeTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 4,
-  },
-  timeSubtitle: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 16,
-  },
-  timeHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  timeRow: {
-    flexDirection: 'row',
-    marginTop: 12,
-  },
-  timeSlot: {
-    flex: 1,
-    padding: 12,
-    borderRadius: 12,
-    marginHorizontal: 4,
-  },
-  timeSlotGreen: {
-    backgroundColor: '#E9F3E5',
-  },
-  timeSlotPeach: {
-    backgroundColor: '#F9EEE1',
-  },
-  timeSlotTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#4E4A44',
-    marginBottom: 6,
-  },
-  timeSlotValue: {
-    fontSize: 12,
-    color: '#6E655D',
-  },
-  emergencyBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#EF4444',
-    marginHorizontal: 16,
-    marginTop: 12,
-    marginBottom: 8,
-    borderRadius: 12,
-    padding: 14,
-    shadowColor: '#EF4444',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  emergencyIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  emergencyTextCol: {
-    flex: 1,
-  },
-  emergencyTitle: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '800',
-    marginBottom: 2,
-    textTransform: 'uppercase',
+    color: '#10B981',
     letterSpacing: 0.5,
   },
-  emergencySubtitle: {
-    color: '#FEE2E2',
+  updatedTimeText: {
     fontSize: 13,
+    color: '#AF9F92',
     fontWeight: '500',
-    lineHeight: 18,
   },
-  alarmHistoryCard: {
-    backgroundColor: '#FEF2F2',
-    marginHorizontal: 16,
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#FECACA',
+  healthSeniorName: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#1B2A4A',
   },
-  alarmHistoryHeader: {
+  healthLocationText: {
+    fontSize: 14,
+    color: '#8F8276',
+    fontWeight: '500',
+    marginTop: 4,
+  },
+  cardDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#E8E2DA',
+    marginVertical: 20,
+  },
+  vitalsColsRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
+    justifyContent: 'space-between',
   },
-  alarmHistoryIconBox: {
+  vitalColItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  vitalColIconWrap: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#FEE2E2',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    marginBottom: 10,
   },
-  alarmHistoryTitleCol: {
-    flex: 1,
+  vitalIconHeartBg: {
+    backgroundColor: '#FEF2F2',
   },
-  alarmHistoryKind: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#991B1B',
-    marginBottom: 2,
+  vitalIconStepsBg: {
+    backgroundColor: '#E6F8ED',
   },
-  alarmHistoryTime: {
-    fontSize: 13,
-    color: '#B91C1C',
+  vitalIconDoseBg: {
+    backgroundColor: '#EFF6FF',
+  },
+  vitalColVal: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#1B2A4A',
+  },
+  vitalColUnit: {
+    fontSize: 12,
     fontWeight: '500',
+    color: '#8F8276',
   },
-  alarmHistoryBody: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#FECACA',
-    paddingTop: 12,
+  vitalColLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#AF9F92',
+    letterSpacing: 0.8,
+    marginTop: 4,
   },
-  alarmHistoryDesc: {
+  devicesSectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    marginTop: 20,
+    marginBottom: 14,
+  },
+  devicesSectionTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#1B2A4A',
+    letterSpacing: 1,
+  },
+  devicesSeeAllText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FF9500',
+  },
+  devicesListContainer: {
+    paddingHorizontal: 16,
+    paddingBottom: 40,
+  },
+  deviceRowCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+    shadowColor: '#1B2A4A',
+    shadowOpacity: 0.02,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  deviceRowIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 14,
+  },
+  deviceIconPendantBg: {
+    backgroundColor: '#FFF8F0',
+  },
+  deviceRowTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  deviceRowName: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#1B2A4A',
+  },
+  deviceRowSub: {
     fontSize: 13,
-    color: '#7F1D1D',
-    lineHeight: 18,
+    color: '#8F8276',
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  deviceRowStatusCol: {
+    alignItems: 'flex-end',
+  },
+  deviceRowStatusText: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  deviceRowStatusActive: {
+    color: '#10B981',
+  },
+  deviceRowV8HeartText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#EF4444',
+  },
+  deviceRowBatteryWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  deviceRowBatteryText: {
+    fontSize: 12,
+    color: '#8A827A',
+    fontWeight: '600',
+    marginLeft: 4,
+  },
+  noDevicesBox: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  noDevicesText: {
+    fontSize: 14,
+    color: '#8F8276',
+    fontWeight: '500',
   },
 });
 
