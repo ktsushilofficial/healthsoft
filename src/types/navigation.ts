@@ -8,5 +8,7 @@ export type DeviceStackParamList = {
   V8DeviceManage: {
     deviceId: string;
     deviceName?: string | null;
+    showSyncLatestPrompt?: boolean;
+    promptToken?: string | number | null;
   };
 };

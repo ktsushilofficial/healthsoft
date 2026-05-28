@@ -8,7 +8,12 @@ import type { DeviceStackParamList } from '../types/navigation';
 import { useAuth } from '../context/AuthContext';
 import { normalizeMacAddress } from '../utils/deviceAssignments';
 
-const V8DeviceTab = () => {
+type V8DeviceTabProps = {
+  showSyncLatestPrompt?: boolean;
+  promptToken?: string | number | null;
+};
+
+const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8DeviceTabProps) => {
   const normalizeId = (id?: string | null) => (id ?? '').trim().toLowerCase();
   const compactMac = (value?: string | null) => normalizeMacAddress(value);
   const macSuffix6 = (value?: string | null) => {
@@ -32,11 +37,16 @@ const V8DeviceTab = () => {
     deviceInfo,
   } = useV8DeviceManager();
   const [clearingSession, setClearingSession] = useState(false);
+  const [pendingSyncLatestPrompt, setPendingSyncLatestPrompt] = useState(showSyncLatestPrompt);
 
   const ensureAutoConnectRef = useRef(ensureAutoConnect);
   useEffect(() => {
     ensureAutoConnectRef.current = ensureAutoConnect;
   }, [ensureAutoConnect]);
+
+  useEffect(() => {
+    setPendingSyncLatestPrompt(showSyncLatestPrompt);
+  }, [promptToken, showSyncLatestPrompt]);
 
   useFocusEffect(
     useCallback(() => {
@@ -127,10 +137,16 @@ const V8DeviceTab = () => {
               return;
             }
             await connect(device.id);
+            const shouldShowSyncPrompt = pendingSyncLatestPrompt;
             navigation.navigate('V8DeviceManage', {
               deviceId: device.id,
               deviceName: device.name ?? device.localName ?? 'Hand Band',
+              showSyncLatestPrompt: shouldShowSyncPrompt,
+              promptToken,
             });
+            if (shouldShowSyncPrompt) {
+              setPendingSyncLatestPrompt(false);
+            }
           }}
         >
           <Text style={styles.linkButtonText}>
@@ -139,12 +155,18 @@ const V8DeviceTab = () => {
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.linkButton, { marginLeft: 8, backgroundColor: '#EDE4DA' }]}
-          onPress={() =>
+          onPress={() => {
+            const shouldShowSyncPrompt = pendingSyncLatestPrompt;
             navigation.navigate('V8DeviceManage', {
               deviceId: device.id,
               deviceName: device.name ?? device.localName ?? 'Hand Band',
-            })
-          }
+              showSyncLatestPrompt: shouldShowSyncPrompt,
+              promptToken,
+            });
+            if (shouldShowSyncPrompt) {
+              setPendingSyncLatestPrompt(false);
+            }
+          }}
         >
           <Text style={[styles.linkButtonText, { color: '#7B5835' }]}>Manage</Text>
         </TouchableOpacity>

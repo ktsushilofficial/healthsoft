@@ -6,9 +6,10 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useBle } from '../bluetooth/BleProvider';
 import V8DeviceTab from '../components/V8DeviceTab';
@@ -85,6 +86,7 @@ type AssignedDeviceRow = {
 
 const DeviceScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<DeviceStackParamList>>();
+  const route = useRoute<any>();
   const {
     user,
     isCaretaker,
@@ -98,7 +100,9 @@ const DeviceScreen = () => {
     ],
     [],
   );
-  const [activeTab, setActiveTab] = useState(tabs[0].id);
+  const [activeTab, setActiveTab] = useState(() =>
+    route.params?.activeTab === 'v8' ? 'v8' : tabs[0].id,
+  );
   const hasPurchased = true;
   const [assignedDevices, setAssignedDevices] = useState<SeniorAssignedDevice[]>([]);
   const [assignedDevicesLoading, setAssignedDevicesLoading] = useState(false);
@@ -106,6 +110,7 @@ const DeviceScreen = () => {
   const [cachedAssignedMatches, setCachedAssignedMatches] = useState<CachedAssignedDeviceMatch[]>([]);
   const [cachedAssignedMatchesLoading, setCachedAssignedMatchesLoading] = useState(false);
   const [isClearingCache, setIsClearingCache] = useState(false);
+  const scanPromptKeyRef = React.useRef<string | null>(null);
 
   const {
     bleState,
@@ -179,6 +184,41 @@ const DeviceScreen = () => {
   useEffect(() => {
     loadAssignedDevices();
   }, [loadAssignedDevices]);
+
+  useEffect(() => {
+    if (route.params?.activeTab === 'v8') {
+      setActiveTab('v8');
+    }
+  }, [route.params?.activeTab]);
+
+  useEffect(() => {
+    if (!route.params?.showScanHandBandPrompt || activeTab !== 'v8') {
+      return;
+    }
+
+    const promptKey = String(route.params?.promptedAt ?? 'latest');
+    if (scanPromptKeyRef.current === promptKey) {
+      return;
+    }
+    scanPromptKeyRef.current = promptKey;
+
+    Alert.alert(
+      'Scan and select hand band',
+      'Scan nearby hand bands, then select the assigned hand band for this senior.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Scan Now',
+          onPress: () => {
+            if (!isScanning) {
+              startScan();
+            }
+          },
+        },
+      ],
+      { cancelable: true },
+    );
+  }, [activeTab, isScanning, route.params?.promptedAt, route.params?.showScanHandBandPrompt, startScan]);
 
   useEffect(() => {
     let cancelled = false;
@@ -809,7 +849,12 @@ const DeviceScreen = () => {
               </View>
             ) : null}
 
-            {activeTab === 'v8' ? <V8DeviceTab /> : null}
+            {activeTab === 'v8' ? (
+              <V8DeviceTab
+                showSyncLatestPrompt={!!route.params?.showSyncLatestPrompt}
+                promptToken={route.params?.promptedAt ?? null}
+              />
+            ) : null}
           </>
         ) : (
           <View style={styles.card}>

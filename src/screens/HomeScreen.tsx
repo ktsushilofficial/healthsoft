@@ -11,6 +11,7 @@ import {
   TouchableOpacity,
   Modal,
   Pressable,
+  Alert,
   ActivityIndicator,
   RefreshControl,
 } from 'react-native';
@@ -30,6 +31,13 @@ import {
   mapSeniorDashboardDeviceToSnapshot,
 } from '../utils/mapSeniorDashboardDeviceToSnapshot';
 import { isMacAddressLike } from '../utils/deviceAssignments';
+import {
+  V8_HAND_BAND_SYNC_REMINDER_MS,
+  isV8HandBandSyncReminderDue,
+  recordV8HandBandSyncPrompt,
+  upsertV8HandBandSyncAssignment,
+  type V8HandBandSyncCacheEntry,
+} from '../utils/v8HandBandSyncCache';
 import type { SeniorHomeSnapshot } from '../types/seniorHomeSnapshot';
 
 const HERO_IMAGES = [
@@ -542,6 +550,7 @@ const HomeScreen = () => {
   const manualDashboardRefreshCountRef = useRef(0);
   const backgroundDashboardRefreshCountRef = useRef(0);
   const vitalsRequestIdRef = useRef(0);
+  const handBandSyncReminderKeyRef = useRef<string | null>(null);
 
   /** Senior id for `/api/v1/senior-dashboard/{id}` — logged-in senior, caretaker's or guardian's selected senior. */
   const activeDashboardSeniorId = useMemo(() => {
@@ -629,6 +638,113 @@ const HomeScreen = () => {
   useEffect(() => {
     loadV8VitalsForToday();
   }, [loadV8VitalsForToday]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let nextCheckTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleNextReminderCheck = (entry: V8HandBandSyncCacheEntry) => {
+      if (cancelled) {
+        return;
+      }
+      if (nextCheckTimer) {
+        clearTimeout(nextCheckTimer);
+      }
+      const nextDueAt = Math.max(
+        (entry.lastSyncedAt ?? 0) + V8_HAND_BAND_SYNC_REMINDER_MS,
+        (entry.lastPromptedAt ?? 0) + V8_HAND_BAND_SYNC_REMINDER_MS,
+      );
+      const delayMs = Math.max(60_000, nextDueAt - Date.now());
+      nextCheckTimer = setTimeout(() => {
+        maybePromptHandBandSync();
+      }, delayMs);
+    };
+
+    const maybePromptHandBandSync = async () => {
+      const seniorId = user?.role === SENIOR_ROLE ? user.user_id?.trim() : '';
+      if (!seniorId || selectedSeniorHandBandMacs.length === 0) {
+        return;
+      }
+
+      try {
+        const assigned = await getAssignedDevicesForSenior(seniorId);
+        if (cancelled) {
+          return;
+        }
+
+        const handBandAssignment = assigned.find(
+          device => !!device.deviceId && isMacAddressLike(device.deviceIdentifier),
+        );
+        const deviceId = handBandAssignment?.deviceId?.trim() ?? '';
+        if (!deviceId) {
+          return;
+        }
+
+        const cacheEntry = await upsertV8HandBandSyncAssignment(
+          seniorId,
+          deviceId,
+          handBandAssignment?.deviceIdentifier,
+        );
+        if (cancelled) {
+          return;
+        }
+        if (!isV8HandBandSyncReminderDue(cacheEntry)) {
+          scheduleNextReminderCheck(cacheEntry);
+          return;
+        }
+
+        const reminderKey = `${seniorId}:${deviceId}:${cacheEntry.lastSyncedAt ?? 'never'}:${cacheEntry.lastPromptedAt ?? 'never'}`;
+        if (handBandSyncReminderKeyRef.current === reminderKey) {
+          return;
+        }
+        handBandSyncReminderKeyRef.current = reminderKey;
+        const promptedEntry = await recordV8HandBandSyncPrompt(seniorId, deviceId);
+        if (promptedEntry) {
+          scheduleNextReminderCheck(promptedEntry);
+        }
+        if (cancelled) {
+          return;
+        }
+
+        Alert.alert(
+          'Sync hand band data?',
+          'Your hand band data has not synced in over an hour. Sync latest data now?',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Sync Now',
+              onPress: () => {
+                navigation.navigate('Device', {
+                  activeTab: 'v8',
+                  showScanHandBandPrompt: true,
+                  showSyncLatestPrompt: true,
+                  promptedAt: Date.now(),
+                });
+              },
+            },
+          ],
+          { cancelable: true },
+        );
+      } catch (error) {
+        console.log('[HomeScreen] Failed to check V8 hand band sync reminder:', error);
+      }
+    };
+
+    maybePromptHandBandSync();
+
+    return () => {
+      cancelled = true;
+      if (nextCheckTimer) {
+        clearTimeout(nextCheckTimer);
+      }
+    };
+  }, [
+    getAssignedDevicesForSenior,
+    navigation,
+    selectedSeniorHandBandMacs,
+    user?.role,
+    user?.user_id,
+  ]);
 
   const fetchDashboardData = useCallback(async (
     mode: 'initial' | 'manual' | 'background' = 'initial',

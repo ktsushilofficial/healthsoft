@@ -14,6 +14,7 @@ import type {
 } from './models';
 import { parseV8Payload } from './parser';
 import { normalizeMacAddress } from '../utils/deviceAssignments';
+import { recordV8HandBandSynced } from '../utils/v8HandBandSyncCache';
 
 type ParsedData = {
   type: 'parsed' | 'raw';
@@ -1005,6 +1006,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     });
 
     await syncV8VitalsByDevice(webPayload);
+    if (user?.role === 'SENIOR') {
+      await recordV8HandBandSynced(seniorId, deviceUUID, connectedMac);
+    }
     return { days: days.length };
   }, [deviceInfo.mac, getAssignedDevicesForSenior, selectedSenior?.userId, selectedSeniorHandBandMacs, syncV8VitalsByDevice, user?.role, user?.user_id]);
 

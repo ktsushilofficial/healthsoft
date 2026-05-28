@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   InteractionManager,
+  Alert,
   Modal,
   Platform,
   ScrollView,
@@ -18,7 +19,12 @@ import { useAuth } from '../context/AuthContext';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import type { V8DailyVitalSummary } from '../v8/models';
 
-type RouteParams = { deviceId: string; deviceName?: string | null };
+type RouteParams = {
+  deviceId: string;
+  deviceName?: string | null;
+  showSyncLatestPrompt?: boolean;
+  promptToken?: string | number | null;
+};
 
 const fmt = (v: unknown, suffix = '') =>
   v != null && v !== '' ? `${v}${suffix}` : '—';
@@ -145,6 +151,7 @@ const V8DeviceManageScreen = () => {
   const [fetchedVitalsRangeKey, setFetchedVitalsRangeKey] = useState<string | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const deviceInfoRef = useRef(deviceInfo);
+  const syncLatestPromptKeyRef = useRef<string | null>(null);
   const currentRangeKey = `${fromDate}|${toDate}`;
 
   const fromDateValue = useMemo(() => parseYmdDate(fromDate) ?? new Date(), [fromDate]);
@@ -335,6 +342,28 @@ const V8DeviceManageScreen = () => {
       setTodaySyncing(false);
     }
   }, [buildDailyVitalsRange, connected, isSeniorUser, syncDailyVitalsToBackend]);
+
+  useEffect(() => {
+    if (!isSeniorUser || !route.params || !(route.params as RouteParams).showSyncLatestPrompt) {
+      return;
+    }
+
+    const promptKey = String((route.params as RouteParams).promptToken ?? deviceId ?? 'latest');
+    if (syncLatestPromptKeyRef.current === promptKey) {
+      return;
+    }
+    syncLatestPromptKeyRef.current = promptKey;
+
+    Alert.alert(
+      'Sync latest data?',
+      'Sync today\'s hand band data now?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Sync Now', onPress: () => { handleFetchAndSyncToday(); } },
+      ],
+      { cancelable: true },
+    );
+  }, [deviceId, handleFetchAndSyncToday, isSeniorUser, route.params]);
 
   const vitalsRowsForTable = useMemo(
     () => [...fetchedVitalsRows].sort((a, b) => b.date.localeCompare(a.date)),
