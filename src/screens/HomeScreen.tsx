@@ -30,6 +30,8 @@ import {
   mapSeniorDashboardDeviceToSnapshot,
 } from '../utils/mapSeniorDashboardDeviceToSnapshot';
 import { isMacAddressLike } from '../utils/deviceAssignments';
+import { useV8DeviceManager } from '../v8/useV8DeviceManager';
+import type { SeniorHomeSnapshot } from '../types/seniorHomeSnapshot';
 
 const HERO_IMAGES = [
   { uri: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80' },
@@ -145,6 +147,11 @@ function readStringField(record: SeniorDashboardDeviceRecord, key: string): stri
 function readNumberField(record: SeniorDashboardDeviceRecord, key: string): number | null {
   const value = record[key];
   return typeof value === 'number' && !Number.isNaN(value) ? value : null;
+}
+
+function readBooleanField(record: SeniorDashboardDeviceRecord, key: string): boolean | null {
+  const value = record[key];
+  return typeof value === 'boolean' ? value : null;
 }
 
 function hasOwnField(record: SeniorDashboardDeviceRecord, key: string): boolean {
@@ -374,6 +381,20 @@ function asString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function localDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeRecordDateKey(value: string): string | null {
+  const match = value.match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})/);
+  if (!match) return null;
+  const [, year, month, day] = match;
+  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+}
+
 function normalizeSummaryRows(payload: unknown): VitalsSummaryRow[] {
   const root = asRecord(payload);
   const candidates: unknown[] =
@@ -409,6 +430,80 @@ function normalizeSummaryRows(payload: unknown): VitalsSummaryRow[] {
     .sort((a, b) => b.recordDate.localeCompare(a.recordDate));
 }
 
+function findTodaySummaryRow(rows: VitalsSummaryRow[]): VitalsSummaryRow | null {
+  const todayKey = localDateKey(new Date());
+  return rows.find(row => normalizeRecordDateKey(row.recordDate) === todayKey) ?? null;
+}
+
+function formatHomeSteps(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return NA;
+  const rounded = Math.round(value);
+  return rounded >= 1000 ? `${(rounded / 1000).toFixed(1)}k` : `${rounded}`;
+}
+
+function formatHomeMetric(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return NA;
+  return `${Math.round(value)}`;
+}
+
+function formatHomeBp(row: VitalsSummaryRow | null): string {
+  if (
+    row?.systolicBpAvg == null ||
+    row?.diastolicBpAvg == null ||
+    Number.isNaN(row.systolicBpAvg) ||
+    Number.isNaN(row.diastolicBpAvg)
+  ) {
+    return NA;
+  }
+  return `${Math.round(row.systolicBpAvg)}/${Math.round(row.diastolicBpAvg)}`;
+}
+
+function formatBatteryPercent(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return NA;
+  return `${Math.max(0, Math.min(100, Math.round(value)))}%`;
+}
+
+function batteryIconFor(
+  batteryPercent: number | null | undefined,
+  charging?: boolean | null,
+): string {
+  if (charging === true) return 'battery-charging';
+  if (batteryPercent == null || Number.isNaN(batteryPercent)) return 'battery-dead-outline';
+  if (batteryPercent > 75) return 'battery-full';
+  if (batteryPercent > 30) return 'battery-half';
+  return 'battery-dead';
+}
+
+function formatDeviceActivityStatus(record: SeniorDashboardDeviceRecord | null): string {
+  if (!record) return NA;
+
+  const explicitStatus =
+    readStringField(record, 'status') ??
+    readStringField(record, 'deviceStatus') ??
+    readStringField(record, 'assignmentStatus') ??
+    readStringField(record, 'device.status');
+  if (explicitStatus) {
+    return explicitStatus
+      .split(/[\s_-]+/)
+      .filter(Boolean)
+      .map(capitalizeWord)
+      .join(' ');
+  }
+
+  const moving =
+    readBooleanField(record, 'movementStatus') ??
+    readBooleanField(record, 'movement.status');
+  if (moving != null) {
+    return moving ? 'Active' : 'Stationary';
+  }
+
+  return NA;
+}
+
+function formatDashboardBattery(snapshot: SeniorHomeSnapshot): string {
+  return formatBatteryPercent(snapshot.batteryPercent);
+}
+
 const HomeScreen = () => {
   const navigation = useNavigation<any>();
   const {
@@ -424,6 +519,7 @@ const HomeScreen = () => {
     getAssignedDevicesForSenior,
     getV8VitalsSummary,
   } = useAuth();
+  const { deviceInfo: v8DeviceInfo } = useV8DeviceManager();
   const [modalVisible, setModalVisible] = useState(false);
   const [heroIndex, setHeroIndex] = useState(0);
   const [nowTick, setNowTick] = useState(() => new Date());
@@ -431,8 +527,6 @@ const HomeScreen = () => {
   const [selectedDeviceIndex, setSelectedDeviceIndex] = useState(0);
   const [devicePickerVisible, setDevicePickerVisible] = useState(false);
   const [todayVitals, setTodayVitals] = useState<VitalsSummaryRow | null>(null);
-  const [vitalsLoading, setVitalsLoading] = useState(false);
-  const [vitalsError, setVitalsError] = useState<string | null>(null);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [guardianSeniorProfiles, setGuardianSeniorProfiles] = useState<GuardianSeniorProfileRow[]>([]);
@@ -449,6 +543,7 @@ const HomeScreen = () => {
   const initialDashboardLoadCountRef = useRef(0);
   const manualDashboardRefreshCountRef = useRef(0);
   const backgroundDashboardRefreshCountRef = useRef(0);
+  const vitalsRequestIdRef = useRef(0);
 
   /** Senior id for `/api/v1/senior-dashboard/{id}` — logged-in senior, caretaker's or guardian's selected senior. */
   const activeDashboardSeniorId = useMemo(() => {
@@ -503,13 +598,14 @@ const HomeScreen = () => {
   }, [activeDashboardSeniorId, user?.role, selectedSenior?.userId]);
 
   const loadV8VitalsForToday = useCallback(async () => {
+    const requestId = ++vitalsRequestIdRef.current;
+    const shouldIgnore = () =>
+      !isMountedRef.current || vitalsRequestIdRef.current !== requestId;
     const targetSeniorId = activeDashboardSeniorId || (user?.role === SENIOR_ROLE ? user.user_id : null);
     if (!targetSeniorId) {
       setTodayVitals(null);
       return;
     }
-    setVitalsLoading(true);
-    setVitalsError(null);
     try {
       const assigned = await getAssignedDevicesForSenior(targetSeniorId);
       const handBandAssignment = assigned.find(
@@ -517,17 +613,18 @@ const HomeScreen = () => {
       );
       const deviceUUID = handBandAssignment?.deviceId?.trim() ?? '';
       if (!deviceUUID) {
+        if (shouldIgnore()) return;
         setTodayVitals(null);
         return;
       }
       const payload = await getV8VitalsSummary(deviceUUID, 1);
       const normalizedRows = normalizeSummaryRows(payload);
-      setTodayVitals(normalizedRows[0] ?? null);
+      if (shouldIgnore()) return;
+      setTodayVitals(findTodaySummaryRow(normalizedRows));
     } catch (err) {
+      if (shouldIgnore()) return;
       console.log('[HomeScreen] Failed to fetch V8 vitals summary for today:', err);
       setTodayVitals(null);
-    } finally {
-      setVitalsLoading(false);
     }
   }, [activeDashboardSeniorId, user, getAssignedDevicesForSenior, getV8VitalsSummary]);
 
@@ -1170,6 +1267,12 @@ const HomeScreen = () => {
   }, [user, guardianSeniorDisplay, selectedSenior, seniors.length]);
 
   const showGuardianSelectionButton = !!user && user.role === GUARDIAN_ROLE && seniors.length > 1;
+  const homeHeartValue = formatHomeMetric(todayVitals?.hrAvg);
+  const homeStepsValue = formatHomeSteps(todayVitals?.steps);
+  const homeBpValue = formatHomeBp(todayVitals);
+  const healthCardStatus = formatDeviceActivityStatus(activeDeviceRecord);
+  const v8BatteryValue = formatBatteryPercent(v8DeviceInfo.batteryPercent);
+  const v8BatteryIcon = batteryIconFor(v8DeviceInfo.batteryPercent);
 
   const openLastPositionMap = useCallback(() => {
     const lat = liveSnapshot.latitude;
@@ -1212,10 +1315,6 @@ const HomeScreen = () => {
             <Text style={styles.logoSubText}>CARE PORTAL</Text>
           </View>
           <View style={styles.headerRight}>
-            <TouchableOpacity style={styles.bellBtn} activeOpacity={0.7}>
-              <Icon name="notifications-outline" size={24} color="#1B2A4A" />
-              <View style={styles.bellBadge} />
-            </TouchableOpacity>
             {isCaretaker && (
               <TouchableOpacity
                 style={styles.avatarBtn}
@@ -1271,10 +1370,10 @@ const HomeScreen = () => {
             <View style={styles.healthCardHeader}>
               <View style={styles.activeNowBadge}>
                 <View style={styles.greenDot} />
-                <Text style={styles.activeNowText}>ACTIVE NOW</Text>
+                <Text style={styles.activeNowText}>{healthCardStatus.toUpperCase()}</Text>
               </View>
               <Text style={styles.updatedTimeText}>
-                {liveSnapshot.lastUpdatedLabel || 'Active'}
+                {liveSnapshot.lastUpdatedLabel || NA}
               </Text>
             </View>
 
@@ -1288,7 +1387,7 @@ const HomeScreen = () => {
 
             <View style={styles.cardDivider} />
 
-            {/* Vitals Columns (Heart, Steps, Next Dose) */}
+            {/* Vitals Columns (Heart, Steps, BP) */}
             <View style={styles.vitalsColsRow}>
               {/* HEART COLUMN */}
               <View style={styles.vitalColItem}>
@@ -1296,8 +1395,8 @@ const HomeScreen = () => {
                   <Icon name="heart" size={20} color="#EF4444" />
                 </View>
                 <Text style={styles.vitalColVal}>
-                  {todayVitals?.hrAvg != null ? Math.round(todayVitals.hrAvg) : '72'}
-                  <Text style={styles.vitalColUnit}> bpm</Text>
+                  {homeHeartValue}
+                  {homeHeartValue !== NA ? <Text style={styles.vitalColUnit}> bpm</Text> : null}
                 </Text>
                 <Text style={styles.vitalColLabel}>HEART</Text>
               </View>
@@ -1308,24 +1407,21 @@ const HomeScreen = () => {
                   <Icon name="walk" size={20} color="#10B981" />
                 </View>
                 <Text style={styles.vitalColVal}>
-                  {todayVitals?.steps != null
-                    ? todayVitals.steps >= 1000
-                      ? (todayVitals.steps / 1000).toFixed(1) + 'k'
-                      : todayVitals.steps
-                    : '4.5k'}
+                  {homeStepsValue}
                 </Text>
                 <Text style={styles.vitalColLabel}>STEPS</Text>
               </View>
 
-              {/* NEXT DOSE COLUMN */}
+              {/* BP COLUMN */}
               <View style={styles.vitalColItem}>
                 <View style={[styles.vitalColIconWrap, styles.vitalIconDoseBg]}>
-                  <Icon name="time" size={20} color="#3B82F6" />
+                  <Icon name="fitness" size={20} color="#3B82F6" />
                 </View>
                 <Text style={styles.vitalColVal}>
-                  2:00<Text style={styles.vitalColUnit}> pm</Text>
+                  {homeBpValue}
+                  {homeBpValue !== NA ? <Text style={styles.vitalColUnit}> mmHg</Text> : null}
                 </Text>
-                <Text style={styles.vitalColLabel}>NEXT DOSE</Text>
+                <Text style={styles.vitalColLabel}>BP</Text>
               </View>
             </View>
           </TouchableOpacity>
@@ -1334,7 +1430,17 @@ const HomeScreen = () => {
         {/* DEVICES Section */}
         <View style={styles.devicesSectionHeader}>
           <Text style={styles.devicesSectionTitle}>DEVICES</Text>
-          <TouchableOpacity activeOpacity={0.7} onPress={() => navigation.navigate('Device')}>
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={() =>
+              navigation.navigate('HomeDevices', {
+                dashboardDevices,
+                activeSeniorId: activeDashboardSeniorId || user?.user_id || null,
+                showV8HandBand: selectedSeniorHandBandMacs.length > 0,
+                v8HeartValue: homeHeartValue,
+              })
+            }
+          >
             <Text style={styles.devicesSeeAllText}>See all →</Text>
           </TouchableOpacity>
         </View>
@@ -1345,6 +1451,9 @@ const HomeScreen = () => {
           {dashboardDevices.length > 0 ? (
             dashboardDevices.map((row, index) => {
               const snap = mapSeniorDashboardDeviceToSnapshot(row);
+              const rowActivityStatus = formatDeviceActivityStatus(row);
+              const rowBatteryValue = formatDashboardBattery(snap);
+              const rowBatteryIcon = batteryIconFor(snap.batteryPercent, snap.charging);
               return (
                 <TouchableOpacity
                   key={`pendant-${row.ident || index}`}
@@ -1371,12 +1480,12 @@ const HomeScreen = () => {
                   </View>
                   <View style={styles.deviceRowStatusCol}>
                     <Text style={[styles.deviceRowStatusText, styles.deviceRowStatusActive]}>
-                      Active
+                      {rowActivityStatus}
                     </Text>
                     <View style={styles.deviceRowBatteryWrap}>
-                      <Icon name={snap.charging ? 'battery-charging' : 'battery-full'} size={14} color="#8A827A" />
+                      <Icon name={rowBatteryIcon} size={14} color="#8A827A" />
                       <Text style={styles.deviceRowBatteryText}>
-                        {snap.batteryPercent != null ? `${snap.batteryPercent}%` : '85%'}
+                        {rowBatteryValue}
                       </Text>
                     </View>
                   </View>
@@ -1405,11 +1514,12 @@ const HomeScreen = () => {
               </View>
               <View style={styles.deviceRowStatusCol}>
                 <Text style={styles.deviceRowV8HeartText}>
-                  {todayVitals?.hrAvg != null ? Math.round(todayVitals.hrAvg) : '72'} bpm
+                  {homeHeartValue}
+                  {homeHeartValue !== NA ? ' bpm' : ''}
                 </Text>
                 <View style={styles.deviceRowBatteryWrap}>
-                  <Icon name="battery-full" size={14} color="#8A827A" />
-                  <Text style={styles.deviceRowBatteryText}>98%</Text>
+                  <Icon name={v8BatteryIcon} size={14} color="#8A827A" />
+                  <Text style={styles.deviceRowBatteryText}>{v8BatteryValue}</Text>
                 </View>
               </View>
             </TouchableOpacity>
@@ -1453,30 +1563,6 @@ const styles = StyleSheet.create({
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  bellBtn: {
-    position: 'relative',
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.03,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
-  },
-  bellBadge: {
-    position: 'absolute',
-    top: 10,
-    right: 12,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#FF5E5B',
   },
   avatarBtn: {
     width: 44,
