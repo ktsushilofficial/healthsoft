@@ -509,6 +509,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const applySession = async (
     sessionUser: UserData,
     method: AuthMethod = authMethod,
+    _landingScreen: 'welcome' | 'main' = 'welcome',
   ): Promise<UserData> => {
     const sessionTokens = extractTokens(sessionUser);
 
@@ -814,6 +815,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     bootstrapSession().catch(() => {
       setIsInitializing(false);
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const login = async (email: string, password: string): Promise<UserData> => {
@@ -825,7 +827,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         null,
       );
 
-      return await applySession(authResponse, 'email');
+      return await applySession(authResponse, 'email', 'main');
     } catch (error) {
       throw new Error(getErrorMessage(error));
     }
@@ -845,7 +847,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         null,
       );
 
-      return await applySession(authResponse, 'phone');
+      return await applySession(authResponse, 'phone', 'main');
     } catch (error) {
       throw new Error(getErrorMessage(error));
     }
@@ -873,7 +875,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         null,
       );
 
-      return await applySession(authResponse, 'otp');
+      return await applySession(authResponse, 'otp', 'main');
     } catch (error) {
       throw new Error(getErrorMessage(error));
     }
@@ -953,7 +955,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         null,
       );
 
-      await applySession(authResponse);
+      await applySession(authResponse, undefined, 'main');
       return await verifyEmail(authResponse.user_id);
     } catch (error) {
       throw new Error(getErrorMessage(error));
@@ -1038,7 +1040,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         null,
       );
 
-      return await applySession(authResponse);
+      return await applySession(authResponse, undefined, 'main');
     } catch (error) {
       throw new Error(getErrorMessage(error));
     }
@@ -1127,7 +1129,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     setSelectedSenior(null);
-    void Keychain.resetGenericPassword({ service: SELECTED_SENIOR_STORAGE_SERVICE }).catch(() => {
+    Keychain.resetGenericPassword({ service: SELECTED_SENIOR_STORAGE_SERVICE }).catch(() => {
       // Ignore storage cleanup failures; UI state already recovered.
     });
   }, [isCaretaker, selectedSenior, seniors]);
@@ -1193,7 +1195,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     };
 
-    void loadSelectedSeniorHandBandMacs();
+    loadSelectedSeniorHandBandMacs();
 
     return () => {
       cancelled = true;
@@ -1290,7 +1292,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     if (!user) {
       setSelectedSeniorHandBandMacs([]);
     }
-  }, [user?.role]);
+  }, [user]);
 
   const contextValue = useMemo(
     () => ({

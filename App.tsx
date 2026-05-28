@@ -43,12 +43,11 @@ const AppNavigator = () => {
   return (
     <Stack.Navigator
       key={isAuthenticated ? 'app-stack' : 'auth-stack'}
-      initialRouteName="Welcome"
+      initialRouteName={isAuthenticated ? 'Main' : 'Welcome'}
       screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="Welcome" component={WelcomeScreen} />
-
       {!isAuthenticated ? (
         <>
+          <Stack.Screen name="Welcome" component={WelcomeScreen} />
           <Stack.Screen name="Login" component={LoginScreen} />
           <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
           <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
