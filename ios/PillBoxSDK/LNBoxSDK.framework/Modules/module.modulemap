@@ -1,0 +1,11 @@
+framework module LNBoxSDK {
+  umbrella header "LNBoxSDK.h"
+
+  export *
+  module * { export * }
+}
+
+module LNBoxSDK.Swift {
+  header "LNBoxSDK-Swift.h"
+  requires objc
+}

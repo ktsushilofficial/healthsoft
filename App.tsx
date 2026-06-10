@@ -19,7 +19,9 @@ import PendantDetailScreen from './src/screens/PendantDetailScreen';
 import HomeDevicesScreen from './src/screens/HomeDevicesScreen';
 import { BleProvider } from './src/bluetooth/BleProvider';
 import { V8BleProvider } from './src/v8/V8BleProvider';
+import { PillBoxBleProvider } from './src/pillbox/PillBoxBleProvider';
 import V8DeviceManageScreen from './src/screens/V8DeviceManageScreen';
+import PillBoxDeviceManageScreen from './src/screens/PillBoxDeviceManageScreen';
 import {
   requestNotificationPermission,
   getFCMToken,
@@ -64,6 +66,7 @@ const AppNavigator = () => {
           <Stack.Screen name="AssignedDevices" component={AssignedDevicesScreen} />
           <Stack.Screen name="HomeDevices" component={HomeDevicesScreen} />
           <Stack.Screen name="V8DeviceManage" component={V8DeviceManageScreen} />
+          <Stack.Screen name="PillBoxDeviceManage" component={PillBoxDeviceManageScreen} />
           <Stack.Screen name="PendantDetail" component={PendantDetailScreen} />
         </>
       )}
@@ -111,11 +114,13 @@ function App(): React.JSX.Element {
     <AuthProvider>
       <BleProvider>
         <V8BleProvider>
-          <SafeAreaProvider>
-            <NavigationContainer>
-              <AppNavigator />
-            </NavigationContainer>
-          </SafeAreaProvider>
+          <PillBoxBleProvider>
+            <SafeAreaProvider>
+              <NavigationContainer>
+                <AppNavigator />
+              </NavigationContainer>
+            </SafeAreaProvider>
+          </PillBoxBleProvider>
         </V8BleProvider>
       </BleProvider>
     </AuthProvider>

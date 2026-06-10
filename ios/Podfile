@@ -23,6 +23,8 @@ target 'HealthsoftApp' do
   pod 'FirebaseMessaging', :modular_headers => true
   pod 'V8SDK', :path => './V8SDK'
   pod 'V8Bridge', :path => './V8Bridge'
+  pod 'LNBoxSDK', :path => './PillBoxSDK'
+  pod 'PillBoxBridge', :path => './PillBoxBridge'
   config = use_native_modules!
 
   use_react_native!(
@@ -48,8 +50,9 @@ target 'HealthsoftApp' do
       end
     end
 
-    # Vendor V8 static library currently ships as iphoneos-only arm64.
-    # Keep it for device builds, but strip it from simulator link flags so
+    # Vendor V8 static library and the pillbox framework currently ship as
+    # iphoneos-only arm64.
+    # Keep them for device builds, but strip them from simulator link flags so
     # `run-ios` can build without linker platform mismatch errors.
     pods_xcconfig_glob = File.join(__dir__, 'Pods', 'Target Support Files', 'Pods-HealthsoftApp', 'Pods-HealthsoftApp*.xcconfig')
     Dir.glob(pods_xcconfig_glob).each do |xcconfig_path|
@@ -72,9 +75,9 @@ target 'HealthsoftApp' do
         end
 
         flags = line.sub('OTHER_LDFLAGS = ', '').strip
-        simulator_flags = flags.gsub(/\s-l\"BleSDK\"/, '')
+        simulator_flags = flags.gsub(/\s-l\"BleSDK\"/, '').gsub(/\s-framework\s+\"LNBoxSDK\"/, '').gsub(/\s-framework\s+LNBoxSDK/, '')
         updated_lines << "OTHER_LDFLAGS = #{simulator_flags}\n"
-        updated_lines << "OTHER_LDFLAGS[sdk=iphoneos*] = $(inherited) -l\"BleSDK\"\n"
+        updated_lines << "OTHER_LDFLAGS[sdk=iphoneos*] = $(inherited) -l\"BleSDK\" -framework \"LNBoxSDK\"\n"
         injected = true
         changed = true
       end

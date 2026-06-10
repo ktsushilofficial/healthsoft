@@ -29,6 +29,7 @@ import {
   type CachedAssignedDeviceMatch,
   upsertCachedAssignedDeviceMatches,
 } from '../utils/assignedDeviceMatchCache';
+import PillBoxDeviceTab from '../components/PillBoxDeviceTab';
 
 const contacts = [
   {
@@ -97,11 +98,16 @@ const DeviceScreen = () => {
     () => [
       { id: 'current', label: 'Current Devices' },
       { id: 'v8', label: 'Hand Band' },
+      { id: 'pillbox', label: 'Pill Dispenser' },
     ],
     [],
   );
   const [activeTab, setActiveTab] = useState(() =>
-    route.params?.activeTab === 'v8' ? 'v8' : tabs[0].id,
+    route.params?.activeTab === 'v8'
+      ? 'v8'
+      : route.params?.activeTab === 'pillbox'
+        ? 'pillbox'
+        : tabs[0].id,
   );
   const hasPurchased = true;
   const [assignedDevices, setAssignedDevices] = useState<SeniorAssignedDevice[]>([]);
@@ -188,6 +194,8 @@ const DeviceScreen = () => {
   useEffect(() => {
     if (route.params?.activeTab === 'v8') {
       setActiveTab('v8');
+    } else if (route.params?.activeTab === 'pillbox') {
+      setActiveTab('pillbox');
     }
   }, [route.params?.activeTab]);
 
@@ -855,6 +863,8 @@ const DeviceScreen = () => {
                 promptToken={route.params?.promptedAt ?? null}
               />
             ) : null}
+
+            {activeTab === 'pillbox' ? <PillBoxDeviceTab /> : null}
           </>
         ) : (
           <View style={styles.card}>

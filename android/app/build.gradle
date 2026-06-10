@@ -83,6 +83,12 @@ if (keystorePropertiesFile.exists()) {
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+repositories {
+    flatDir {
+        dirs 'libs'
+    }
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -128,6 +134,7 @@ dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
     implementation(files("libs/v8sdk1.0.jar"))
+    implementation(name: "PillBoxlibrary", ext: "aar")
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")

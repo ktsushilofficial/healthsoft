@@ -11,4 +11,8 @@ export type DeviceStackParamList = {
     showSyncLatestPrompt?: boolean;
     promptToken?: string | number | null;
   };
+  PillBoxDeviceManage: {
+    deviceId: string;
+    deviceName?: string | null;
+  };
 };

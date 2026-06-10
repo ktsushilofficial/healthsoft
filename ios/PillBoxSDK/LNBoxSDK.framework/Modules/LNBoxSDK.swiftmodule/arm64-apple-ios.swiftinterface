@@ -1,0 +1,153 @@
+// swift-interface-format-version: 1.0
+// swift-compiler-version: Apple Swift version 5.8 (swiftlang-5.8.0.124.2 clang-1403.0.22.11.100)
+// swift-module-flags: -target arm64-apple-ios13.0 -enable-objc-interop -module-name LNBoxSDK
+import CoreBluetooth
+import Foundation
+import Swift
+import _Concurrency
+import _StringProcessing
+
+public enum LNBoxState : Swift.Int {
+  case bluetoothNone
+  case bluetoothUnauthorized
+  case bluetoothPowerOff
+  case bluetoothReady
+  case scanning
+  case connecting
+  case connected
+  case dataSyncing
+  case dataSynced
+  public init?(rawValue: Swift.Int)
+  public typealias RawValue = Swift.Int
+  public var rawValue: Swift.Int { get }
+}
+
+public enum LNBoxTimeFormat : Swift.Int {
+  case H24
+  case H12
+  public init?(rawValue: Swift.Int)
+  public typealias RawValue = Swift.Int
+  public var rawValue: Swift.Int { get }
+}
+
+public enum LNBoxVolumeType : Swift.Int {
+  case mute
+  case low
+  case high
+  public init?(rawValue: Swift.Int)
+  public typealias RawValue = Swift.Int
+  public var rawValue: Swift.Int { get }
+}
+
+public enum LNBoxRingType : Swift.Int {
+  case value1
+  case value2
+  public init?(rawValue: Swift.Int)
+  public typealias RawValue = Swift.Int
+  public var rawValue: Swift.Int { get }
+}
+
+public enum LNSyncResult {
+  case success
+  case failure
+  public static func == (a: LNSyncResult, b: LNSyncResult) -> Swift.Bool
+  public func hash(into hasher: inout Swift.Hasher)
+  public var hashValue: Swift.Int { get }
+}
+
+public enum LEErrorType : Swift.Int {
+  case unknown
+  case timeout
+  case disconnected
+  public init?(rawValue: Swift.Int)
+  public typealias RawValue = Swift.Int
+  public var rawValue: Swift.Int { get }
+}
+
+@objc @_hasMissingDesignatedInitializers public class LNAlarmModel : ObjectiveC.NSObject {
+  @objc public var alarmId: Swift.String
+  @objc public var status: Swift.Int
+  @objc public var isRepeat: Swift.Int
+  @objc public var row: Swift.Int
+  @objc public var alarmTime: Swift.String
+  @objc public var remark: Swift.String
+  @objc public var effectWeekdays: [Swift.String]
+  @objc public var type: Swift.String?
+  @objc public var drugCount: Swift.Int
+  @objc public var drugNumCount: Swift.Float
+  @objc public var isOpen: Swift.Bool
+  @objc public var deviceId: Swift.String
+  @objc public var hasImage: Swift.Bool
+  @objc override dynamic public func setValue(_ value: Any?, forUndefinedKey key: Swift.String)
+  public init(dict: [Swift.String : Any])
+  @objc deinit
+}
+
+@objc @_hasMissingDesignatedInitializers public class LNBox : ObjectiveC.NSObject {
+  @objc public var name: Swift.String
+  @objc public var nickName: Swift.String
+  @objc public var patientName: Swift.String
+  @objc public var identifier: Swift.String
+  @objc public var firmwareVersion: Swift.String
+  @objc public var deviceId: Swift.String
+  @objc public var duration: Swift.Int
+  @objc public var timeFormat: Swift.Int
+  @objc public var ring: Swift.Int
+  @objc public var volume: Swift.Int
+  @objc public var batteryStatus: Swift.Int
+  @objc public var batteryPower: Swift.Int
+  @objc public var status: Swift.Int
+  @objc public var nextPutDrugTime: Swift.String
+  @objc public var nextAlarmTime: Swift.String?
+  @objc public var nextAlarmDate: Swift.String?
+  @objc public var nextAlarm: LNAlarmModel?
+  public var state: LNBoxState
+  public var alarms: [LNAlarmModel]
+  public func getNextAlarm(alarms: [LNAlarmModel]) -> (Swift.String?, Swift.String?, LNAlarmModel?)
+  @objc override dynamic public func setValue(_ value: Any?, forUndefinedKey key: Swift.String)
+  @objc deinit
+}
+
+@objc public class LNBoxCallback : ObjectiveC.NSObject {
+  @objc override dynamic public init()
+  @objc deinit
+}
+
+@objc public class LNBoxSDK : ObjectiveC.NSObject {
+  public static func getBoxState() -> LNBoxState
+  public static func doScan(block: ((CoreBluetooth.CBPeripheral) -> Swift.Void)?)
+  public static func cancelScan()
+  public static func connectWithPeripheral(peripheral: CoreBluetooth.CBPeripheral?, successBlock: ((LNBox) -> Swift.Void)?, failureBlock: ((LNError) -> Swift.Void)?)
+  public static func doDisconnect()
+  public static func unBindDeviceBox()
+  public static func setUpTimeFormat(timeFormat: LNBoxTimeFormat)
+  public static func setUpVolume(volume: LNBoxVolumeType)
+  public static func setupRingType(ringType: LNBoxRingType)
+  public static func setupAlarm(alarm: LNAlarmModel?)
+  public static func setupRemindTime(duration: Swift.Int)
+  public static func setBlockOnDeviceDidUpdateState(block: @escaping (LNBox) -> Swift.Void)
+  public static func setBlockOnUpdateMedication(block: @escaping ([Swift.String : Any]) -> Swift.Void)
+  @objc override dynamic public init()
+  @objc deinit
+}
+
+@objc @_hasMissingDesignatedInitializers public class LNError : ObjectiveC.NSObject {
+  public var errorDescription: Swift.String
+  @objc deinit
+}
+
+extension LNBoxState : Swift.Equatable {}
+extension LNBoxState : Swift.Hashable {}
+extension LNBoxState : Swift.RawRepresentable {}
+extension LNBoxTimeFormat : Swift.Equatable {}
+extension LNBoxTimeFormat : Swift.Hashable {}
+extension LNBoxTimeFormat : Swift.RawRepresentable {}
+extension LNBoxVolumeType : Swift.Equatable {}
+extension LNBoxVolumeType : Swift.Hashable {}
+extension LNBoxVolumeType : Swift.RawRepresentable {}
+extension LNBoxRingType : Swift.Equatable {}
+extension LNBoxRingType : Swift.Hashable {}
+extension LNBoxRingType : Swift.RawRepresentable {}
+extension LEErrorType : Swift.Equatable {}
+extension LEErrorType : Swift.Hashable {}
+extension LEErrorType : Swift.RawRepresentable {}
