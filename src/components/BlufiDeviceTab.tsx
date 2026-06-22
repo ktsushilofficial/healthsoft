@@ -101,6 +101,7 @@ const BlufiDeviceTab = () => {
   const [identityLoading, setIdentityLoading] = useState(true);
   const [wifiProvisioningState, setWifiProvisioningState] = useState<'idle' | 'sending' | 'sent' | 'acknowledged' | 'error'>('idle');
   const [wifiProvisioningMessage, setWifiProvisioningMessage] = useState<string | null>(null);
+  const statusRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const pushLog = useCallback((entry: string) => {
@@ -210,6 +211,10 @@ const BlufiDeviceTab = () => {
       clearTimeout(scanTimerRef.current);
       scanTimerRef.current = null;
     }
+    if (statusRefreshTimerRef.current) {
+      clearTimeout(statusRefreshTimerRef.current);
+      statusRefreshTimerRef.current = null;
+    }
     if (pillDispenserBridge) {
       pillDispenserBridge.stopScan().catch(() => {});
     }
@@ -287,6 +292,11 @@ const BlufiDeviceTab = () => {
     const targetDeviceId = deviceId ?? selectedDeviceId;
     if (!targetDeviceId || !pillDispenserBridge) return;
     try {
+      if (statusRefreshTimerRef.current) {
+        clearTimeout(statusRefreshTimerRef.current);
+        statusRefreshTimerRef.current = null;
+      }
+      setStatusPayload(null);
       await pillDispenserBridge.connect(targetDeviceId);
       setConnectionState('connecting');
       setWifiProvisioningState('idle');
@@ -301,9 +311,14 @@ const BlufiDeviceTab = () => {
     if (!pillDispenserBridge) return;
     try {
       setConnectionState('disconnecting');
+      if (statusRefreshTimerRef.current) {
+        clearTimeout(statusRefreshTimerRef.current);
+        statusRefreshTimerRef.current = null;
+      }
       await pillDispenserBridge.disconnect();
       setConnectedDeviceId(null);
       setConnectionState('disconnected');
+      setStatusPayload(null);
       setWifiProvisioningState('idle');
       setWifiProvisioningMessage(null);
       pushLog('Disconnected');
@@ -352,6 +367,17 @@ const BlufiDeviceTab = () => {
     }
   }, [pushLog]);
 
+  const scheduleStatusRefresh = useCallback((delayMs: number) => {
+    if (!pillDispenserBridge) return;
+    if (statusRefreshTimerRef.current) {
+      clearTimeout(statusRefreshTimerRef.current);
+    }
+    statusRefreshTimerRef.current = setTimeout(() => {
+      statusRefreshTimerRef.current = null;
+      requestStatus().catch(() => {});
+    }, delayMs);
+  }, [requestStatus]);
+
   const sendWiFiProvisioning = useCallback(async () => {
     if (!pillDispenserBridge) return;
     const ssid = wifiSsid.trim();
@@ -372,12 +398,25 @@ const BlufiDeviceTab = () => {
       setWifiProvisioningState('sent');
       setWifiProvisioningMessage(`Wi-Fi settings sent for "${ssid}". Waiting for the device to acknowledge.`);
       pushLog(`Wi-Fi provisioning sent for SSID "${ssid}"`);
+      scheduleStatusRefresh(2500);
     } catch (error) {
       setWifiProvisioningState('error');
       setWifiProvisioningMessage(error instanceof Error ? error.message : 'Wi-Fi provisioning failed.');
       setScanError(error instanceof Error ? error.message : 'Failed to configure Wi-Fi.');
     }
-  }, [connectionState, pushLog, wifiPassword, wifiSsid]);
+  }, [connectionState, pushLog, scheduleStatusRefresh, wifiPassword, wifiSsid]);
+
+  useEffect(() => {
+    if (connectionState === 'connected') {
+      scheduleStatusRefresh(500);
+    }
+  }, [connectionState, scheduleStatusRefresh]);
+
+  useEffect(() => {
+    if (wifiProvisioningState === 'sent' || wifiProvisioningState === 'acknowledged') {
+      scheduleStatusRefresh(2500);
+    }
+  }, [scheduleStatusRefresh, wifiProvisioningState]);
 
   const sendAlarmCommand = useCallback(async () => {
     if (!pillDispenserBridge) return;
@@ -420,6 +459,58 @@ const BlufiDeviceTab = () => {
     if (connectionState === 'disconnecting') return 'Disconnecting';
     return 'Ready to scan';
   }, [connectionState]);
+
+  const deviceStatusSummary = useMemo(() => {
+    if (!statusPayload) return null;
+
+    const modeLabel = (() => {
+      switch (statusPayload.opMode) {
+        case 0:
+          return 'NULL';
+        case 1:
+          return 'Station';
+        case 2:
+          return 'SoftAP';
+        case 3:
+          return 'Station/SoftAP';
+        default:
+          return 'Unknown';
+      }
+    })();
+
+    const stationLabel = (() => {
+      switch (statusPayload.staConnectionStatus) {
+        case 0:
+          return 'Connected to Wi-Fi';
+        case 1:
+          return 'Wi-Fi connection failed';
+        case 2:
+          return 'Connecting to Wi-Fi';
+        case 3:
+          return 'Connected, but no IP yet';
+        default:
+          return 'Station status unavailable';
+      }
+    })();
+
+    const lines = [`Mode: ${modeLabel}`];
+    if (statusPayload.staConnectionStatus !== undefined) {
+      lines.push(`Station: ${stationLabel}`);
+    }
+    if (statusPayload.staSsid) {
+      lines.push(`SSID: ${statusPayload.staSsid}`);
+    }
+    if (statusPayload.staBssid) {
+      lines.push(`BSSID: ${statusPayload.staBssid}`);
+    }
+    if (statusPayload.softApSsid) {
+      lines.push(`SoftAP SSID: ${statusPayload.softApSsid}`);
+    }
+    if (typeof statusPayload.softApConnectionCount === 'number' && typeof statusPayload.softApMaxConnection === 'number') {
+      lines.push(`SoftAP clients: ${statusPayload.softApConnectionCount}/${statusPayload.softApMaxConnection}`);
+    }
+    return lines.join('\n');
+  }, [statusPayload]);
 
   const likelyCount = useMemo(() => devices.filter(item => item.isLikelyBlufi).length, [devices]);
 
@@ -721,6 +812,15 @@ const BlufiDeviceTab = () => {
 
         <View style={styles.sectionCard}>
           <Text style={styles.cardTitle}>Latest Payloads</Text>
+
+          {deviceStatusSummary ? (
+            <View style={styles.payloadBlock}>
+              <Text style={styles.payloadLabel}>Wi-Fi status</Text>
+              <Text style={styles.payloadValue} selectable>
+                {deviceStatusSummary}
+              </Text>
+            </View>
+          ) : null}
 
           {versionPayload ? (
             <View style={styles.payloadBlock}>
