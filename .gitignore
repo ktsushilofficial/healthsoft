@@ -307,3 +307,5 @@ PHONE_NUMBER_PERSISTENCE_FIX.md
 # Debug and Test Scripts
 debug_*.js
 test-*.js
+/EspBlufiForAndroid/
+/EspBlufiForiOS/
