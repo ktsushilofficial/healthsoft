@@ -13,6 +13,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useBle } from '../bluetooth/BleProvider';
 import V8DeviceTab from '../components/V8DeviceTab';
+import BlufiDeviceTab from '../components/BlufiDeviceTab';
 import type { BleDiscoveredDevice } from '../bluetooth/types';
 import type { DeviceStackParamList } from '../types/navigation';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -97,11 +98,16 @@ const DeviceScreen = () => {
     () => [
       { id: 'current', label: 'Current Devices' },
       { id: 'v8', label: 'Hand Band' },
+      { id: 'blufi', label: 'BluFi' },
     ],
     [],
   );
   const [activeTab, setActiveTab] = useState(() =>
-    route.params?.activeTab === 'v8' ? 'v8' : tabs[0].id,
+    route.params?.activeTab === 'v8'
+      ? 'v8'
+      : route.params?.activeTab === 'blufi'
+        ? 'blufi'
+        : tabs[0].id,
   );
   const hasPurchased = true;
   const [assignedDevices, setAssignedDevices] = useState<SeniorAssignedDevice[]>([]);
@@ -186,8 +192,8 @@ const DeviceScreen = () => {
   }, [loadAssignedDevices]);
 
   useEffect(() => {
-    if (route.params?.activeTab === 'v8') {
-      setActiveTab('v8');
+    if (route.params?.activeTab === 'v8' || route.params?.activeTab === 'blufi') {
+      setActiveTab(route.params.activeTab);
     }
   }, [route.params?.activeTab]);
 
@@ -753,7 +759,7 @@ const DeviceScreen = () => {
                           style={[
                             styles.linkButton,
                             isConnected ? styles.linkButtonSecondary : null,
-                            isBusy ? { opacity: 0.6 } : null,
+                            isBusy ? styles.busyDimmed : null,
                           ]}
                           onPress={() => (isConnected ? disconnect(device.id) : connectToDevice(device.id))}
                           disabled={isBusy}
@@ -819,7 +825,7 @@ const DeviceScreen = () => {
                               style={[
                                 styles.linkButton,
                                 isConnected ? styles.linkButtonSecondary : null,
-                                isBusy ? { opacity: 0.6 } : null,
+                                isBusy ? styles.busyDimmed : null,
                               ]}
                               onPress={() => (isConnected ? disconnect(device.id) : connectToDevice(device.id))}
                               disabled={isBusy}
@@ -855,6 +861,8 @@ const DeviceScreen = () => {
                 promptToken={route.params?.promptedAt ?? null}
               />
             ) : null}
+
+            {activeTab === 'blufi' ? <BlufiDeviceTab /> : null}
           </>
         ) : (
           <View style={styles.card}>
@@ -1068,6 +1076,9 @@ const styles = StyleSheet.create({
   },
   linkButtonSecondary: {
     backgroundColor: '#F2B046',
+  },
+  busyDimmed: {
+    opacity: 0.6,
   },
   linkButtonText: {
     color: '#FFFFFF',

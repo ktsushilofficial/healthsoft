@@ -21,6 +21,8 @@ target 'HealthsoftApp' do
   pod 'GoogleUtilities', :modular_headers => true
   pod 'FirebaseCore', :modular_headers => true
   pod 'FirebaseMessaging', :modular_headers => true
+  pod 'BlufiLibrary', :path => './BlufiLibrary'
+  pod 'PillDispenserBridge', :path => './PillDispenserBridge'
   pod 'V8SDK', :path => './V8SDK'
   pod 'V8Bridge', :path => './V8Bridge'
   config = use_native_modules!
@@ -45,6 +47,12 @@ target 'HealthsoftApp' do
       target.build_configurations.each do |build_configuration|
         # fmt 11 fails under the archive toolchain here unless it stays on C++17.
         build_configuration.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++17'
+      end
+    end
+
+    installer.pods_project.targets.each do |target|
+      target.build_configurations.each do |build_configuration|
+        build_configuration.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64'
       end
     end
 
@@ -75,6 +83,7 @@ target 'HealthsoftApp' do
         simulator_flags = flags.gsub(/\s-l\"BleSDK\"/, '')
         updated_lines << "OTHER_LDFLAGS = #{simulator_flags}\n"
         updated_lines << "OTHER_LDFLAGS[sdk=iphoneos*] = $(inherited) -l\"BleSDK\"\n"
+        updated_lines << "EXCLUDED_ARCHS[sdk=iphonesimulator*] = arm64\n"
         injected = true
         changed = true
       end

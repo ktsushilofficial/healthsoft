@@ -7,6 +7,7 @@ import com.facebook.react.ReactHost
 import com.facebook.react.ReactNativeApplicationEntryPoint.loadReactNative
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import `in`.healthsoftcare.seniorcare.v8.V8BlePackage
+import `in`.healthsoftcare.seniorcare.blufi.PillDispenserPackage
 
 class MainApplication : Application(), ReactApplication {
 
@@ -17,6 +18,7 @@ class MainApplication : Application(), ReactApplication {
         PackageList(this).packages.apply {
           // Packages that cannot be autolinked yet can be added manually here, for example:
           add(V8BlePackage())
+          add(PillDispenserPackage())
         },
     )
   }
