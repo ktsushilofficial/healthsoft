@@ -99,6 +99,8 @@ const BlufiDeviceTab = () => {
   const [alarmRepeat, setAlarmRepeat] = useState('Mon-Fri');
   const [savedIdentity, setSavedIdentity] = useState<PillDispenserIdentityPreference | null>(null);
   const [identityLoading, setIdentityLoading] = useState(true);
+  const [wifiProvisioningState, setWifiProvisioningState] = useState<'idle' | 'sending' | 'sent' | 'acknowledged' | 'error'>('idle');
+  const [wifiProvisioningMessage, setWifiProvisioningMessage] = useState<string | null>(null);
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const pushLog = useCallback((entry: string) => {
@@ -164,7 +166,17 @@ const BlufiDeviceTab = () => {
         pushLog(`Connection: ${event.state}${event.deviceId ? ` (${event.deviceId})` : ''}`);
       }),
       pillDispenserEmitter.addListener('PillDispenserLog', (event: { message?: string }) => {
-        if (event.message) pushLog(event.message);
+        if (!event.message) return;
+        pushLog(event.message);
+        if (event.message.includes('BluFi configuration posted')) {
+          setWifiProvisioningState('acknowledged');
+          setWifiProvisioningMessage('The dispenser accepted the Wi-Fi settings.');
+        } else if (event.message.includes('BluFi configuration failed')) {
+          setWifiProvisioningState('error');
+          setWifiProvisioningMessage('The dispenser rejected the Wi-Fi settings.');
+        } else if (event.message.includes('Wi-Fi provisioning')) {
+          setWifiProvisioningMessage(event.message);
+        }
       }),
       pillDispenserEmitter.addListener('PillDispenserStatus', (event: PillDispenserStatusEvent) => {
         setStatusPayload(event);
@@ -277,6 +289,8 @@ const BlufiDeviceTab = () => {
     try {
       await pillDispenserBridge.connect(targetDeviceId);
       setConnectionState('connecting');
+      setWifiProvisioningState('idle');
+      setWifiProvisioningMessage(null);
       pushLog(`Connecting to ${targetDeviceId}`);
     } catch (error) {
       setScanError(error instanceof Error ? error.message : 'Failed to connect.');
@@ -290,6 +304,8 @@ const BlufiDeviceTab = () => {
       await pillDispenserBridge.disconnect();
       setConnectedDeviceId(null);
       setConnectionState('disconnected');
+      setWifiProvisioningState('idle');
+      setWifiProvisioningMessage(null);
       pushLog('Disconnected');
     } catch (error) {
       setScanError(error instanceof Error ? error.message : 'Failed to disconnect.');
@@ -338,13 +354,30 @@ const BlufiDeviceTab = () => {
 
   const sendWiFiProvisioning = useCallback(async () => {
     if (!pillDispenserBridge) return;
+    const ssid = wifiSsid.trim();
+    if (connectionState !== 'connected') {
+      setScanError('Connect to the dispenser before sending Wi-Fi credentials.');
+      return;
+    }
+    if (!ssid) {
+      setScanError('Enter a Wi-Fi SSID before provisioning.');
+      return;
+    }
     try {
-      await pillDispenserBridge.configureStation(wifiSsid.trim(), wifiPassword, null);
-      pushLog(`Wi-Fi provisioning sent for SSID "${wifiSsid.trim()}"`);
+      setWifiProvisioningState('sending');
+      setWifiProvisioningMessage(`Sending Wi-Fi settings for "${ssid}"...`);
+      pushLog(`Sending Wi-Fi provisioning for SSID "${ssid}"`);
+      await pillDispenserBridge.negotiateSecurity().catch(() => {});
+      await pillDispenserBridge.configureStation(ssid, wifiPassword, null);
+      setWifiProvisioningState('sent');
+      setWifiProvisioningMessage(`Wi-Fi settings sent for "${ssid}". Waiting for the device to acknowledge.`);
+      pushLog(`Wi-Fi provisioning sent for SSID "${ssid}"`);
     } catch (error) {
+      setWifiProvisioningState('error');
+      setWifiProvisioningMessage(error instanceof Error ? error.message : 'Wi-Fi provisioning failed.');
       setScanError(error instanceof Error ? error.message : 'Failed to configure Wi-Fi.');
     }
-  }, [pushLog, wifiPassword, wifiSsid]);
+  }, [connectionState, pushLog, wifiPassword, wifiSsid]);
 
   const sendAlarmCommand = useCallback(async () => {
     if (!pillDispenserBridge) return;
@@ -617,10 +650,34 @@ const BlufiDeviceTab = () => {
             secureTextEntry
           />
 
-          <TouchableOpacity style={styles.primaryAction} onPress={() => sendWiFiProvisioning().catch(() => {})} disabled={connectionState !== 'connected'}>
+          <TouchableOpacity
+            style={styles.primaryAction}
+            onPress={() => sendWiFiProvisioning().catch(() => {})}
+            disabled={connectionState !== 'connected' || wifiProvisioningState === 'sending'}
+          >
             <Icon name="cloud-upload-outline" size={16} color="#FFFFFF" />
-            <Text style={styles.primaryActionText}>Send Wi-Fi Credentials</Text>
+            <Text style={styles.primaryActionText}>
+              {wifiProvisioningState === 'sending'
+                ? 'Sending Wi-Fi...'
+                : wifiProvisioningState === 'sent'
+                  ? 'Wi-Fi Sent'
+                  : 'Send Wi-Fi Credentials'}
+            </Text>
           </TouchableOpacity>
+
+          <Text style={styles.provisioningStateLabel}>Provisioning status</Text>
+          <Text style={styles.provisioningStateValue}>
+            {wifiProvisioningMessage
+              ?? (wifiProvisioningState === 'idle'
+                ? 'No provisioning attempt yet.'
+                : wifiProvisioningState === 'sending'
+                  ? 'The app is sending the Wi-Fi request now.'
+                  : wifiProvisioningState === 'sent'
+                    ? 'Request sent. Waiting for device acknowledgement.'
+                    : wifiProvisioningState === 'acknowledged'
+                      ? 'Device acknowledged the Wi-Fi settings.'
+                    : 'Wi-Fi provisioning failed.')}
+          </Text>
         </View>
 
         <View style={styles.sectionCard}>
@@ -1034,6 +1091,18 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     textTransform: 'uppercase',
     letterSpacing: 0.6,
+  },
+  provisioningStateLabel: {
+    marginTop: 12,
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#8B5E34',
+  },
+  provisioningStateValue: {
+    marginTop: 4,
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#6B7280',
   },
   actionGrid: {
     flexDirection: 'row',

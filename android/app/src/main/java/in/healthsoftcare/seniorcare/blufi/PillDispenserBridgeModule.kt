@@ -361,6 +361,11 @@ class PillDispenserBridgeModule(private val reactContext: ReactApplicationContex
       promise.reject("NOT_CONNECTED", "Connect to a device before configuring Wi-Fi.")
       return
     }
+    if (ssid.isBlank()) {
+      promise.reject("INVALID_SSID", "Wi-Fi SSID cannot be empty.")
+      return
+    }
+    emit("PillDispenserLog", mapOf("message" to "Starting Wi-Fi configuration for SSID \"$ssid\""))
     val params = BlufiConfigureParams().apply {
       setOpMode(BlufiParameter.OP_MODE_STA)
       setStaSSIDBytes(ssid.toByteArray(Charset.forName("UTF-8")))
@@ -369,8 +374,13 @@ class PillDispenserBridgeModule(private val reactContext: ReactApplicationContex
         setStaBSSID(bssid)
       }
     }
-    client.configure(params)
-    promise.resolve(true)
+    try {
+      client.configure(params)
+      promise.resolve(true)
+    } catch (e: Exception) {
+      emitError("CONFIGURE_STATION", e.message ?: "Failed to configure Wi-Fi.")
+      promise.reject("CONFIGURE_STATION", e.message, e)
+    }
   }
 
   private val gattCallback = object : BluetoothGattCallback() {
@@ -451,7 +461,10 @@ class PillDispenserBridgeModule(private val reactContext: ReactApplicationContex
     }
 
     override fun onPostConfigureParams(client: BlufiClient, status: Int) {
-      emit("PillDispenserLog", mapOf("message" to if (status == BlufiCallback.STATUS_SUCCESS) "BluFi configuration posted" else "BluFi configuration failed"))
+      emit(
+        "PillDispenserLog",
+        mapOf("message" to if (status == BlufiCallback.STATUS_SUCCESS) "BluFi configuration posted" else "BluFi configuration failed with status $status"),
+      )
     }
 
     override fun onDeviceStatusResponse(client: BlufiClient, status: Int, response: BlufiStatusResponse?) {
