@@ -13,7 +13,9 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.SystemClock
 import android.util.Base64
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -21,6 +23,7 @@ import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReadableArray
+import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import blufi.espressif.BlufiCallback
 import blufi.espressif.BlufiClient
@@ -38,6 +41,10 @@ class PillDispenserBridgeModule(private val reactContext: ReactApplicationContex
   private val bluetoothAdapter: BluetoothAdapter? by lazy {
     val manager = reactContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
     manager?.adapter
+  }
+
+  private val wifiManager: WifiManager? by lazy {
+    reactContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
   }
 
   private val seenDevices = linkedMapOf<String, BluetoothDevice>()
@@ -118,6 +125,47 @@ class PillDispenserBridgeModule(private val reactContext: ReactApplicationContex
       .emit(event, payload)
   }
 
+  private fun toWritableValueMap(map: Map<String, Any?>): WritableMap {
+    val payload = Arguments.createMap()
+    map.forEach { (key, value) ->
+      when (value) {
+        null -> payload.putNull(key)
+        is String -> payload.putString(key, value)
+        is Int -> payload.putInt(key, value)
+        is Long -> payload.putDouble(key, value.toDouble())
+        is Double -> payload.putDouble(key, value)
+        is Float -> payload.putDouble(key, value.toDouble())
+        is Boolean -> payload.putBoolean(key, value)
+        is Map<*, *> -> {
+          @Suppress("UNCHECKED_CAST")
+          payload.putMap(key, toWritableValueMap(value as Map<String, Any?>))
+        }
+        is Iterable<*> -> {
+          val array = Arguments.createArray()
+          value.forEach { item ->
+            when (item) {
+              null -> array.pushNull()
+              is String -> array.pushString(item)
+              is Int -> array.pushInt(item)
+              is Long -> array.pushDouble(item.toDouble())
+              is Double -> array.pushDouble(item)
+              is Float -> array.pushDouble(item.toDouble())
+              is Boolean -> array.pushBoolean(item)
+              is Map<*, *> -> {
+                @Suppress("UNCHECKED_CAST")
+                array.pushMap(toWritableValueMap(item as Map<String, Any?>))
+              }
+              else -> array.pushString(item.toString())
+            }
+          }
+          payload.putArray(key, array)
+        }
+        else -> payload.putString(key, value.toString())
+      }
+    }
+    return payload
+  }
+
   private fun emitError(code: String, message: String) {
     emit(
       "PillDispenserError",
@@ -135,6 +183,79 @@ class PillDispenserBridgeModule(private val reactContext: ReactApplicationContex
         "state" to state,
         "deviceId" to deviceId,
       ),
+    )
+  }
+
+  private fun normalizeSsid(rawSsid: String?): String? {
+    val trimmed = rawSsid?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    return trimmed
+      .removePrefix("\"")
+      .removeSuffix("\"")
+      .takeIf { it.isNotEmpty() && !it.equals("<unknown ssid>", ignoreCase = true) }
+  }
+
+  private fun currentPhoneSsid(manager: WifiManager): String? {
+    val connectionInfo = manager.connectionInfo ?: return null
+    return normalizeSsid(connectionInfo.ssid)
+  }
+
+  private fun buildPhoneWifiContext(manager: WifiManager): Map<String, Any?> {
+    val currentSsid = currentPhoneSsid(manager)
+    val isWifiEnabled = manager.isWifiEnabled
+    val networks = mutableListOf<Map<String, Any?>>()
+
+    if (isWifiEnabled) {
+      try {
+        manager.startScan()
+      } catch (_: Exception) {
+        // Ignore and fall back to the latest scan results.
+      }
+
+      try {
+        SystemClock.sleep(1200)
+        manager.scanResults
+          ?.asSequence()
+          ?.mapNotNull { scanResult ->
+            val ssid = normalizeSsid(scanResult.SSID) ?: return@mapNotNull null
+            mapOf(
+              "ssid" to ssid,
+              "rssi" to scanResult.level,
+              "frequency" to scanResult.frequency,
+              "capabilities" to scanResult.capabilities,
+              "isCurrent" to (currentSsid != null && ssid.equals(currentSsid, ignoreCase = true)),
+            )
+          }
+          ?.distinctBy { it["ssid"]?.toString()?.lowercase(Locale.US) }
+          ?.sortedWith(
+            compareByDescending<Map<String, Any?>> { (it["isCurrent"] as? Boolean) == true }
+              .thenByDescending { it["rssi"] as? Int ?: Int.MIN_VALUE },
+          )
+          ?.forEach { networks.add(it) }
+      } catch (_: SecurityException) {
+        return mapOf(
+          "isWifiEnabled" to isWifiEnabled,
+          "currentSsid" to currentSsid,
+          "permissionRequired" to true,
+          "errorMessage" to "Wi-Fi permission is required to read nearby networks.",
+          "networks" to emptyList<Map<String, Any?>>(),
+        )
+      } catch (e: Exception) {
+        return mapOf(
+          "isWifiEnabled" to isWifiEnabled,
+          "currentSsid" to currentSsid,
+          "permissionRequired" to false,
+          "errorMessage" to (e.message ?: "Failed to read Wi-Fi networks."),
+          "networks" to emptyList<Map<String, Any?>>(),
+        )
+      }
+    }
+
+    return mapOf(
+      "isWifiEnabled" to isWifiEnabled,
+      "currentSsid" to currentSsid,
+      "permissionRequired" to false,
+      "errorMessage" to null,
+      "networks" to networks,
     )
   }
 
@@ -332,6 +453,23 @@ class PillDispenserBridgeModule(private val reactContext: ReactApplicationContex
     }
     client.requestDeviceWifiScan()
     promise.resolve(true)
+  }
+
+  @SuppressLint("MissingPermission")
+  @ReactMethod
+  fun getWifiContext(requestPermissions: Boolean, promise: Promise) {
+    val manager = wifiManager
+    if (manager == null) {
+      promise.reject("WIFI_UNAVAILABLE", "Wi-Fi manager is unavailable.")
+      return
+    }
+
+    if (requestPermissions) {
+      // Permission handling is driven from the JS side.
+    }
+
+    val payload = buildPhoneWifiContext(manager)
+    promise.resolve(toWritableValueMap(payload))
   }
 
   @ReactMethod

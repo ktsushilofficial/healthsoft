@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  FlatList,
+  Modal,
   PermissionsAndroid,
   Platform,
   ScrollView,
@@ -26,6 +28,8 @@ import {
   type PillDispenserStatusEvent,
   type PillDispenserVersionEvent,
   type PillDispenserWifiScanEvent,
+  type PhoneWifiContext,
+  type PhoneWifiNetwork,
 } from '../blufi/nativePillDispenser';
 import {
   loadPillDispenserIdentityPreference,
@@ -60,6 +64,33 @@ async function requestAndroidBlePermissions(): Promise<boolean> {
   }
 }
 
+async function requestAndroidWifiPermissions(): Promise<boolean> {
+  if (Platform.OS !== 'android') return true;
+
+  const permissions =
+    Platform.Version >= 33
+      ? ([
+          PermissionsAndroid.PERMISSIONS.NEARBY_WIFI_DEVICES,
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+        ] as const)
+      : ([PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION] as const);
+
+  try {
+    const result = await PermissionsAndroid.requestMultiple(permissions as any);
+    return Object.values(result).every(value => value === PermissionsAndroid.RESULTS.GRANTED);
+  } catch {
+    return false;
+  }
+}
+
+function normalizeSsid(value?: string | null): string | null {
+  const trimmed = (value ?? '').trim();
+  if (!trimmed || trimmed === '<unknown ssid>') {
+    return null;
+  }
+  return trimmed.replace(/^"+|"+$/g, '');
+}
+
 function stableSortDevices(values: DeviceRow[]): DeviceRow[] {
   return [...values].sort((left, right) => {
     if (!!left.isLikelyBlufi !== !!right.isLikelyBlufi) {
@@ -78,6 +109,24 @@ function bluetoothBadgeLabel(isReady: boolean, isAvailable: boolean): { label: s
   if (!isAvailable) return { label: 'Bridge unavailable', color: '#B45309' };
   return isReady ? { label: 'Bluetooth ready', color: '#166534' } : { label: 'Bluetooth needs attention', color: '#B45309' };
 }
+
+function sortWifiNetworks(networks: PhoneWifiNetwork[], currentSsid: string | null): PhoneWifiNetwork[] {
+  return [...networks]
+    .filter(network => normalizeSsid(network.ssid))
+    .sort((left, right) => {
+      const leftIsCurrent = normalizeSsid(left.ssid)?.toLowerCase() === currentSsid?.toLowerCase();
+      const rightIsCurrent = normalizeSsid(right.ssid)?.toLowerCase() === currentSsid?.toLowerCase();
+      if (leftIsCurrent !== rightIsCurrent) {
+        return leftIsCurrent ? -1 : 1;
+      }
+      const leftSignal = typeof left.rssi === 'number' ? left.rssi : -999;
+      const rightSignal = typeof right.rssi === 'number' ? right.rssi : -999;
+      if (leftSignal !== rightSignal) return rightSignal - leftSignal;
+      return (normalizeSsid(left.ssid) ?? '').localeCompare(normalizeSsid(right.ssid) ?? '');
+    });
+}
+
+const WifiPickerSeparator = () => <View style={styles.wifiPickerSeparator} />;
 
 const BlufiDeviceTab = () => {
   const [devicesById, setDevicesById] = useState<Record<string, DeviceRow>>({});
@@ -101,12 +150,20 @@ const BlufiDeviceTab = () => {
   const [identityLoading, setIdentityLoading] = useState(true);
   const [wifiProvisioningState, setWifiProvisioningState] = useState<'idle' | 'sending' | 'sent' | 'acknowledged' | 'error'>('idle');
   const [wifiProvisioningMessage, setWifiProvisioningMessage] = useState<string | null>(null);
+  const [phoneWifiContext, setPhoneWifiContext] = useState<PhoneWifiContext | null>(null);
+  const [wifiPickerVisible, setWifiPickerVisible] = useState(false);
+  const [wifiContextLoading, setWifiContextLoading] = useState(false);
   const statusRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wifiSsidRef = useRef('');
 
   const pushLog = useCallback((entry: string) => {
     setLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${entry}`].slice(-25));
   }, []);
+
+  useEffect(() => {
+    wifiSsidRef.current = wifiSsid;
+  }, [wifiSsid]);
 
   const devices = useMemo(() => stableSortDevices(Object.values(devicesById)), [devicesById]);
   const selectedDevice = selectedDeviceId ? devicesById[selectedDeviceId] ?? null : null;
@@ -367,6 +424,54 @@ const BlufiDeviceTab = () => {
     }
   }, [pushLog]);
 
+  const refreshPhoneWifiContext = useCallback(async (options?: {
+    requestPermissions?: boolean;
+    applyAutofill?: boolean;
+    quiet?: boolean;
+  }) => {
+    if (!pillDispenserBridge) return null;
+
+    const requestPermissions = options?.requestPermissions ?? false;
+    const applyAutofill = options?.applyAutofill ?? true;
+    const quiet = options?.quiet ?? false;
+
+    if (requestPermissions) {
+      const permissionGranted = await requestAndroidWifiPermissions();
+      if (!permissionGranted) {
+        if (!quiet) {
+          setScanError('Wi-Fi permissions are required to read nearby networks.');
+        }
+        return null;
+      }
+    }
+
+    try {
+      setWifiContextLoading(true);
+      const context = await pillDispenserBridge.getWifiContext(requestPermissions);
+      setPhoneWifiContext(context);
+      const currentSsid = normalizeSsid(context.currentSsid);
+      if (currentSsid && applyAutofill && !normalizeSsid(wifiSsidRef.current)) {
+        setWifiSsid(currentSsid);
+        setWifiProvisioningMessage(`Prefilled current phone Wi-Fi: "${currentSsid}".`);
+      }
+      if (!quiet) {
+        if (context.isWifiEnabled === false) {
+          setWifiProvisioningMessage('Phone Wi-Fi is turned off. Turn it on to pick a network.');
+        } else if (currentSsid) {
+          pushLog(`Phone Wi-Fi detected: ${currentSsid}`);
+        }
+      }
+      return context;
+    } catch (error) {
+      if (!quiet) {
+        setScanError(error instanceof Error ? error.message : 'Failed to read nearby Wi-Fi networks.');
+      }
+      return null;
+    } finally {
+      setWifiContextLoading(false);
+    }
+  }, [pushLog]);
+
   const scheduleStatusRefresh = useCallback((delayMs: number) => {
     if (!pillDispenserBridge) return;
     if (statusRefreshTimerRef.current) {
@@ -377,6 +482,16 @@ const BlufiDeviceTab = () => {
       requestStatus().catch(() => {});
     }, delayMs);
   }, [requestStatus]);
+
+  useEffect(() => {
+    refreshPhoneWifiContext({ applyAutofill: true, quiet: true }).catch(() => {});
+  }, [refreshPhoneWifiContext]);
+
+  useEffect(() => {
+    if (connectionState === 'connected') {
+      refreshPhoneWifiContext({ applyAutofill: true, quiet: true }).catch(() => {});
+    }
+  }, [connectionState, refreshPhoneWifiContext]);
 
   const sendWiFiProvisioning = useCallback(async () => {
     if (!pillDispenserBridge) return;
@@ -511,6 +626,13 @@ const BlufiDeviceTab = () => {
     }
     return lines.join('\n');
   }, [statusPayload]);
+
+  const phoneWifiNetworks = useMemo(() => {
+    const currentSsid = normalizeSsid(phoneWifiContext?.currentSsid);
+    return sortWifiNetworks(phoneWifiContext?.networks ?? [], currentSsid);
+  }, [phoneWifiContext]);
+
+  const currentPhoneWifiSsid = useMemo(() => normalizeSsid(phoneWifiContext?.currentSsid), [phoneWifiContext]);
 
   const likelyCount = useMemo(() => devices.filter(item => item.isLikelyBlufi).length, [devices]);
 
@@ -731,6 +853,36 @@ const BlufiDeviceTab = () => {
             placeholderTextColor="#A79B90"
             autoCapitalize="none"
           />
+          <View style={styles.wifiHelperRow}>
+            <TouchableOpacity
+              style={styles.wifiHelperButton}
+              onPress={() => refreshPhoneWifiContext({ requestPermissions: true, applyAutofill: true }).catch(() => {})}
+              activeOpacity={0.85}
+            >
+              <Icon name="phone-portrait-outline" size={14} color="#8B5E34" />
+              <Text style={styles.wifiHelperButtonText}>Use current Wi-Fi</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.wifiHelperButton}
+              onPress={() => {
+                setWifiPickerVisible(true);
+                refreshPhoneWifiContext({ requestPermissions: true, applyAutofill: true }).catch(() => {});
+              }}
+              activeOpacity={0.85}
+            >
+              <Icon name="list-outline" size={14} color="#8B5E34" />
+              <Text style={styles.wifiHelperButtonText}>Nearby networks</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.wifiHelperNote}>
+            {wifiContextLoading
+              ? 'Reading phone Wi-Fi...'
+              : currentPhoneWifiSsid
+                ? `Phone is currently on "${currentPhoneWifiSsid}".`
+                : phoneWifiContext?.isWifiEnabled === false
+                  ? 'Turn on phone Wi-Fi to auto-fill the SSID and browse nearby networks.'
+                  : 'Tap a helper above to auto-fill the current Wi-Fi or choose from nearby networks.'}
+          </Text>
           <TextInput
             style={styles.input}
             value={wifiPassword}
@@ -765,11 +917,118 @@ const BlufiDeviceTab = () => {
                   ? 'The app is sending the Wi-Fi request now.'
                   : wifiProvisioningState === 'sent'
                     ? 'Request sent. Waiting for device acknowledgement.'
-                    : wifiProvisioningState === 'acknowledged'
-                      ? 'Device acknowledged the Wi-Fi settings.'
+                : wifiProvisioningState === 'acknowledged'
+                  ? 'Device acknowledged the Wi-Fi settings.'
                     : 'Wi-Fi provisioning failed.')}
           </Text>
         </View>
+
+        <Modal
+          visible={wifiPickerVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setWifiPickerVisible(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={styles.wifiPickerCard}>
+              <View style={styles.wifiPickerHeader}>
+                <View style={styles.wifiPickerHeaderText}>
+                  <Text style={styles.wifiPickerTitle}>Nearby Wi-Fi</Text>
+                  <Text style={styles.wifiPickerSubtitle}>
+                    {currentPhoneWifiSsid
+                      ? `Current phone network: ${currentPhoneWifiSsid}`
+                      : 'Pick a network to prefill the SSID field.'}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.wifiPickerClose}
+                  onPress={() => setWifiPickerVisible(false)}
+                  activeOpacity={0.85}
+                >
+                  <Icon name="close" size={18} color="#8B5E34" />
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.wifiPickerActionRow}>
+                <TouchableOpacity
+                  style={styles.wifiPickerAction}
+                  onPress={() => refreshPhoneWifiContext({ requestPermissions: true, applyAutofill: true }).catch(() => {})}
+                >
+                  <Icon name="refresh-outline" size={14} color="#8B5E34" />
+                  <Text style={styles.wifiPickerActionText}>Refresh</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.wifiPickerAction}
+                  onPress={() => {
+                    if (currentPhoneWifiSsid) {
+                      setWifiSsid(currentPhoneWifiSsid);
+                      setWifiPickerVisible(false);
+                    }
+                  }}
+                  disabled={!currentPhoneWifiSsid}
+                >
+                  <Icon name="checkmark-circle-outline" size={14} color={currentPhoneWifiSsid ? '#8B5E34' : '#C4A574'} />
+                  <Text style={[styles.wifiPickerActionText, !currentPhoneWifiSsid ? styles.wifiPickerActionTextDisabled : null]}>
+                    Use current
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.wifiPickerContent}>
+                {phoneWifiNetworks.length > 0 ? (
+                  <FlatList
+                    data={phoneWifiNetworks}
+                    keyExtractor={item => normalizeSsid(item.ssid) ?? `${item.ssid}-${item.frequency ?? 'freq'}`}
+                    ItemSeparatorComponent={WifiPickerSeparator}
+                    contentContainerStyle={styles.wifiPickerList}
+                    renderItem={({ item }) => {
+                      const ssid = normalizeSsid(item.ssid) ?? 'Unknown network';
+                      const isCurrent = normalizeSsid(item.ssid)?.toLowerCase() === currentPhoneWifiSsid?.toLowerCase();
+                      return (
+                        <TouchableOpacity
+                          style={styles.wifiPickerRow}
+                          activeOpacity={0.85}
+                          onPress={() => {
+                            setWifiSsid(ssid);
+                            setWifiProvisioningMessage(`Selected Wi-Fi network "${ssid}".`);
+                            setWifiPickerVisible(false);
+                          }}
+                        >
+                          <View style={styles.wifiPickerRowText}>
+                            <Text style={styles.wifiPickerRowTitle} numberOfLines={1}>
+                              {ssid}
+                            </Text>
+                            <Text style={styles.wifiPickerRowSubtitle}>
+                              {typeof item.rssi === 'number' ? `${item.rssi} dBm` : 'Signal unknown'}
+                              {typeof item.frequency === 'number' ? ` · ${item.frequency} MHz` : ''}
+                            </Text>
+                          </View>
+                          {isCurrent ? (
+                            <View style={styles.wifiCurrentChip}>
+                              <Text style={styles.wifiCurrentChipText}>Current</Text>
+                            </View>
+                          ) : null}
+                        </TouchableOpacity>
+                      );
+                    }}
+                  />
+                ) : (
+                  <View style={styles.wifiPickerEmpty}>
+                    <Icon name="wifi-outline" size={24} color="#B9A89C" />
+                    <Text style={styles.wifiPickerEmptyTitle}>No nearby Wi-Fi networks yet</Text>
+                    <Text style={styles.wifiPickerEmptyBody}>
+                      {phoneWifiContext?.permissionRequired
+                        ? 'Grant Wi-Fi permission so the app can read nearby networks.'
+                        : phoneWifiContext?.isWifiEnabled === false
+                          ? 'Turn on Wi-Fi on the phone and try again.'
+                          : 'Try refresh after moving closer to a router.'}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            </View>
+          </View>
+        </Modal>
 
         <View style={styles.sectionCard}>
           <Text style={styles.cardTitle}>Reminder Command</Text>
@@ -1203,6 +1462,168 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     color: '#6B7280',
+  },
+  wifiHelperRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+  },
+  wifiHelperButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    minHeight: 40,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#E0C8B5',
+    backgroundColor: '#FFF8F2',
+  },
+  wifiHelperButtonText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#8B5E34',
+  },
+  wifiHelperNote: {
+    marginTop: 8,
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#7C6F63',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(33, 24, 15, 0.55)',
+    paddingHorizontal: 18,
+    justifyContent: 'center',
+  },
+  wifiPickerCard: {
+    maxHeight: '82%',
+    borderRadius: 24,
+    backgroundColor: '#FFFDF9',
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#EADBCF',
+  },
+  wifiPickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginBottom: 14,
+  },
+  wifiPickerHeaderText: {
+    flex: 1,
+  },
+  wifiPickerTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: '#2C1F17',
+  },
+  wifiPickerSubtitle: {
+    marginTop: 4,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#7C6F63',
+  },
+  wifiPickerClose: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFF2E8',
+  },
+  wifiPickerActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 12,
+  },
+  wifiPickerAction: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    minHeight: 40,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#E0C8B5',
+    backgroundColor: '#FFF8F2',
+  },
+  wifiPickerActionText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#8B5E34',
+  },
+  wifiPickerActionTextDisabled: {
+    color: '#C4A574',
+  },
+  wifiPickerContent: {
+    flexShrink: 1,
+  },
+  wifiPickerList: {
+    paddingBottom: 8,
+  },
+  wifiPickerSeparator: {
+    height: 10,
+  },
+  wifiPickerRow: {
+    minHeight: 64,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#EADBCF',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  wifiPickerRowText: {
+    flex: 1,
+  },
+  wifiPickerRowTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#2C1F17',
+  },
+  wifiPickerRowSubtitle: {
+    marginTop: 3,
+    fontSize: 12,
+    color: '#7C6F63',
+  },
+  wifiCurrentChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#E6F6EC',
+  },
+  wifiCurrentChipText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#166534',
+  },
+  wifiPickerEmpty: {
+    paddingVertical: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  wifiPickerEmptyTitle: {
+    marginTop: 10,
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#2C1F17',
+    textAlign: 'center',
+  },
+  wifiPickerEmptyBody: {
+    marginTop: 4,
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#7C6F63',
+    textAlign: 'center',
   },
   actionGrid: {
     flexDirection: 'row',

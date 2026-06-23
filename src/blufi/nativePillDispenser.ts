@@ -46,6 +46,22 @@ type PillDispenserWifiScanEvent = {
   }>;
 };
 
+type PhoneWifiNetwork = {
+  ssid?: string | null;
+  rssi?: number | null;
+  frequency?: number | null;
+  capabilities?: string | null;
+  isCurrent?: boolean | null;
+};
+
+type PhoneWifiContext = {
+  isWifiEnabled?: boolean | null;
+  currentSsid?: string | null;
+  permissionRequired?: boolean | null;
+  errorMessage?: string | null;
+  networks?: PhoneWifiNetwork[];
+};
+
 type PillDispenserCustomDataEvent = {
   status?: number;
   direction?: 'sent' | 'received';
@@ -68,6 +84,7 @@ type NativePillDispenserModule = {
   requestDeviceVersion(): Promise<boolean>;
   requestDeviceStatus(): Promise<boolean>;
   requestDeviceScan(): Promise<boolean>;
+  getWifiContext(requestPermissions?: boolean): Promise<PhoneWifiContext>;
   postCustomData(base64Data: string): Promise<boolean>;
   configureStation(ssid: string, password: string, bssid?: string | null): Promise<boolean>;
 };
@@ -86,6 +103,8 @@ export type {
   PillDispenserStatusEvent,
   PillDispenserVersionEvent,
   PillDispenserWifiScanEvent,
+  PhoneWifiNetwork,
+  PhoneWifiContext,
   PillDispenserCustomDataEvent,
   PillDispenserErrorEvent,
 };
