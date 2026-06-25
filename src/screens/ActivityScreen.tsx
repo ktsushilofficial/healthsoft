@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { InteractionManager } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useAuth } from '../context/AuthContext';
 import { isMacAddressLike } from '../utils/deviceAssignments';
@@ -103,6 +103,7 @@ function normalizeSummaryRows(payload: unknown): VitalsSummaryRow[] {
 }
 
 const ActivityScreen = () => {
+  const navigation = useNavigation<any>();
   const {
     user,
     isCaretaker,
@@ -278,9 +279,13 @@ const ActivityScreen = () => {
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.header}>
+          <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={12} style={styles.backButton}>
+            <Icon name="arrow-back" size={22} color="#F28C28" />
+          </TouchableOpacity>
           <View style={styles.brandRow}>
             <Icon name="fitness" size={20} color="#F28C28" />
           </View>
+          <View style={styles.headerSpacer} />
         </View>
 
         <View style={styles.card}>
@@ -465,9 +470,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 16,
   },
+  backButton: {
+    width: 24,
+    alignItems: 'flex-start',
+  },
   brandRow: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  headerSpacer: {
+    width: 24,
   },
   card: {
     backgroundColor: '#FFFFFF',

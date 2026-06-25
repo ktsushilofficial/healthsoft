@@ -172,7 +172,7 @@ const HomeDevicesScreen = () => {
           <TouchableOpacity
             style={styles.deviceRowCard}
             activeOpacity={0.8}
-            onPress={() => navigation.navigate('Main', { screen: 'Activity' })}
+            onPress={() => navigation.navigate('Activity')}
           >
             <View style={[styles.deviceRowIconWrap, styles.vitalIconHeartBg]}>
               <Icon name="heart" size={22} color="#EF4444" />

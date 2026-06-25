@@ -17,6 +17,7 @@ import DeviceDetailScreen from './src/screens/DeviceDetailScreen';
 import AssignedDevicesScreen from './src/screens/AssignedDevicesScreen';
 import PendantDetailScreen from './src/screens/PendantDetailScreen';
 import HomeDevicesScreen from './src/screens/HomeDevicesScreen';
+import ActivityScreen from './src/screens/ActivityScreen';
 import { BleProvider } from './src/bluetooth/BleProvider';
 import { V8BleProvider } from './src/v8/V8BleProvider';
 import V8DeviceManageScreen from './src/screens/V8DeviceManageScreen';
@@ -63,6 +64,7 @@ const AppNavigator = () => {
           <Stack.Screen name="DeviceDetail" component={DeviceDetailScreen} />
           <Stack.Screen name="AssignedDevices" component={AssignedDevicesScreen} />
           <Stack.Screen name="HomeDevices" component={HomeDevicesScreen} />
+          <Stack.Screen name="Activity" component={ActivityScreen} />
           <Stack.Screen name="V8DeviceManage" component={V8DeviceManageScreen} />
           <Stack.Screen name="PendantDetail" component={PendantDetailScreen} />
         </>
