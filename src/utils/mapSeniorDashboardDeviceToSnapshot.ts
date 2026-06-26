@@ -2,6 +2,12 @@ import { formatDistanceToNow } from 'date-fns';
 import type { SeniorHomeSnapshot } from '../types/seniorHomeSnapshot';
 import type { SeniorDashboardDeviceRecord } from '../types/seniorDashboard';
 
+export type DeviceAnalysis = {
+  label: string;
+  icon: string;
+  colors: [string, string];
+};
+
 function pickNumber(record: SeniorDashboardDeviceRecord, key: string): number | undefined {
   const v = record[key];
   if (typeof v === 'number' && !Number.isNaN(v)) {
@@ -18,6 +24,10 @@ function pickBoolean(record: SeniorDashboardDeviceRecord, key: string): boolean 
 function pickString(record: SeniorDashboardDeviceRecord, key: string): string | undefined {
   const v = record[key];
   return typeof v === 'string' && v.trim().length > 0 ? v : undefined;
+}
+
+function buildUnknownAnalysis(): DeviceAnalysis {
+  return { label: 'Unknown', icon: 'help-outline', colors: ['#E2E8F0', '#CBD5E1'] };
 }
 
 function firstDefinedLatLon(
@@ -230,6 +240,62 @@ export function mapSeniorDashboardDeviceToSnapshot(
     satellites,
     ...alarm,
   };
+}
+
+export function getSeniorDashboardActivityAnalysis(
+  record: SeniorDashboardDeviceRecord | null | undefined,
+): DeviceAnalysis {
+  if (!record) {
+    return buildUnknownAnalysis();
+  }
+
+  const speedRaw =
+    pickNumber(record, 'speed.kph') ?? pickNumber(record, 'positionSpeed') ?? pickNumber(record, 'speed');
+  const movement =
+    pickBoolean(record, 'movement.status') ?? pickBoolean(record, 'movementStatus');
+
+  if (speedRaw != null && speedRaw > 5) {
+    return { label: 'In Transit', icon: 'car-sport', colors: ['#8B5CF6', '#6D28D9'] };
+  }
+  if (movement === true) {
+    return { label: 'Active', icon: 'walk', colors: ['#0EA5E9', '#0369A1'] };
+  }
+  if (movement === false) {
+    return { label: 'Stationary', icon: 'body', colors: ['#10B981', '#047857'] };
+  }
+
+  return buildUnknownAnalysis();
+}
+
+export function getSeniorDashboardEnvironmentAnalysis(
+  record: SeniorDashboardDeviceRecord | null | undefined,
+): DeviceAnalysis {
+  if (!record) {
+    return buildUnknownAnalysis();
+  }
+
+  const wifiHome =
+    pickBoolean(record, 'wifi.home.status') ?? pickBoolean(record, 'wifiHomeStatus');
+  const indoor =
+    pickBoolean(record, 'indoor.status') ?? pickBoolean(record, 'indoorStatus');
+  const sourceWifi =
+    pickBoolean(record, 'location.source.wifi');
+  const sourceBluetooth =
+    pickBoolean(record, 'location.source.bluetooth') ?? pickBoolean(record, 'bluetoothConnectedStatus');
+  const sourceGps =
+    pickBoolean(record, 'location.source.gps') ?? pickBoolean(record, 'agpsPositionValid');
+
+  if (wifiHome === true || sourceWifi === true) {
+    return { label: 'At Home', icon: 'home', colors: ['#F59E0B', '#EA580C'] };
+  }
+  if (indoor === true || sourceBluetooth === true) {
+    return { label: 'Indoors', icon: 'business', colors: ['#F43F5E', '#E11D48'] };
+  }
+  if (sourceGps === true) {
+    return { label: 'Outdoors', icon: 'leaf', colors: ['#84CC16', '#65A30D'] };
+  }
+
+  return buildUnknownAnalysis();
 }
 
 export function getSeniorDashboardDeviceLabel(record: SeniorDashboardDeviceRecord): string {

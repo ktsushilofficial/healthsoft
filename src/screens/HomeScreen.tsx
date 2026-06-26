@@ -1175,32 +1175,6 @@ const HomeScreen = () => {
       'fallAlarmStop',
     ]);
 
-  const activityAnalysis = useMemo(() => {
-    if (!activeDeviceRecord) return { label: 'Unknown', icon: 'help-outline', colors: ['#E2E8F0', '#CBD5E1'] };
-    const moving = activeDeviceRecord.movementStatus ?? activeDeviceRecord['movement.status'] ?? false;
-    const speed = liveSnapshot.speedKph;
-    if (speed != null && speed > 5) {
-      return { label: 'In Transit', icon: 'car-sport', colors: ['#8B5CF6', '#6D28D9'] };
-    }
-    if (moving) {
-      return { label: 'Active', icon: 'walk', colors: ['#0EA5E9', '#0369A1'] };
-    }
-    return { label: 'Stationary', icon: 'body', colors: ['#10B981', '#047857'] };
-  }, [activeDeviceRecord, liveSnapshot.speedKph]);
-
-  const envAnalysis = useMemo(() => {
-    if (!activeDeviceRecord) return { label: 'Unknown', icon: 'help-outline', colors: ['#E2E8F0', '#CBD5E1'] };
-    const indoor = activeDeviceRecord.indoorStatus ?? activeDeviceRecord['indoor.status'] ?? false;
-    const wifiHome = activeDeviceRecord.wifiHomeStatus ?? activeDeviceRecord['wifi.home.status'] ?? false;
-    if (wifiHome) {
-      return { label: 'At Home', icon: 'home', colors: ['#F59E0B', '#EA580C'] };
-    }
-    if (indoor) {
-      return { label: 'Indoors', icon: 'business', colors: ['#F43F5E', '#E11D48'] };
-    }
-    return { label: 'Outdoors', icon: 'leaf', colors: ['#84CC16', '#65A30D'] };
-  }, [activeDeviceRecord]);
-
   const sosAnalysis = useMemo(() => {
     if (!activeDeviceRecord) return { label: 'Unknown', detail: 'Waiting for device', active: false };
     const panic = activeDeviceRecord.alarmPanicStart === true;

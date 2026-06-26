@@ -558,32 +558,6 @@ const PendantDetailScreen = () => {
       'fallAlarmStop',
     ]);
 
-  const activityAnalysis = useMemo(() => {
-    if (!matchedDeviceRecord) return { label: 'Unknown', icon: 'help-outline', colors: ['#E2E8F0', '#CBD5E1'] };
-    const moving = matchedDeviceRecord.movementStatus ?? matchedDeviceRecord['movement.status'] ?? false;
-    const speed = liveSnapshot.speedKph;
-    if (speed != null && speed > 5) {
-      return { label: 'In Transit', icon: 'car-sport', colors: ['#8B5CF6', '#6D28D9'] };
-    }
-    if (moving) {
-      return { label: 'Active', icon: 'walk', colors: ['#0EA5E9', '#0369A1'] };
-    }
-    return { label: 'Stationary', icon: 'body', colors: ['#10B981', '#047857'] };
-  }, [matchedDeviceRecord, liveSnapshot.speedKph]);
-
-  const envAnalysis = useMemo(() => {
-    if (!matchedDeviceRecord) return { label: 'Unknown', icon: 'help-outline', colors: ['#E2E8F0', '#CBD5E1'] };
-    const indoor = matchedDeviceRecord.indoorStatus ?? matchedDeviceRecord['indoor.status'] ?? false;
-    const wifiHome = matchedDeviceRecord.wifiHomeStatus ?? matchedDeviceRecord['wifi.home.status'] ?? false;
-    if (wifiHome) {
-      return { label: 'At Home', icon: 'home', colors: ['#F59E0B', '#EA580C'] };
-    }
-    if (indoor) {
-      return { label: 'Indoors', icon: 'business', colors: ['#F43F5E', '#E11D48'] };
-    }
-    return { label: 'Outdoors', icon: 'leaf', colors: ['#84CC16', '#65A30D'] };
-  }, [matchedDeviceRecord]);
-
   const sosAnalysis = useMemo(() => {
     if (!matchedDeviceRecord) return { label: 'Unknown', detail: 'Waiting for device', active: false };
     const panic = matchedDeviceRecord.alarmPanicStart === true;
@@ -769,39 +743,6 @@ const PendantDetailScreen = () => {
                 </LinearGradient>
               ) : null}
 
-              {/* Activity Context */}
-              <LinearGradient
-                colors={activityAnalysis.colors}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.vitalTile}
-              >
-                <Icon name={activityAnalysis.icon} size={28} color="#FFFFFF" style={styles.vitalIcon} />
-                <View style={styles.vitalTextCol}>
-                  <Text style={styles.vitalTitle}>Activity</Text>
-                  <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{activityAnalysis.label}</Text>
-                  <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
-                    {liveSnapshot.speedKph != null && liveSnapshot.speedKph > 0 ? `${Math.round(liveSnapshot.speedKph)} km/h` : 'No speed'}
-                  </Text>
-                </View>
-              </LinearGradient>
-
-              {/* Environment Context */}
-              <LinearGradient
-                colors={envAnalysis.colors}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.vitalTile}
-              >
-                <Icon name={envAnalysis.icon} size={28} color="#FFFFFF" style={styles.vitalIcon} />
-                <View style={styles.vitalTextCol}>
-                  <Text style={styles.vitalTitle}>Environment</Text>
-                  <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{envAnalysis.label}</Text>
-                  <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
-                    {matchedDeviceRecord?.gsmNetworkType ? `${matchedDeviceRecord.gsmNetworkType} Signal` : 'Available'}
-                  </Text>
-                </View>
-              </LinearGradient>
             </View>
 
             {/* Alert History Section */}

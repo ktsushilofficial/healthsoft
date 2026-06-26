@@ -1,5 +1,9 @@
 import { formatDistanceToNow } from 'date-fns';
-import { mapSeniorDashboardDeviceToSnapshot } from '../src/utils/mapSeniorDashboardDeviceToSnapshot';
+import {
+  getSeniorDashboardActivityAnalysis,
+  getSeniorDashboardEnvironmentAnalysis,
+  mapSeniorDashboardDeviceToSnapshot,
+} from '../src/utils/mapSeniorDashboardDeviceToSnapshot';
 
 describe('mapSeniorDashboardDeviceToSnapshot', () => {
   beforeAll(() => {
@@ -41,6 +45,28 @@ describe('mapSeniorDashboardDeviceToSnapshot', () => {
     );
     expect(snapshot.lastUpdatedLabel).toBe(
       formatDistanceToNow(new Date('2026-04-28T15:55:00.000Z'), { addSuffix: true }),
+    );
+  });
+
+  test('derives activity and environment labels from the matching telemetry fields', () => {
+    expect(getSeniorDashboardActivityAnalysis({ movementStatus: true })).toEqual(
+      expect.objectContaining({ label: 'Active' }),
+    );
+    expect(getSeniorDashboardActivityAnalysis({ speed: 9 })).toEqual(
+      expect.objectContaining({ label: 'In Transit' }),
+    );
+
+    expect(getSeniorDashboardEnvironmentAnalysis({ wifiHomeStatus: true })).toEqual(
+      expect.objectContaining({ label: 'At Home' }),
+    );
+    expect(getSeniorDashboardEnvironmentAnalysis({ indoorStatus: true })).toEqual(
+      expect.objectContaining({ label: 'Indoors' }),
+    );
+    expect(getSeniorDashboardEnvironmentAnalysis({ 'location.source.gps': true })).toEqual(
+      expect.objectContaining({ label: 'Outdoors' }),
+    );
+    expect(getSeniorDashboardEnvironmentAnalysis({})).toEqual(
+      expect.objectContaining({ label: 'Unknown' }),
     );
   });
 });
