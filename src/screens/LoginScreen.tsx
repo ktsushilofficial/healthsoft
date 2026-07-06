@@ -36,9 +36,8 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
   const [otp, setOtp] = useState('');
   const [otpSent, setOtpSent] = useState(false);
   const [showCountryPicker, setShowCountryPicker] = useState(false);
-  const [selectedCountryCode, setSelectedCountryCode] = useState<CountryCode>('US');
-  const [selectedCountryName, setSelectedCountryName] = useState('United States');
-  const [selectedDialCode, setSelectedDialCode] = useState('+1');
+  const [selectedCountryCode, setSelectedCountryCode] = useState<CountryCode>('IN');
+  const [selectedDialCode, setSelectedDialCode] = useState('+91');
 
   const getErrorMessage = (error: unknown, fallback: string): string => {
     if (error instanceof Error && error.message.trim().length > 0) {
@@ -225,13 +224,9 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
                     onPress={() => setShowCountryPicker(true)}
                     activeOpacity={0.85}
                     disabled={isLoading}>
-                    <Text style={styles.countryCodeLabel}>Country</Text>
                     <View style={styles.countryCodeValueRow}>
                       <Text style={styles.countryCodeValue}>
                         {selectedDialCode}
-                      </Text>
-                      <Text style={styles.countryCodeName} numberOfLines={1}>
-                        {selectedCountryName}
                       </Text>
                       <Icon
                         name="chevron-down-outline"
@@ -323,25 +318,22 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
       {loginMethod === 'phone' && (
         <CountryPicker
           countryCode={selectedCountryCode}
-        visible={showCountryPicker}
-        translation="common"
-        withAlphaFilter={false}
-        withCallingCode
+          visible={showCountryPicker}
+          translation="common"
+          withAlphaFilter={false}
+          withCallingCode
         withEmoji
         withFilter
         withCloseButton
         withModal
         renderFlagButton={() => null}
         onClose={() => setShowCountryPicker(false)}
-        onSelect={country => {
+          onSelect={country => {
             setSelectedCountryCode(country.cca2);
-            setSelectedCountryName(
-              typeof country.name === 'string' ? country.name : country.name.common,
-            );
             setSelectedDialCode(
               country.callingCode?.length > 0
                 ? `+${country.callingCode[0]}`
-                : '+1',
+                : '+91',
             );
             setShowCountryPicker(false);
           }}
@@ -421,7 +413,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   countryCodeButton: {
-    flex: 0.95,
+    width: 88,
     minHeight: 52,
     justifyContent: 'center',
     backgroundColor: '#F8F8F8',
@@ -431,26 +423,16 @@ const styles = StyleSheet.create({
     borderColor: '#E5E5E5',
     marginRight: 12,
   },
-  countryCodeLabel: {
-    fontSize: 12,
-    color: '#8E8E93',
-    marginBottom: 2,
-  },
   countryCodeValueRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
   },
   countryCodeValue: {
     fontSize: 16,
     fontWeight: '600',
     color: '#000000',
-    marginRight: 8,
-  },
-  countryCodeName: {
-    flex: 1,
-    fontSize: 14,
-    color: '#1F1F1F',
-    marginRight: 8,
+    flexShrink: 1,
   },
   phoneInputContainer: {
     flex: 1,
