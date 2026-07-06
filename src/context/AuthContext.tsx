@@ -71,8 +71,8 @@ interface AuthContextType {
   authMethod: AuthMethod;
   login: (email: string, password: string) => Promise<UserData>;
   loginWithPhone: (phoneNumber: string, countryCode: string, password: string) => Promise<UserData>;
-  loginMobileSendOtp: (phoneNumber: string) => Promise<void>;
-  loginMobileVerifyOtp: (phoneNumber: string, otp: string) => Promise<UserData>;
+  loginMobileSendOtp: (phoneNumber: string, countryCode?: string) => Promise<void>;
+  loginMobileVerifyOtp: (phoneNumber: string, otp: string, countryCode?: string) => Promise<UserData>;
   loginWithGoogle: () => Promise<UserData>;
   signup: (data: SignupData) => Promise<UserData>;
   verifyEmail: (userId?: string) => Promise<UserData>;
@@ -283,6 +283,19 @@ const stringifyForLog = (value: unknown): string => {
   } catch {
     return String(value);
   }
+};
+
+const normalizeCountryCode = (countryCode?: string): string | undefined => {
+  if (!countryCode) {
+    return undefined;
+  }
+
+  const digits = countryCode.replace(/[^\d]/g, '').trim();
+  if (!digits) {
+    return undefined;
+  }
+
+  return `+${digits}`;
 };
 
 const logApiRequest = (
@@ -840,7 +853,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         'POST',
         {
           phoneNumber: phoneNumber.replace(/[^\d]/g, ''),
-          countryCode: countryCode.replace(/[^\d]/g, ''),
+          countryCode: normalizeCountryCode(countryCode) ?? countryCode,
           password,
           platform: Platform.OS
         },
@@ -853,12 +866,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const loginMobileSendOtp = async (phoneNumber: string): Promise<void> => {
+  const loginMobileSendOtp = async (phoneNumber: string, countryCode?: string): Promise<void> => {
     try {
+      const normalizedPhoneNumber = phoneNumber.replace(/[^\d]/g, '').trim();
+      const payload: Record<string, string> = { phoneNumber: normalizedPhoneNumber };
+
+      const normalizedCountryCode = normalizeCountryCode(countryCode);
+      if (normalizedCountryCode) {
+        payload.countryCode = normalizedCountryCode;
+      }
+
+      payload.platform = Platform.OS;
+
       await performRequest<void>(
         '/api/v1/auth/signin/mobile',
         'POST',
-        { phoneNumber },
+        payload,
         null,
       );
     } catch (error) {
@@ -866,12 +889,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const loginMobileVerifyOtp = async (phoneNumber: string, otp: string): Promise<UserData> => {
+  const loginMobileVerifyOtp = async (
+    phoneNumber: string,
+    otp: string,
+    countryCode?: string,
+  ): Promise<UserData> => {
     try {
+      const normalizedPhoneNumber = phoneNumber.replace(/[^\d]/g, '').trim();
+      const payload: Record<string, string> = {
+        phoneNumber: normalizedPhoneNumber,
+        otp,
+        platform: Platform.OS,
+      };
+
+      const normalizedCountryCode = normalizeCountryCode(countryCode);
+      if (normalizedCountryCode) {
+        payload.countryCode = normalizedCountryCode;
+      }
+
       const authResponse = await performRequest<UserData>(
         '/api/v1/auth/signin/mobile/verify',
         'POST',
-        { phoneNumber, otp, platform: Platform.OS },
+        payload,
         null,
       );
 

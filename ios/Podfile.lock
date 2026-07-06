@@ -3315,7 +3315,7 @@ SPEC CHECKSUMS:
   MultiplatformBleAdapter: b1fddd0d499b96b607e00f0faa8e60648343dc1d
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
   PromisesObjC: f5707f49cb48b9636751c5b2e7d227e43fba9f47
-  RCT-Folly: 59ec0ac1f2f39672a0c6e6cecdd39383b764646f
+  RCT-Folly: 846fda9475e61ec7bcbf8a3fe81edfcaeb090669
   RCTDeprecation: a41bbdd9af30bf2e5715796b313e44ec43eefff1
   RCTRequired: 7be34aabb0b77c3cefe644528df0fa0afad4e4d0
   RCTSwiftUI: a6c7271c39098bf00dbdad8f8ed997a59bbfbe44

@@ -16,6 +16,9 @@ import { Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import newLogo from '../assets/images/new_logo.png';
 import Icon from 'react-native-vector-icons/Ionicons';
+import CountryPicker, {
+  type CountryCode,
+} from 'react-native-country-picker-modal';
 import { useAuth } from '../context/AuthContext';
 
 interface LoginScreenProps {
@@ -32,6 +35,10 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [otp, setOtp] = useState('');
   const [otpSent, setOtpSent] = useState(false);
+  const [showCountryPicker, setShowCountryPicker] = useState(false);
+  const [selectedCountryCode, setSelectedCountryCode] = useState<CountryCode>('US');
+  const [selectedCountryName, setSelectedCountryName] = useState('United States');
+  const [selectedDialCode, setSelectedDialCode] = useState('+1');
 
   const getErrorMessage = (error: unknown, fallback: string): string => {
     if (error instanceof Error && error.message.trim().length > 0) {
@@ -65,14 +72,17 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
   };
 
   const handleSendOtp = async () => {
-    if (!phoneNumber) {
+    const normalizedPhoneNumber = phoneNumber.replace(/[^\d]/g, '').trim();
+
+    if (!normalizedPhoneNumber) {
       Alert.alert('Error', 'Please enter a valid phone number');
       return;
     }
 
     setIsLoading(true);
     try {
-      await loginMobileSendOtp(phoneNumber);
+      await loginMobileSendOtp(normalizedPhoneNumber, selectedDialCode);
+      setPhoneNumber(normalizedPhoneNumber);
       setOtpSent(true);
       Alert.alert('Success', 'OTP sent to your phone number');
     } catch (error) {
@@ -83,14 +93,17 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
   };
 
   const handleVerifyOtp = async () => {
-    if (!otp) {
+    const normalizedPhoneNumber = phoneNumber.replace(/[^\d]/g, '').trim();
+    const normalizedOtp = otp.trim();
+
+    if (!normalizedOtp) {
       Alert.alert('Error', 'Please enter the OTP');
       return;
     }
 
     setIsLoading(true);
     try {
-      await loginMobileVerifyOtp(phoneNumber, otp);
+      await loginMobileVerifyOtp(normalizedPhoneNumber, normalizedOtp, selectedDialCode);
     } catch (error) {
       Alert.alert('Error', getErrorMessage(error, 'Login failed.'));
     } finally {
@@ -206,18 +219,41 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
             ) : (
               <>
                 {/* Phone Input */}
-                <View style={styles.inputContainer}>
-                  <Icon name="call-outline" size={20} color="#8E8E93" style={styles.inputIcon} />
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Phone Number"
-                    placeholderTextColor="#8E8E93"
-                    value={phoneNumber}
-                    onChangeText={setPhoneNumber}
-                    keyboardType="phone-pad"
-                    autoCapitalize="none"
-                    editable={!otpSent}
-                  />
+                <View style={styles.phoneContainer}>
+                  <TouchableOpacity
+                    style={styles.countryCodeButton}
+                    onPress={() => setShowCountryPicker(true)}
+                    activeOpacity={0.85}
+                    disabled={isLoading}>
+                    <Text style={styles.countryCodeLabel}>Country</Text>
+                    <View style={styles.countryCodeValueRow}>
+                      <Text style={styles.countryCodeValue}>
+                        {selectedDialCode}
+                      </Text>
+                      <Text style={styles.countryCodeName} numberOfLines={1}>
+                        {selectedCountryName}
+                      </Text>
+                      <Icon
+                        name="chevron-down-outline"
+                        size={18}
+                        color="#8E8E93"
+                      />
+                    </View>
+                  </TouchableOpacity>
+                  <View style={[styles.inputContainer, styles.phoneInputContainer]}>
+                    <Icon name="call-outline" size={20} color="#8E8E93" style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Phone Number"
+                      placeholderTextColor="#8E8E93"
+                      value={phoneNumber}
+                      onChangeText={value => setPhoneNumber(value.replace(/[^\d]/g, ''))}
+                      keyboardType="phone-pad"
+                      autoCapitalize="none"
+                      editable={!otpSent && !isLoading}
+                      maxLength={15}
+                    />
+                  </View>
                 </View>
 
                 {otpSent && (
@@ -259,6 +295,8 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
               onPress={() => {
                 setLoginMethod(loginMethod === 'email' ? 'phone' : 'email');
                 setOtpSent(false);
+                setOtp('');
+                setShowCountryPicker(false);
               }}>
               <Text style={styles.methodToggleText}>
                 {loginMethod === 'email' ? 'Use Phone Number instead' : 'Use Email instead'}
@@ -282,6 +320,33 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+      {loginMethod === 'phone' && (
+        <CountryPicker
+          countryCode={selectedCountryCode}
+        visible={showCountryPicker}
+        translation="common"
+        withAlphaFilter={false}
+        withCallingCode
+        withEmoji
+        withFilter
+        withCloseButton
+        withModal
+        renderFlagButton={() => null}
+        onClose={() => setShowCountryPicker(false)}
+        onSelect={country => {
+            setSelectedCountryCode(country.cca2);
+            setSelectedCountryName(
+              typeof country.name === 'string' ? country.name : country.name.common,
+            );
+            setSelectedDialCode(
+              country.callingCode?.length > 0
+                ? `+${country.callingCode[0]}`
+                : '+1',
+            );
+            setShowCountryPicker(false);
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 };
@@ -349,6 +414,47 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     borderWidth: 1,
     borderColor: '#E5E5E5',
+  },
+  phoneContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  countryCodeButton: {
+    flex: 0.95,
+    minHeight: 52,
+    justifyContent: 'center',
+    backgroundColor: '#F8F8F8',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: '#E5E5E5',
+    marginRight: 12,
+  },
+  countryCodeLabel: {
+    fontSize: 12,
+    color: '#8E8E93',
+    marginBottom: 2,
+  },
+  countryCodeValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  countryCodeValue: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000000',
+    marginRight: 8,
+  },
+  countryCodeName: {
+    flex: 1,
+    fontSize: 14,
+    color: '#1F1F1F',
+    marginRight: 8,
+  },
+  phoneInputContainer: {
+    flex: 1,
+    marginBottom: 0,
   },
   inputIcon: {
     marginRight: 12,
