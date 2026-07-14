@@ -311,6 +311,7 @@ const AccountScreen = () => {
     part => part !== '-',
   );
   const fullName = nameParts.length > 0 ? nameParts.join(' ') : '-';
+  const isSeniorUser = user?.role === 'SENIOR';
   const phoneNumberVal = safeValue(user?.phone_number);
   const countryCodeVal = safeValue(user?.country_code);
   let phone = '-';
@@ -354,7 +355,7 @@ const AccountScreen = () => {
             <Icon name="person" size={60} color="#FF9500" />
           </View>
           <Text style={styles.profileName}>{fullName === '-' ? 'User' : fullName}</Text>
-          <Text style={styles.profileEmail}>{safeValue(user?.email)}</Text>
+          {!isSeniorUser ? <Text style={styles.profileEmail}>{safeValue(user?.email)}</Text> : null}
         </View>
 
         <View style={styles.infoRow}>
@@ -389,10 +390,12 @@ const AccountScreen = () => {
           )}
         </View>
 
-        <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Email</Text>
-          <Text style={styles.infoValue}>{safeValue(user?.email)}</Text>
-        </View>
+        {!isSeniorUser ? (
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>Email</Text>
+            <Text style={styles.infoValue}>{safeValue(user?.email)}</Text>
+          </View>
+        ) : null}
 
         <View style={styles.infoRow}>
           <Text style={styles.infoLabel}>Phone</Text>
