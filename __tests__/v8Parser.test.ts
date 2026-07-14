@@ -7,13 +7,22 @@ describe('parseV8Payload', () => {
       dataEnd: true,
       dicData: {
         arrayDetailActivityData: [
-          { date: '2026.05.08 10:10:10', step: 1234, distance: 1.23, calories: 45.6 },
+          {
+            date: '2026.05.08 10:10:10',
+            step: 1234,
+            distance: 1.23,
+            calories: 45.6,
+          },
         ],
-        arrayAutomaticSpo2Data: [
-          { date: '2026.05.08 10:20:00', automaticSpo2Data: 97 },
-        ],
+        arrayAutomaticSpo2Data: [{ date: '2026.05.08 10:20:00', automaticSpo2Data: 97 }],
         arrayAutomaticHRVData: [
-          { date: '2026.05.08 10:40:00', systolicBP: 121, diastolicBP: 79, hrv: 96, stress: 28 },
+          {
+            date: '2026.05.08 10:40:00',
+            systolicBP: 121,
+            diastolicBP: 79,
+            hrv: 96,
+            stress: 28,
+          },
         ],
       },
     };
@@ -85,5 +94,56 @@ describe('parseV8Payload', () => {
     const { history } = parseV8Payload(payload as any);
     expect(history).not.toBeNull();
     expect(history?.entries[0].spo2).toBe(96);
+  });
+
+  it('expands the Android SDK dynamic heart-rate series', () => {
+    const payload = {
+      dataType: '27',
+      dataEnd: true,
+      dicData: '[{date=2026.07.14 09:15:00, arrayDynamicHR=0 24 72 24}]',
+    };
+
+    const { history } = parseV8Payload(payload as any);
+    expect(history?.dataType).toBe('dynamicHR');
+    expect(history?.entries.map(entry => entry.heartRate)).toEqual([0, 24, 72, 24]);
+    expect(history?.entries[0].timestamp).toBe('2026.07.14 09:15:00');
+    expect(history?.entries[1].timestamp).toBe('2026.07.14 09:15:01');
+  });
+
+  it('normalizes stringified Android HRV, BP, and stress history', () => {
+    const payload = {
+      dataType: '42',
+      dataEnd: true,
+      dicData: '[{date=2026.07.14 09:20:00, hrv=79, stress=59, highBP=118, lowBP=68, heartRate=72}]',
+    };
+
+    const { history } = parseV8Payload(payload as any);
+    expect(history?.dataType).toBe('hrv');
+    expect(history?.entries[0]).toMatchObject({
+      heartRate: 72,
+      hrv: 79,
+      stress: 59,
+      systolicBp: 118,
+      diastolicBp: 68,
+    });
+  });
+
+  it('parses Android temperature payload aliases', () => {
+    const payload = {
+      dataType: '59',
+      dataEnd: true,
+      dicData: {
+        arrayTemperatureData: [
+          {
+            date: '2026.07.14 09:20:00',
+            axillaryTemperature: '32.7',
+          },
+        ],
+      },
+    };
+
+    const { history } = parseV8Payload(payload as any);
+    expect(history?.dataType).toBe('temperature');
+    expect(history?.entries[0].temperatureC).toBe(32.7);
   });
 });

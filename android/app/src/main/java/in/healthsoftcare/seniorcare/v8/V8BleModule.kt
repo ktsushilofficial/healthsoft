@@ -78,21 +78,55 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
     emit("V8ScanResult", map)
   }
 
-  private fun mapToWritable(map: Map<String, Any?>): WritableMap {
+  private fun mapToWritable(map: Map<*, *>): WritableMap {
     val out = Arguments.createMap()
-    map.forEach { (key, value) ->
-      when (value) {
-        null -> out.putNull(key)
-        is String -> out.putString(key, value)
-        is Int -> out.putInt(key, value)
-        is Double -> out.putDouble(key, value)
-        is Float -> out.putDouble(key, value.toDouble())
-        is Boolean -> out.putBoolean(key, value)
-        is Long -> out.putDouble(key, value.toDouble())
-        else -> out.putString(key, value.toString())
-      }
+    map.forEach { (rawKey, value) ->
+      val key = rawKey?.toString() ?: return@forEach
+      putWritableValue(out, key, value)
     }
     return out
+  }
+
+  private fun listToWritable(values: Iterable<*>): WritableArray {
+    val out = Arguments.createArray()
+    values.forEach { value -> pushWritableValue(out, value) }
+    return out
+  }
+
+  private fun putWritableValue(out: WritableMap, key: String, value: Any?) {
+    when (value) {
+      null -> out.putNull(key)
+      is String -> out.putString(key, value)
+      is Boolean -> out.putBoolean(key, value)
+      is Byte -> out.putInt(key, value.toInt())
+      is Short -> out.putInt(key, value.toInt())
+      is Int -> out.putInt(key, value)
+      is Long -> out.putDouble(key, value.toDouble())
+      is Float -> out.putDouble(key, value.toDouble())
+      is Double -> out.putDouble(key, value)
+      is Map<*, *> -> out.putMap(key, mapToWritable(value))
+      is Iterable<*> -> out.putArray(key, listToWritable(value))
+      is Array<*> -> out.putArray(key, listToWritable(value.asIterable()))
+      else -> out.putString(key, value.toString())
+    }
+  }
+
+  private fun pushWritableValue(out: WritableArray, value: Any?) {
+    when (value) {
+      null -> out.pushNull()
+      is String -> out.pushString(value)
+      is Boolean -> out.pushBoolean(value)
+      is Byte -> out.pushInt(value.toInt())
+      is Short -> out.pushInt(value.toInt())
+      is Int -> out.pushInt(value)
+      is Long -> out.pushDouble(value.toDouble())
+      is Float -> out.pushDouble(value.toDouble())
+      is Double -> out.pushDouble(value)
+      is Map<*, *> -> out.pushMap(mapToWritable(value))
+      is Iterable<*> -> out.pushArray(listToWritable(value))
+      is Array<*> -> out.pushArray(listToWritable(value.asIterable()))
+      else -> out.pushString(value.toString())
+    }
   }
 
   @ReactMethod
