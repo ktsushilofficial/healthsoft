@@ -70,4 +70,20 @@ describe('parseV8Payload', () => {
     expect(history?.entries[0].steps).toBe(345);
     expect(history?.entries[0].distanceKm).toBe(0.27);
   });
+
+  it('parses android Blood_oxygen payloads into spo2 values', () => {
+    const payload = {
+      dataType: '2',
+      dataEnd: true,
+      dicData: {
+        Blood_oxygen: 96,
+        step: 1200,
+        distance: 0.9,
+      },
+    };
+
+    const { history } = parseV8Payload(payload as any);
+    expect(history).not.toBeNull();
+    expect(history?.entries[0].spo2).toBe(96);
+  });
 });

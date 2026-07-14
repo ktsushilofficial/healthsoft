@@ -76,10 +76,12 @@ function mapEntry(record: Record<string, unknown>): V8VitalSample {
     spo2:
       toNum(record.spo2) ??
       toNum(record.SpO2) ??
-      toNum(record.oxygen) ??
-      toNum(record.oxygenSaturation) ??
+      toNum(record.Blood_oxygen) ??
+      toNum(record.BloodOxygen) ??
       toNum(record.bloodOxygen) ??
       toNum(record.blood_oxygen) ??
+      toNum(record.oxygen) ??
+      toNum(record.oxygenSaturation) ??
       toNum(record.oxygenValue) ??
       toNum(record.oxygenPercent) ??
       toNum(record.spo2Value) ??
@@ -153,7 +155,11 @@ function detectDataTypeFromPayload(payload: Record<string, unknown>): string | n
   if (keys.includes('arrayContinuousHR')) return 'dynamicHR';
   if (keys.includes('arraySingleHR')) return 'staticHR';
   if (keys.includes('arrayHrvData')) return 'hrv';
-  if (keys.includes('arrayAutomaticSpo2Data') || keys.includes('arrayManualSpo2Data')) return 'spo2';
+  if (
+    keys.includes('arrayAutomaticSpo2Data') ||
+    keys.includes('arrayManualSpo2Data') ||
+    keys.includes('arrayBloodOxygenData')
+  ) return 'spo2';
   if (keys.includes('arrayemperatureData') || keys.includes('arrayTemperatureData')) return 'temperature';
   return null;
 }
