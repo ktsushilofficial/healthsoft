@@ -10,7 +10,14 @@ import {
   ActivityIndicator,
   RefreshControl,
   ImageBackground,
+  Dimensions,
 } from 'react-native';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const CARD_HORIZONTAL_MARGIN = 10;
+const CARD_GAP = 8;
+const GRID_AVAILABLE_WIDTH = SCREEN_WIDTH - CARD_HORIZONTAL_MARGIN * 2;
+const HALF_TILE_WIDTH = (GRID_AVAILABLE_WIDTH - CARD_GAP * 3) / 2;
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
@@ -703,7 +710,7 @@ const PendantDetailScreen = () => {
               >
                 <Icon name={batteryIconName} size={28} color="#FFFFFF" style={styles.vitalIcon} />
                 <View style={styles.vitalTextCol}>
-                  <Text style={styles.vitalTitle}>Battery</Text>
+                  <Text style={styles.vitalTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>Battery</Text>
                   <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{displayBatteryPct(liveSnapshot.batteryPercent)}</Text>
                   <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{batteryStatusLine}</Text>
                 </View>
@@ -715,11 +722,11 @@ const PendantDetailScreen = () => {
                   colors={sosAnalysis.active ? ['#DC2626', '#991B1B'] : ['#059669', '#047857']}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 1 }}
-                  style={styles.vitalTileFull}
+                  style={styles.vitalTile}
                 >
                   <Icon name="medkit" size={28} color="#FFFFFF" style={styles.vitalIcon} />
                   <View style={styles.vitalTextCol}>
-                    <Text style={styles.vitalTitle}>SOS Panic Button</Text>
+                    <Text style={styles.vitalTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>SOS Panic Button</Text>
                     <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{sosAnalysis.label}</Text>
                     <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{sosAnalysis.detail}</Text>
                   </View>
@@ -736,7 +743,7 @@ const PendantDetailScreen = () => {
                 >
                   <Icon name="warning" size={28} color="#FFFFFF" style={styles.vitalIcon} />
                   <View style={styles.vitalTextCol}>
-                    <Text style={styles.vitalTitle}>Device Alarms</Text>
+                    <Text style={styles.vitalTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>Device Alarms</Text>
                     <Text style={styles.vitalValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{alarmAnalysis.label}</Text>
                     <Text style={styles.vitalSubtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{alarmAnalysis.active ? 'Check immediately' : 'Sensors clear'}</Text>
                   </View>
@@ -1010,12 +1017,14 @@ const styles = StyleSheet.create({
   vitalGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    marginHorizontal: 10,
+    marginHorizontal: CARD_HORIZONTAL_MARGIN,
     marginBottom: 16,
+    gap: CARD_GAP,
+    paddingHorizontal: CARD_GAP / 2,
   },
   vitalTileFull: {
-    width: '96%',
-    margin: '2%',
+    width: GRID_AVAILABLE_WIDTH - CARD_GAP,
+    minHeight: 100,
     borderRadius: 20,
     padding: 16,
     flexDirection: 'column',
@@ -1026,10 +1035,11 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   vitalTile: {
-    width: '46%',
-    margin: '2%',
+    width: HALF_TILE_WIDTH,
+    minHeight: 120,
     borderRadius: 20,
     padding: 16,
+    paddingBottom: 20,
     flexDirection: 'column',
     shadowColor: '#0F172A',
     shadowOffset: { width: 0, height: 6 },
@@ -1038,7 +1048,7 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   vitalIcon: {
-    marginBottom: 14,
+    marginBottom: 8,
     opacity: 0.95,
   },
   vitalTextCol: {
@@ -1046,10 +1056,10 @@ const styles = StyleSheet.create({
   },
   vitalTitle: {
     color: 'rgba(255,255,255,0.7)',
-    fontSize: 11,
+    fontSize: 9,
     fontWeight: '700',
     textTransform: 'uppercase',
-    letterSpacing: 1,
+    letterSpacing: 0.5,
     marginBottom: 4,
   },
   vitalValue: {

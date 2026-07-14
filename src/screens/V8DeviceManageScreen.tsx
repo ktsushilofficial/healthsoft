@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   InteractionManager,
   Alert,
+  Dimensions,
   Modal,
   Platform,
   ScrollView,
@@ -11,6 +12,13 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+
+const { width: V8_SCREEN_WIDTH } = Dimensions.get('window');
+const V8_CARD_PADDING = 16;
+const V8_CARD_GAP = 8;
+const V8_GRID_AVAILABLE = V8_SCREEN_WIDTH - (V8_CARD_PADDING * 2) - (V8_CARD_GAP * 2);
+const V8_HALF_TILE = (V8_GRID_AVAILABLE - V8_CARD_GAP) / 2;
+const V8_THIRD_TILE = (V8_GRID_AVAILABLE - V8_CARD_GAP * 2) / 3;
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -866,11 +874,12 @@ const s = StyleSheet.create({
   sectionMeta: { fontSize: 11, color: '#8A8078' },
 
   /* vitals grid */
-  vitalGrid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 },
+  vitalGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: V8_CARD_GAP },
   vitalCard: {
-    width: '47%', flexDirection: 'row', alignItems: 'center',
+    width: V8_HALF_TILE, flexDirection: 'row', alignItems: 'center',
     backgroundColor: '#FAF8F5', borderRadius: 14,
-    padding: 10, margin: 4, borderWidth: 1, borderColor: '#F0E7DD',
+    padding: 10, paddingBottom: 12, borderWidth: 1, borderColor: '#F0E7DD',
+    minHeight: 56,
   },
   vitalIconWrap: {
     width: 36, height: 36, borderRadius: 12,
@@ -904,11 +913,11 @@ const s = StyleSheet.create({
   toggleInactiveText: { color: '#fff' },
 
   /* actions grid */
-  actionsGrid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4, marginTop: 4 },
+  actionsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: V8_CARD_GAP, marginTop: 4 },
   actionBtn: {
-    width: '30%', alignItems: 'center', justifyContent: 'center',
+    width: V8_THIRD_TILE, alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#FAF8F5', borderRadius: 14,
-    paddingVertical: 12, margin: 4, borderWidth: 1, borderColor: '#F0E7DD',
+    paddingVertical: 12, borderWidth: 1, borderColor: '#F0E7DD',
   },
   actionBtnText: { fontSize: 11, fontWeight: '600', color: '#5C4A3A', marginTop: 4 },
 
