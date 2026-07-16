@@ -190,13 +190,15 @@ describe('ev07bConfigCodec', () => {
     const encoded = encodeEv07bFallDownAlert({
       enabled: true,
       dial: true,
+      alwaysOn: true,
       sensitivity: 7,
     });
 
-    expect(Array.from(encoded)).toEqual([0xc7]);
+    expect(Array.from(encoded)).toEqual([0xe7]);
     expect(decodeEv07bFallDownAlert(encoded)).toEqual({
       enabled: true,
       dial: true,
+      alwaysOn: true,
       sensitivity: 7,
     });
   });

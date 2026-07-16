@@ -13,6 +13,7 @@ import type {
 import { Buffer } from 'buffer';
 import { decodeBase64ToUtf8, encodeUtf8ToBase64 } from './base64';
 import { buildConfigFrame, parseEv07bFrame } from './ev07bProtocol';
+import { isPendantScanDevice } from './pendantDeviceFilter';
 import {
   decodeEv07bAlarmClock,
   decodeEv07bAsciiSetting,
@@ -149,6 +150,9 @@ export function useBleDeviceManager() {
   const notificationSubsRef = useRef<Record<string, Subscription[]>>({});
   // pendingEv07b: keyed by seqId OR -1 for wildcard (accept any 0x02 response)
   const pendingEv07b = useRef<Record<number, (frame: Uint8Array) => void>>({});
+  // Write-only EV07B responses use a wildcard sequence id on some firmware.
+  // Serialize configuration operations so requests cannot replace each other's waiter.
+  const ev07bQueueRef = useRef<Promise<void>>(Promise.resolve());
   const seqRef = useRef<number>(0x0100);
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Reassembly buffer per device for fragmented NUS frames
@@ -167,7 +171,9 @@ export function useBleDeviceManager() {
       blocks?: Array<{ key: number; value: Uint8Array }>,
     ) => {
       let changed = false;
-      const nextIdentity: BleDeviceIdentity = { ...(deviceIdentityById[deviceId] ?? {}) };
+      // Only collect fields carried by this response. Long-lived notification
+      // callbacks must not merge an old identity snapshot over newer settings.
+      const nextIdentity: BleDeviceIdentity = {};
 
       const setText = (
         field: keyof BleDeviceIdentity,
@@ -427,6 +433,7 @@ export function useBleDeviceManager() {
       if (fallDownAlert) {
         nextIdentity.fallDownAlertEnabled = fallDownAlert.enabled;
         nextIdentity.fallDownAlertDial = fallDownAlert.dial;
+        nextIdentity.fallDownAlertAlwaysOn = fallDownAlert.alwaysOn;
         nextIdentity.fallDownAlertSensitivity = fallDownAlert.sensitivity;
         changed = true;
       }
@@ -438,7 +445,7 @@ export function useBleDeviceManager() {
         }));
       }
     },
-    [deviceIdentityById],
+    [],
   );
 
   const connectedDeviceIds = useMemo(
@@ -532,7 +539,10 @@ export function useBleDeviceManager() {
   }, []);
 
   const startScan = useCallback(
-    async (scanDurationMs: number = 10000) => {
+    async (
+      scanDurationMs: number = 10000,
+      assignedPendantHints: readonly string[] = [],
+    ) => {
       setScanError(null);
 
       if (bleState !== 'PoweredOn') {
@@ -579,6 +589,12 @@ export function useBleDeviceManager() {
               isConnectable: (scannedDevice as any).isConnectable ?? prev?.isConnectable ?? null,
               serviceUUIDs: scannedDevice.serviceUUIDs ?? prev?.serviceUUIDs ?? null,
             };
+
+            // This manager powers the Pendant section. Reject unrelated BLE
+            // advertisements before they enter the list or IMEI probing flow.
+            if (!isPendantScanDevice(next, assignedPendantHints)) {
+              return;
+            }
 
             devicesByIdRef.current[id] = next;
             setDevices(Object.values(devicesByIdRef.current));
@@ -969,7 +985,12 @@ export function useBleDeviceManager() {
                 }
               }
               if (parsed.command === 0x7f) {
-                pushLog(deviceId, `DEVICE ERROR: ${formatEv07bError(parsed.errorCode)}`);
+                pushLog(
+                  deviceId,
+                  parsed.errorCode === 0
+                    ? 'DEVICE ACK: success'
+                    : `DEVICE ERROR: ${formatEv07bError(parsed.errorCode)}`,
+                );
                 if (pendingEv07b.current[parsed.seqId]) {
                   pendingEv07b.current[parsed.seqId]?.(fullFrame);
                   delete pendingEv07b.current[parsed.seqId];
@@ -1078,109 +1099,120 @@ export function useBleDeviceManager() {
       options: { readKeys?: number[]; writeBlocks?: { key: number; value: Uint8Array }[] },
       timeoutMs: number = 12000,
     ) => {
-      const device = connectedDeviceRefs.current[deviceId];
-      if (!device) throw new Error('Device not connected');
-      const seq = (seqRef.current = (seqRef.current + 1) & 0xffff);
-      const frame = buildConfigFrame({ seqId: seq, ...options });
+      const runOperation = async () => {
+        const device = connectedDeviceRefs.current[deviceId];
+        if (!device) throw new Error('Device not connected');
+        const seq = (seqRef.current = (seqRef.current + 1) & 0xffff);
+        const frame = buildConfigFrame({ seqId: seq, ...options });
 
-      // Use wildcard key (-1) for write-only frames since the device may
-      // respond with seqId=0 or another value instead of echoing ours back.
-      const isWriteOnly = !options.readKeys?.length;
-      const pendingKey = isWriteOnly ? -1 : seq;
-      let settled = false;
-      let timer: ReturnType<typeof setTimeout> | null = null;
+        // Use wildcard key (-1) for write-only frames since the device may
+        // respond with seqId=0 or another value instead of echoing ours back.
+        const isWriteOnly = !options.readKeys?.length;
+        const pendingKey = isWriteOnly ? -1 : seq;
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | null = null;
 
-      const clearPendingWait = () => {
-        if (settled) return;
-        settled = true;
-        delete pendingEv07b.current[pendingKey];
-        if (timer) {
-          clearTimeout(timer);
-          timer = null;
-        }
-      };
-
-      try {
-        const waitForResponse = new Promise<Uint8Array>((resolve, reject) => {
-          timer = setTimeout(() => {
-            if (settled) return;
-            settled = true;
-            delete pendingEv07b.current[pendingKey];
+        const clearPendingWait = () => {
+          if (settled) return;
+          settled = true;
+          delete pendingEv07b.current[pendingKey];
+          if (timer) {
+            clearTimeout(timer);
             timer = null;
-            reject(new Error('Timeout waiting for device response'));
-          }, timeoutMs);
-          pendingEv07b.current[pendingKey] = resp => {
-            if (settled) return;
-            settled = true;
-            if (timer) {
-              clearTimeout(timer);
+          }
+        };
+
+        try {
+          const waitForResponse = new Promise<Uint8Array>((resolve, reject) => {
+            timer = setTimeout(() => {
+              if (settled) return;
+              settled = true;
+              delete pendingEv07b.current[pendingKey];
               timer = null;
-            }
-            resolve(resp);
-          };
-        });
+              reject(new Error('Timeout waiting for device response'));
+            }, timeoutMs);
+            pendingEv07b.current[pendingKey] = resp => {
+              if (settled) return;
+              settled = true;
+              if (timer) {
+                clearTimeout(timer);
+                timer = null;
+              }
+              resolve(resp);
+            };
+          });
 
-        const txHex = Buffer.from(frame).toString('hex');
-        console.log(`[BLE NUS TX] frame ${frame.length}B, seq=0x${seq.toString(16)}, isWriteOnly=${isWriteOnly}`);
-        pushLog(deviceId, `TX (${frame.length}B): ${txHex.slice(0, 60)}...`);
+          const txHex = Buffer.from(frame).toString('hex');
+          console.log(`[BLE NUS TX] frame ${frame.length}B, seq=0x${seq.toString(16)}, isWriteOnly=${isWriteOnly}`);
+          pushLog(deviceId, `TX (${frame.length}B): ${txHex.slice(0, 60)}...`);
 
-        // ── Chunk frame into MTU-sized packets ──────────────────────────────
-        // BLE characteristics are limited to ~20 bytes per write by default.
-        // We split the frame and send each chunk sequentially.
-        const chunks: Uint8Array[] = [];
-        for (let offset = 0; offset < frame.length; offset += BLE_MTU_PAYLOAD) {
-          chunks.push(frame.slice(offset, offset + BLE_MTU_PAYLOAD));
-        }
-        pushLog(deviceId, `TX chunking into ${chunks.length} packet(s) of ≤${BLE_MTU_PAYLOAD}B`);
+          // ── Chunk frame into MTU-sized packets ──────────────────────────────
+          // BLE characteristics are limited to ~20 bytes per write by default.
+          // We split the frame and send each chunk sequentially.
+          const chunks: Uint8Array[] = [];
+          for (let offset = 0; offset < frame.length; offset += BLE_MTU_PAYLOAD) {
+            chunks.push(frame.slice(offset, offset + BLE_MTU_PAYLOAD));
+          }
+          pushLog(deviceId, `TX chunking into ${chunks.length} packet(s) of ≤${BLE_MTU_PAYLOAD}B`);
 
-        for (let i = 0; i < chunks.length; i++) {
-          const chunk = chunks[i];
-          const chunkB64 = Buffer.from(chunk).toString('base64');
-          try {
-            await bleManager.writeCharacteristicWithResponseForDevice(
-              deviceId,
-              NUS_SERVICE_UUID,
-              NUS_RX_UUID,
-              chunkB64,
-            );
-          } catch (writeWithRespErr: any) {
-            // Fallback to write-without-response
-            console.warn(`[BLE NUS TX] chunk ${i} writeWithResponse failed:`, writeWithRespErr?.message);
+          for (let i = 0; i < chunks.length; i++) {
+            const chunk = chunks[i];
+            const chunkB64 = Buffer.from(chunk).toString('base64');
             try {
-              await bleManager.writeCharacteristicWithoutResponseForDevice(
+              await bleManager.writeCharacteristicWithResponseForDevice(
                 deviceId,
                 NUS_SERVICE_UUID,
                 NUS_RX_UUID,
                 chunkB64,
               );
-            } catch (writeWithoutRespErr: any) {
-              pushLog(deviceId, `TX chunk ${i} FAILED: ${writeWithoutRespErr?.message}`);
-              // Clean up pending promise and rethrow
-              clearPendingWait();
-              throw writeWithoutRespErr;
+            } catch (writeWithRespErr: any) {
+              // Fallback to write-without-response
+              console.warn(`[BLE NUS TX] chunk ${i} writeWithResponse failed:`, writeWithRespErr?.message);
+              try {
+                await bleManager.writeCharacteristicWithoutResponseForDevice(
+                  deviceId,
+                  NUS_SERVICE_UUID,
+                  NUS_RX_UUID,
+                  chunkB64,
+                );
+              } catch (writeWithoutRespErr: any) {
+                pushLog(deviceId, `TX chunk ${i} FAILED: ${writeWithoutRespErr?.message}`);
+                // Clean up pending promise and rethrow
+                clearPendingWait();
+                throw writeWithoutRespErr;
+              }
+            }
+            // Small inter-chunk delay to avoid flooding the device's receive buffer
+            if (i < chunks.length - 1) {
+              await new Promise<void>(r => setTimeout(r, 20));
             }
           }
-          // Small inter-chunk delay to avoid flooding the device's receive buffer
-          if (i < chunks.length - 1) {
-            await new Promise<void>(r => setTimeout(r, 20));
-          }
-        }
-        pushLog(deviceId, `TX all ${chunks.length} chunk(s) sent, waiting for ACK...`);
+          pushLog(deviceId, `TX all ${chunks.length} chunk(s) sent, waiting for ACK...`);
 
-        const respBytes = await waitForResponse;
-        const parsed = parseEv07bFrame(respBytes);
-        if (!parsed) throw new Error('Invalid response frame');
-        if (parsed.command === 0x7f) {
-          throw new Error(formatEv07bError(parsed.errorCode));
+          const respBytes = await waitForResponse;
+          const parsed = parseEv07bFrame(respBytes);
+          if (!parsed) throw new Error('Invalid response frame');
+          if (parsed.command === 0x7f && parsed.errorCode !== 0) {
+            throw new Error(formatEv07bError(parsed.errorCode));
+          }
+          if (parsed.command === 0x02) {
+            applyEv07bKeys(deviceId, parsed.keys, parsed.blocks);
+          }
+          return parsed;
+        } catch (error) {
+          clearPendingWait();
+          throw error;
         }
-        if (parsed.command === 0x02) {
-          applyEv07bKeys(deviceId, parsed.keys, parsed.blocks);
-        }
-        return parsed;
-      } catch (error) {
-        clearPendingWait();
-        throw error;
-      }
+      };
+
+      const queuedOperation = ev07bQueueRef.current
+        .catch(() => {})
+        .then(runOperation);
+      ev07bQueueRef.current = queuedOperation.then(
+        () => undefined,
+        () => undefined,
+      );
+      return queuedOperation;
     },
     [applyEv07bKeys, pushLog],
   );

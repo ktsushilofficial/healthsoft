@@ -35,10 +35,12 @@ export function buildConfigFrame(options: {
   body.push(0x02); // Command: Configuration
 
   if (options.readKeys && options.readKeys.length) {
-    body.push(0x01); // KeyLen for 0xF0: 1 byte
+    // 0xF0 is one read block whose value is the list of configuration keys.
+    // KeyLen includes the 0xF0 key byte itself. Sending the requested keys as
+    // separate empty blocks makes them look like invalid writes on EV-07B.
+    body.push((options.readKeys.length + 1) & 0xff);
     body.push(0xf0);
     options.readKeys.forEach(k => {
-      body.push(0x01);
       body.push(k & 0xff);
     });
   }
