@@ -86,6 +86,7 @@ export interface BleDeviceIdentity {
   tiltAlertDurationSec?: number; // 0x55: duration threshold in seconds
   fallDownAlertEnabled?: boolean; // 0x56: fall-down alert enabled
   fallDownAlertDial?: boolean; // 0x56: dial on alert
+  fallDownAlertAlwaysOn?: boolean; // 0x56: keep fall detection always active (supported firmware)
   fallDownAlertSensitivity?: number; // 0x56: sensitivity level 1-9
   initMileage?: number;      // 0x09: initial mileage in meters (u32le)
 }

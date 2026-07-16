@@ -61,7 +61,7 @@
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Bluetooth access is required to communicate with nearby health devices.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Location access is used to enable Bluetooth scanning for health devices.</string>
+	<string>Location access is used for Bluetooth scanning and to center the map while setting a safety geofence.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UIAppFonts</key>

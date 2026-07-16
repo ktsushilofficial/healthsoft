@@ -432,6 +432,7 @@ export function useBleDeviceManager() {
       if (fallDownAlert) {
         nextIdentity.fallDownAlertEnabled = fallDownAlert.enabled;
         nextIdentity.fallDownAlertDial = fallDownAlert.dial;
+        nextIdentity.fallDownAlertAlwaysOn = fallDownAlert.alwaysOn;
         nextIdentity.fallDownAlertSensitivity = fallDownAlert.sensitivity;
         changed = true;
       }
@@ -974,7 +975,12 @@ export function useBleDeviceManager() {
                 }
               }
               if (parsed.command === 0x7f) {
-                pushLog(deviceId, `DEVICE ERROR: ${formatEv07bError(parsed.errorCode)}`);
+                pushLog(
+                  deviceId,
+                  parsed.errorCode === 0
+                    ? 'DEVICE ACK: success'
+                    : `DEVICE ERROR: ${formatEv07bError(parsed.errorCode)}`,
+                );
                 if (pendingEv07b.current[parsed.seqId]) {
                   pendingEv07b.current[parsed.seqId]?.(fullFrame);
                   delete pendingEv07b.current[parsed.seqId];
@@ -1176,7 +1182,7 @@ export function useBleDeviceManager() {
           const respBytes = await waitForResponse;
           const parsed = parseEv07bFrame(respBytes);
           if (!parsed) throw new Error('Invalid response frame');
-          if (parsed.command === 0x7f) {
+          if (parsed.command === 0x7f && parsed.errorCode !== 0) {
             throw new Error(formatEv07bError(parsed.errorCode));
           }
           if (parsed.command === 0x02) {

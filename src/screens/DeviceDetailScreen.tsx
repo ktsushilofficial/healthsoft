@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useBle } from '../bluetooth/BleProvider';
 import type { BleGeoPoint, BleServiceSummary } from '../bluetooth/types';
 import { asciiBytes, s8, u8, u24le, u32le } from '../bluetooth/ev07bProtocol';
+import GeofenceMapModal, { type GeofenceMapSelection } from '../components/GeofenceMapModal';
 import {
   encodeEv07bAlarmClock,
   encodeEv07bAuthorizedPhone,
@@ -253,10 +254,11 @@ function formatGeoAlertSummary(identity: {
 function formatFallDownSummary(identity: {
   fallDownAlertEnabled?: boolean;
   fallDownAlertDial?: boolean;
+  fallDownAlertAlwaysOn?: boolean;
   fallDownAlertSensitivity?: number;
 } | undefined): string {
   if (identity?.fallDownAlertSensitivity === undefined) return '—';
-  return `${identity.fallDownAlertEnabled ? 'On' : 'Off'} • Dial ${identity.fallDownAlertDial ? 'On' : 'Off'} • Sensitivity ${identity.fallDownAlertSensitivity}`;
+  return `${identity.fallDownAlertEnabled ? 'On' : 'Off'} • Dial ${identity.fallDownAlertDial ? 'On' : 'Off'} • Always on ${identity.fallDownAlertAlwaysOn ? 'On' : 'Off'} • Sensitivity ${identity.fallDownAlertSensitivity}`;
 }
 
 function formatNoMotionSummary(identity: {
@@ -361,6 +363,7 @@ const DeviceDetailScreen = () => {
   // Safety alerts
   const [fallDownAlertEnabled, setFallDownAlertEnabled] = useState(false);
   const [fallDownAlertDial, setFallDownAlertDial] = useState(false);
+  const [fallDownAlertAlwaysOn, setFallDownAlertAlwaysOn] = useState(false);
   const [fallDownAlertSensitivity, setFallDownAlertSensitivity] = useState('5');
   const [noMotionAlertEnabled, setNoMotionAlertEnabled] = useState(false);
   const [noMotionAlertDial, setNoMotionAlertDial] = useState(false);
@@ -377,6 +380,7 @@ const DeviceDetailScreen = () => {
   const [geoAlertLatitude, setGeoAlertLatitude] = useState('');
   const [geoAlertLongitude, setGeoAlertLongitude] = useState('');
   const [geoAlertPointsInput, setGeoAlertPointsInput] = useState('');
+  const [geofenceMapVisible, setGeofenceMapVisible] = useState(false);
   // Enable Control bitmask
   const [enableControl, setEnableControl] = useState(0);
   // Volumes
@@ -420,6 +424,26 @@ const DeviceDetailScreen = () => {
     data: false,
     log: false,
   });
+
+  const geofenceMapCenter = useMemo(() => {
+    const latitude = Number(geoAlertLatitude);
+    const longitude = Number(geoAlertLongitude);
+    if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+      return { latitude, longitude };
+    }
+    return identity?.geoAlertPoints?.[0] ?? null;
+  }, [geoAlertLatitude, geoAlertLongitude, identity?.geoAlertPoints]);
+
+  const geofenceMapPoints = useMemo(() => {
+    if (geoAlertPointsInput.trim()) {
+      try {
+        return parseGeoPointsInput(geoAlertPointsInput);
+      } catch {
+        return identity?.geoAlertPoints ?? [];
+      }
+    }
+    return identity?.geoAlertPoints ?? [];
+  }, [geoAlertPointsInput, identity?.geoAlertPoints]);
 
   const toggleSection = useCallback((key: string) => {
     setExpandedSections(prev => ({ ...prev, [key]: !prev[key] }));
@@ -489,6 +513,7 @@ const DeviceDetailScreen = () => {
     initOnce('ndEndMin',        identity.noDisturbEnd !== undefined ? String(identity.noDisturbEnd % 60) : undefined, setNdEndMin);
     initOnce('fallDownAlertEnabled', identity.fallDownAlertEnabled, setFallDownAlertEnabled);
     initOnce('fallDownAlertDial', identity.fallDownAlertDial, setFallDownAlertDial);
+    initOnce('fallDownAlertAlwaysOn', identity.fallDownAlertAlwaysOn, setFallDownAlertAlwaysOn);
     initOnce('fallDownAlertSensitivity', identity.fallDownAlertSensitivity !== undefined ? String(identity.fallDownAlertSensitivity) : undefined, setFallDownAlertSensitivity);
     initOnce('noMotionAlertEnabled', identity.noMotionAlertEnabled, setNoMotionAlertEnabled);
     initOnce('noMotionAlertDial', identity.noMotionAlertDial, setNoMotionAlertDial);
@@ -661,15 +686,17 @@ const DeviceDetailScreen = () => {
   const buildFallWriteBlock = useCallback((overrides?: Partial<{
     enabled: boolean;
     dial: boolean;
+    alwaysOn: boolean;
     sensitivity: string;
   }>): WriteBlock => ({
     key: 0x56,
     value: encodeEv07bFallDownAlert({
       enabled: overrides?.enabled ?? fallDownAlertEnabled,
       dial: overrides?.dial ?? fallDownAlertDial,
+      alwaysOn: overrides?.alwaysOn ?? fallDownAlertAlwaysOn,
       sensitivity: clampInt(Number(overrides?.sensitivity ?? fallDownAlertSensitivity), 1, 9),
     }),
-  }), [fallDownAlertDial, fallDownAlertEnabled, fallDownAlertSensitivity]);
+  }), [fallDownAlertAlwaysOn, fallDownAlertDial, fallDownAlertEnabled, fallDownAlertSensitivity]);
 
   const buildGeoAlertWriteBlock = useCallback((overrides?: Partial<{
     enabled: boolean;
@@ -789,6 +816,63 @@ const DeviceDetailScreen = () => {
       }
     }
   }, [deviceId, sendEv07bConfig]);
+
+  const applyGeofenceMapSelection = useCallback(async (selection: GeofenceMapSelection) => {
+    const pointsInput = selection.type === 'polygon'
+      ? pointsToMultiline(selection.points)
+      : geoAlertPointsInput;
+
+    setGeoAlertEnabled(true);
+    setGeoAlertType(selection.type);
+    if (selection.type === 'circle') {
+      setGeoAlertLatitude(String(selection.center.latitude));
+      setGeoAlertLongitude(String(selection.center.longitude));
+      setGeoAlertRadiusMeters(String(selection.radiusMeters));
+    } else {
+      setGeoAlertPointsInput(pointsInput);
+    }
+    setGeofenceMapVisible(false);
+
+    if (!connected) {
+      setStatusMsg('Geofence selected. Connect the pendant and save Safety Alerts.');
+      return;
+    }
+
+    try {
+      setSavingSection('alerts');
+      const writeBlock = buildGeoAlertWriteBlock(
+        selection.type === 'circle'
+          ? {
+              enabled: true,
+              type: 'circle',
+              latitude: String(selection.center.latitude),
+              longitude: String(selection.center.longitude),
+              radiusMeters: String(selection.radiusMeters),
+            }
+          : {
+              enabled: true,
+              type: 'polygon',
+              pointsInput,
+            },
+      );
+      if (!writeBlock) throw new Error('Could not build the geofence setting');
+
+      const seqId = await sendWriteBlocks('Saving geofence', [writeBlock]);
+      setStatusMsg('Verifying geofence…');
+      await verifyWriteBlocks([writeBlock]);
+      setStatusMsg(`Geofence enabled, saved and verified${seqId != null ? ` (seq ${seqId})` : ''}`);
+    } catch (error) {
+      setStatusMsg(error instanceof Error ? error.message : 'Geofence save failed');
+    } finally {
+      setSavingSection(null);
+    }
+  }, [
+    buildGeoAlertWriteBlock,
+    connected,
+    geoAlertPointsInput,
+    sendWriteBlocks,
+    verifyWriteBlocks,
+  ]);
 
   const buildSectionWriteBlocks = useCallback((section: ConfigSectionKey): WriteBlock[] => {
     switch (section) {
@@ -1300,6 +1384,11 @@ const DeviceDetailScreen = () => {
             value={fallDownAlertDial}
             onValueChange={setFallDownAlertDial}
           />
+          <ToggleRow
+            label="Always On"
+            value={fallDownAlertAlwaysOn}
+            onValueChange={setFallDownAlertAlwaysOn}
+          />
           <Text style={styles.fieldLabel}>Sensitivity (1-9)</Text>
           <TextInput style={styles.input} value={fallDownAlertSensitivity} onChangeText={setFallDownAlertSensitivity}
             keyboardType="number-pad" placeholder="5" maxLength={1} />
@@ -1385,6 +1474,22 @@ const DeviceDetailScreen = () => {
               </TouchableOpacity>
             ))}
           </View>
+
+          <TouchableOpacity
+            style={styles.mapPickerButton}
+            onPress={() => setGeofenceMapVisible(true)}
+          >
+            <Icon name="map" size={18} color="#F28C28" />
+            <View style={styles.mapPickerCopy}>
+              <Text style={styles.mapPickerTitle}>Choose on map</Text>
+              <Text style={styles.mapPickerSubtitle}>
+                {geoAlertType === 'circle'
+                  ? 'Place the center and adjust the radius visually'
+                  : 'Draw the boundary with map points'}
+              </Text>
+            </View>
+            <Icon name="chevron-forward" size={18} color="#8B7F74" />
+          </TouchableOpacity>
 
           {geoAlertType === 'circle' ? (
             <>
@@ -1563,6 +1668,16 @@ const DeviceDetailScreen = () => {
           )}
         </CollapsibleSection>
       </ScrollView>
+
+      <GeofenceMapModal
+        visible={geofenceMapVisible}
+        type={geoAlertType}
+        initialCenter={geofenceMapCenter}
+        initialRadiusMeters={Number(geoAlertRadiusMeters) || 100}
+        initialPoints={geofenceMapPoints}
+        onCancel={() => setGeofenceMapVisible(false)}
+        onApply={applyGeofenceMapSelection}
+      />
     </SafeAreaView>
   );
 };
@@ -1855,6 +1970,19 @@ const styles = StyleSheet.create({
   weekdayChipText: { fontSize: 12, color: '#7A726A', fontWeight: '600' },
   weekdayChipTextActive: { color: '#FFFFFF' },
   helperText: { fontSize: 12, color: '#7A726A', marginTop: 2, lineHeight: 17 },
+  mapPickerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 14,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#F1D3AF',
+    backgroundColor: '#FFF8EF',
+  },
+  mapPickerCopy: { flex: 1, marginHorizontal: 10 },
+  mapPickerTitle: { fontSize: 13, fontWeight: '700', color: '#B96516' },
+  mapPickerSubtitle: { marginTop: 2, fontSize: 11, color: '#7A726A' },
 
   /* Toggle row */
   toggleRow: {

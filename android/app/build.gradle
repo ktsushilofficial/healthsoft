@@ -69,6 +69,12 @@ def keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(new FileInputStream(localPropertiesFile))
+}
+def mapsApiKey = System.getenv("MAPS_API_KEY") ?: localProperties.getProperty("MAPS_API_KEY", "")
 
 /**
  * The preferred build flavor of JavaScriptCore (JSC)
@@ -95,6 +101,7 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 5
         versionName "1.0.0"
+        manifestPlaceholders = [MAPS_API_KEY: mapsApiKey]
     }
     signingConfigs {
         debug {

@@ -57,6 +57,7 @@ export interface Ev07bTiltAlertConfig {
 export interface Ev07bFallDownAlertConfig {
   enabled: boolean;
   dial: boolean;
+  alwaysOn: boolean;
   sensitivity: number;
 }
 
@@ -89,6 +90,7 @@ export const EV07B_TILT_ANGLE_MASK = 0x00ff0000;
 export const EV07B_TILT_DURATION_MASK = 0x0000ffff;
 export const EV07B_FALL_DOWN_ENABLE_MASK = 0x80;
 export const EV07B_FALL_DOWN_DIAL_MASK = 0x40;
+export const EV07B_FALL_DOWN_ALWAYS_ON_MASK = 0x20;
 export const EV07B_FALL_DOWN_SENSITIVITY_MASK = 0x0f;
 export const EV07B_WEEKDAY_OPTIONS = [
   { key: 'mon', label: 'Mon', bit: 0 },
@@ -328,6 +330,7 @@ export function decodeEv07bFallDownAlert(value?: Uint8Array | null): Ev07bFallDo
   return {
     enabled: (raw & EV07B_FALL_DOWN_ENABLE_MASK) !== 0,
     dial: (raw & EV07B_FALL_DOWN_DIAL_MASK) !== 0,
+    alwaysOn: (raw & EV07B_FALL_DOWN_ALWAYS_ON_MASK) !== 0,
     sensitivity: clampInt(raw & EV07B_FALL_DOWN_SENSITIVITY_MASK, 1, 9),
   };
 }
@@ -336,6 +339,7 @@ export function encodeEv07bFallDownAlert(config: Ev07bFallDownAlertConfig): Uint
   let raw = clampInt(config.sensitivity, 1, 9) & EV07B_FALL_DOWN_SENSITIVITY_MASK;
   if (config.enabled) raw |= EV07B_FALL_DOWN_ENABLE_MASK;
   if (config.dial) raw |= EV07B_FALL_DOWN_DIAL_MASK;
+  if (config.alwaysOn) raw |= EV07B_FALL_DOWN_ALWAYS_ON_MASK;
   return Uint8Array.from([raw]);
 }
 
