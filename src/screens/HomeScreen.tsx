@@ -13,6 +13,7 @@ import {
   Pressable,
   ActivityIndicator,
   RefreshControl,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -515,7 +516,13 @@ function formatSyncAge(timestamp: number | null, now: Date): string {
 
 const HomeScreen = () => {
   const navigation = useNavigation<any>();
-  const { autoSyncStatus } = useV8DeviceManager();
+  const {
+    autoSyncStatus,
+    connectionStates: v8ConnectionStates,
+    buildDailyVitalsRange,
+    syncDailyVitalsToBackend,
+    ensureAutoConnect,
+  } = useV8DeviceManager();
   const {
     user,
     selectedSenior,
@@ -542,6 +549,7 @@ const HomeScreen = () => {
   const [guardianDevicePositions, setGuardianDevicePositions] = useState<SeniorDashboardDeviceRecord[]>([]);
   const [guardianDeviceAlarms, setGuardianDeviceAlarms] = useState<SeniorDashboardDeviceRecord[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [manualVitalsSyncing, setManualVitalsSyncing] = useState(false);
   const [guardianWelcomeVisible, setGuardianWelcomeVisible] = useState(false);
   const shownGuardianWelcomeForUser = useRef<string | null>(null);
   const pendingSeniorPickerOpenRef = useRef(false);
@@ -1290,6 +1298,48 @@ const HomeScreen = () => {
         ? 'Automatic sync will retry'
         : 'Automatic health sync is active';
   const automaticSyncDetail = `${formatSyncAge(autoSyncStatus.lastSyncedAt, nowTick)} · Every 15 minutes`;
+  const handBandConnected = Object.values(v8ConnectionStates).some(state => state === 'connected');
+  const syncNowBusy = manualVitalsSyncing || autoSyncStatus.phase === 'syncing';
+
+  const handleSyncVitalsNow = useCallback(async () => {
+    if (manualVitalsSyncing || autoSyncStatus.phase === 'syncing') return;
+
+    setManualVitalsSyncing(true);
+    try {
+      if (!handBandConnected) {
+        await ensureAutoConnect();
+        Alert.alert(
+          'Connecting hand band',
+          'The hand band is not connected. Auto-connect has started; tap Sync now again after it connects.',
+        );
+        return;
+      }
+
+      const today = new Date().toISOString().slice(0, 10);
+      const todayRows = await buildDailyVitalsRange(today, today);
+      const rowsToSync = todayRows.filter(row => row.date === today);
+      if (rowsToSync.length === 0) {
+        throw new Error('No current hand band health data is available yet.');
+      }
+
+      await syncDailyVitalsToBackend(today, today, rowsToSync);
+      Alert.alert('Sync complete', 'Today\'s hand band health data is up to date.');
+    } catch (error) {
+      Alert.alert(
+        'Sync failed',
+        error instanceof Error ? error.message : 'Unable to sync hand band health data right now.',
+      );
+    } finally {
+      setManualVitalsSyncing(false);
+    }
+  }, [
+    autoSyncStatus.phase,
+    buildDailyVitalsRange,
+    ensureAutoConnect,
+    handBandConnected,
+    manualVitalsSyncing,
+    syncDailyVitalsToBackend,
+  ]);
 
   const openLastPositionMap = useCallback(() => {
     const lat = liveSnapshot.latitude;
@@ -1461,9 +1511,28 @@ const HomeScreen = () => {
               <Text style={styles.autoSyncTitle}>{automaticSyncTitle}</Text>
               <Text style={styles.autoSyncDetail}>{automaticSyncDetail}</Text>
             </View>
-            <View style={styles.autoSyncLiveBadge}>
-              <View style={styles.autoSyncLiveDot} />
-              <Text style={styles.autoSyncLiveText}>AUTO</Text>
+            <View style={styles.autoSyncActions}>
+              <View style={styles.autoSyncLiveBadge}>
+                <View style={styles.autoSyncLiveDot} />
+                <Text style={styles.autoSyncLiveText}>AUTO</Text>
+              </View>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Sync hand band health data now"
+                activeOpacity={0.75}
+                disabled={syncNowBusy}
+                onPress={handleSyncVitalsNow}
+                style={[styles.syncNowButton, syncNowBusy && styles.syncNowButtonDisabled]}
+              >
+                {syncNowBusy ? (
+                  <ActivityIndicator size="small" color="#0B8A5B" />
+                ) : (
+                  <>
+                    <Icon name="refresh" size={13} color="#0B8A5B" />
+                    <Text style={styles.syncNowButtonText}>Sync now</Text>
+                  </>
+                )}
+              </TouchableOpacity>
             </View>
           </View>
         )}
@@ -1704,6 +1773,10 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 8,
     paddingVertical: 5,
+  },
+  autoSyncActions: {
+    alignItems: 'flex-end',
+    gap: 7,
     marginLeft: 8,
   },
   autoSyncLiveDot: {
@@ -1718,6 +1791,27 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#0B8A5B',
     letterSpacing: 0.5,
+  },
+  syncNowButton: {
+    minWidth: 82,
+    minHeight: 30,
+    paddingHorizontal: 10,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: '#B9E7D2',
+    backgroundColor: '#F4FBF7',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  syncNowButtonDisabled: {
+    opacity: 0.6,
+  },
+  syncNowButtonText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#0B8A5B',
   },
   healthCardHeader: {
     flexDirection: 'row',
