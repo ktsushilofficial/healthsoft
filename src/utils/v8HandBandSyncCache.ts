@@ -3,6 +3,7 @@ import * as Keychain from 'react-native-keychain';
 const V8_HAND_BAND_SYNC_CACHE_SERVICE = 'healthsoft.cache.v8HandBandSync';
 const V8_HAND_BAND_SYNC_CACHE_USERNAME = 'v8-hand-band-sync-cache';
 export const V8_HAND_BAND_SYNC_REMINDER_MS = 60 * 60 * 1000;
+export const V8_HAND_BAND_AUTO_SYNC_INTERVAL_MS = 15 * 60 * 1000;
 
 export interface V8HandBandSyncCacheEntry {
   seniorId: string;
@@ -75,6 +76,29 @@ async function loadAllEntries(): Promise<V8HandBandSyncCacheEntry[]> {
   } catch {
     return [];
   }
+}
+
+export async function getV8HandBandSyncEntry(
+  seniorId: string,
+  deviceIdentifier?: string | null,
+): Promise<V8HandBandSyncCacheEntry | null> {
+  const trimmedSeniorId = seniorId.trim();
+  const normalizedIdentifier = deviceIdentifier?.replace(/[^a-fA-F0-9]/g, '').toLowerCase() ?? '';
+  if (!trimmedSeniorId) {
+    return null;
+  }
+
+  const entries = await loadAllEntries();
+  return entries.find(entry => {
+    if (entry.seniorId !== trimmedSeniorId) {
+      return false;
+    }
+    if (!normalizedIdentifier) {
+      return true;
+    }
+    const entryIdentifier = entry.deviceIdentifier?.replace(/[^a-fA-F0-9]/g, '').toLowerCase() ?? '';
+    return entryIdentifier === normalizedIdentifier;
+  }) ?? null;
 }
 
 async function saveAllEntries(entries: V8HandBandSyncCacheEntry[]): Promise<void> {

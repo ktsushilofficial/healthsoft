@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import * as Keychain from 'react-native-keychain';
 import { useAuth } from '../context/AuthContext';
 import type { V8ConnectionState, V8Device } from './types';
@@ -7,12 +7,24 @@ import { isV8NativeAvailable, v8Emitter, v8Native } from './nativeV8';
 import type { V8DailyVitalSummary, V8DeviceInfo, V8HistoryBucket, V8VitalSample, V8WebVitalSummary, V8WebVitalsSyncPayload } from './models';
 import { parseV8Payload } from './parser';
 import { normalizeMacAddress } from '../utils/deviceAssignments';
-import { recordV8HandBandSynced } from '../utils/v8HandBandSyncCache';
+import {
+  V8_HAND_BAND_AUTO_SYNC_INTERVAL_MS,
+  getV8HandBandSyncEntry,
+  recordV8HandBandSynced,
+} from '../utils/v8HandBandSyncCache';
 
 type ParsedData = {
   type: 'parsed' | 'raw';
   payload?: Record<string, unknown>;
   payloadHex?: string;
+};
+
+export type V8AutoSyncStatus = {
+  enabled: boolean;
+  phase: 'disabled' | 'waiting' | 'scheduled' | 'syncing' | 'error';
+  lastSyncedAt: number | null;
+  nextSyncAt: number | null;
+  error: string | null;
 };
 
 type V8BleContextValue = {
@@ -26,6 +38,7 @@ type V8BleContextValue = {
   historyByType: Record<string, V8HistoryBucket>;
   deviceInfo: V8DeviceInfo;
   liveModeEnabled: boolean;
+  autoSyncStatus: V8AutoSyncStatus;
   startScan: () => Promise<void>;
   stopScan: () => Promise<void>;
   connect: (deviceId: string) => Promise<void>;
@@ -120,7 +133,7 @@ const diffDaysYmdUtc = (fromYmd: string, toYmd: string): number => {
 };
 
 const useV8BleManagerInternal = (): V8BleContextValue => {
-  const { selectedSenior, user, syncV8VitalsByDevice, getAssignedDevicesForSenior, selectedSeniorHandBandMacs } = useAuth();
+  const { user, syncV8VitalsByDevice, getAssignedDevicesForSenior, selectedSeniorHandBandMacs } = useAuth();
   const [devicesById, setDevicesById] = useState<Record<string, V8Device>>({});
   const [connectionStates, setConnectionStates] = useState<Record<string, V8ConnectionState>>({});
   const [scanError, setScanError] = useState<string | null>(null);
@@ -142,9 +155,20 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
   const [suppressAutoConnectUntil, setSuppressAutoConnectUntil] = useState<number>(0);
   const [liveModeEnabled, setLiveModeEnabled] = useState(false);
+  const [autoSyncStatus, setAutoSyncStatus] = useState<V8AutoSyncStatus>({
+    enabled: false,
+    phase: 'disabled',
+    lastSyncedAt: null,
+    nextSyncAt: null,
+    error: null,
+  });
   const liveSnapshotInFlightRef = useRef(false);
   const liveSnapshotPromiseRef = useRef<Promise<void> | null>(null);
   const scanStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const automaticSyncInFlightRef = useRef(false);
+  const automaticSyncCacheKeyRef = useRef<string | null>(null);
+  const lastVitalsSyncedAtRef = useRef<number | null>(null);
+  const nextAutomaticSyncAttemptAtRef = useRef<number>(0);
 
   useEffect(
     () => () => {
@@ -378,6 +402,23 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     async (deviceId: string) => {
       if (!v8Native) return;
       const normalizedTargetId = normalizeId(deviceId);
+      const assignedMacs = new Set(
+        selectedSeniorHandBandMacs
+          .map(value => normalizeMacAddress(value))
+          .filter((value): value is string => !!value),
+      );
+      const scannedDevice = devicesById[normalizedTargetId];
+      const scanCandidates = [deviceId, scannedDevice?.name, scannedDevice?.localName]
+        .map(value => normalizeMacAddress(value))
+        .filter((value): value is string => !!value);
+      const matchesScannedAssignment = scanCandidates.some(candidate => assignedMacs.has(candidate));
+      const matchesRememberedAssignment =
+        normalizeId(lastConnectedDeviceId) === normalizedTargetId &&
+        !!normalizeMacAddress(deviceInfo.mac) &&
+        assignedMacs.has(normalizeMacAddress(deviceInfo.mac)!);
+      if (assignedMacs.size === 0 || (!matchesScannedAssignment && !matchesRememberedAssignment)) {
+        throw new Error('This Hand Band is not assigned to the selected senior. Connection is blocked.');
+      }
       if (scanStopTimerRef.current) {
         clearTimeout(scanStopTimerRef.current);
         scanStopTimerRef.current = null;
@@ -411,7 +452,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         throw error;
       }
     },
-    [activeDeviceId],
+    [activeDeviceId, deviceInfo.mac, devicesById, lastConnectedDeviceId, selectedSeniorHandBandMacs],
   );
 
   const disconnect = useCallback(
@@ -889,9 +930,12 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
 
   const syncDailyVitalsToBackend = useCallback(
     async (fromDate: string, toDate: string, days: V8DailyVitalSummary[]): Promise<{ days: number }> => {
-      const seniorId = (selectedSenior?.userId ?? (user?.role === 'SENIOR' ? user.user_id : '')).trim();
+      if (user?.role !== 'SENIOR') {
+        throw new Error('Only senior users can sync Hand Band health data.');
+      }
+      const seniorId = user.user_id.trim();
       if (!seniorId) {
-        throw new Error('Select a senior before syncing vitals.');
+        throw new Error('Senior ID is required before syncing vitals.');
       }
       const connectedMac = normalizeMacAddress(deviceInfo.mac);
       if (!connectedMac) {
@@ -1031,11 +1075,21 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
 
       await syncV8VitalsByDevice(webPayload);
       if (user?.role === 'SENIOR') {
-        await recordV8HandBandSynced(seniorId, deviceUUID, connectedMac);
+        const syncedAt = Date.now();
+        await recordV8HandBandSynced(seniorId, deviceUUID, connectedMac, syncedAt);
+        lastVitalsSyncedAtRef.current = syncedAt;
+        nextAutomaticSyncAttemptAtRef.current = syncedAt + V8_HAND_BAND_AUTO_SYNC_INTERVAL_MS;
+        setAutoSyncStatus({
+          enabled: true,
+          phase: 'scheduled',
+          lastSyncedAt: syncedAt,
+          nextSyncAt: nextAutomaticSyncAttemptAtRef.current,
+          error: null,
+        });
       }
       return { days: days.length };
     },
-    [deviceInfo.mac, getAssignedDevicesForSenior, selectedSenior?.userId, selectedSeniorHandBandMacs, syncV8VitalsByDevice, user?.role, user?.user_id],
+    [deviceInfo.mac, getAssignedDevicesForSenior, selectedSeniorHandBandMacs, syncV8VitalsByDevice, user?.role, user?.user_id],
   );
 
   const syncVitalsRangeToBackend = useCallback(
@@ -1099,6 +1153,11 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     if (Date.now() < suppressAutoConnectUntil) return;
     if (!v8Native || !lastConnectedDeviceId) return;
     if (isScanning) return;
+    const rememberedMac = normalizeMacAddress(deviceInfo.mac);
+    const assignedMacs = selectedSeniorHandBandMacs
+      .map(value => normalizeMacAddress(value))
+      .filter((value): value is string => !!value);
+    if (!rememberedMac || !assignedMacs.includes(rememberedMac)) return;
     const state = connectionStates[normalizeId(lastConnectedDeviceId)];
     if (state === 'connected' || state === 'connecting') return;
     try {
@@ -1110,7 +1169,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         // ignore
       }
     }
-  }, [connect, connectionStates, isScanning, lastConnectedDeviceId, startScan, suppressAutoConnectUntil]);
+  }, [connect, connectionStates, deviceInfo.mac, isScanning, lastConnectedDeviceId, selectedSeniorHandBandMacs, startScan, suppressAutoConnectUntil]);
 
   useEffect(() => {
     if (!lastConnectedDeviceId || !v8Native) return;
@@ -1119,6 +1178,127 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     }, 600);
     return () => clearTimeout(timer);
   }, [ensureAutoConnect, lastConnectedDeviceId]);
+
+  const runAutomaticVitalsSync = useCallback(async () => {
+    const seniorId = user?.role === 'SENIOR' ? user.user_id?.trim() : '';
+    if (!seniorId || selectedSeniorHandBandMacs.length === 0) {
+      setAutoSyncStatus({
+        enabled: false,
+        phase: 'disabled',
+        lastSyncedAt: null,
+        nextSyncAt: null,
+        error: null,
+      });
+      return;
+    }
+
+    const connected = Object.values(connectionStates).some(state => state === 'connected');
+    if (!connected) {
+      setAutoSyncStatus(prev => ({
+        ...prev,
+        enabled: true,
+        phase: 'waiting',
+        nextSyncAt: null,
+        error: null,
+      }));
+      await ensureAutoConnect().catch(() => {});
+      return;
+    }
+
+    const connectedMac = normalizeMacAddress(deviceInfo.mac);
+    if (!connectedMac) {
+      setAutoSyncStatus(prev => ({
+        ...prev,
+        enabled: true,
+        phase: 'waiting',
+        nextSyncAt: null,
+        error: null,
+      }));
+      await requestDeviceMac().catch(() => {});
+      return;
+    }
+
+    if (automaticSyncInFlightRef.current) {
+      return;
+    }
+    automaticSyncInFlightRef.current = true;
+
+    try {
+      const cacheKey = `${seniorId}::${connectedMac}`;
+      if (automaticSyncCacheKeyRef.current !== cacheKey) {
+        const cachedEntry = await getV8HandBandSyncEntry(seniorId, connectedMac);
+        automaticSyncCacheKeyRef.current = cacheKey;
+        lastVitalsSyncedAtRef.current = cachedEntry?.lastSyncedAt ?? null;
+        nextAutomaticSyncAttemptAtRef.current = cachedEntry?.lastSyncedAt
+          ? cachedEntry.lastSyncedAt + V8_HAND_BAND_AUTO_SYNC_INTERVAL_MS
+          : Date.now();
+      }
+
+      const now = Date.now();
+      if (now < nextAutomaticSyncAttemptAtRef.current) {
+        setAutoSyncStatus({
+          enabled: true,
+          phase: 'scheduled',
+          lastSyncedAt: lastVitalsSyncedAtRef.current,
+          nextSyncAt: nextAutomaticSyncAttemptAtRef.current,
+          error: null,
+        });
+        return;
+      }
+
+      setAutoSyncStatus({
+        enabled: true,
+        phase: 'syncing',
+        lastSyncedAt: lastVitalsSyncedAtRef.current,
+        nextSyncAt: null,
+        error: null,
+      });
+      const today = new Date().toISOString().slice(0, 10);
+      const todayRows = await buildDailyVitalsRange(today, today);
+      const rowsToSync = todayRows.filter(row => row.date === today);
+      if (rowsToSync.length === 0) {
+        throw new Error('No current hand band health data is available yet.');
+      }
+      await syncDailyVitalsToBackend(today, today, rowsToSync);
+    } catch (error) {
+      const retryAt = Date.now() + 60_000;
+      nextAutomaticSyncAttemptAtRef.current = retryAt;
+      setAutoSyncStatus({
+        enabled: true,
+        phase: 'error',
+        lastSyncedAt: lastVitalsSyncedAtRef.current,
+        nextSyncAt: retryAt,
+        error: error instanceof Error ? error.message : 'Automatic health sync failed.',
+      });
+    } finally {
+      automaticSyncInFlightRef.current = false;
+    }
+  }, [buildDailyVitalsRange, connectionStates, deviceInfo.mac, ensureAutoConnect, requestDeviceMac, selectedSeniorHandBandMacs.length, syncDailyVitalsToBackend, user?.role, user?.user_id]);
+
+  useEffect(() => {
+    let active = true;
+    let appIsActive = AppState.currentState === 'active';
+    const checkAutomaticSync = () => {
+      if (active && appIsActive) {
+        runAutomaticVitalsSync().catch(() => {});
+      }
+    };
+
+    checkAutomaticSync();
+    const interval = setInterval(checkAutomaticSync, 30_000);
+    const appStateSubscription = AppState.addEventListener('change', nextState => {
+      appIsActive = nextState === 'active';
+      if (appIsActive) {
+        checkAutomaticSync();
+      }
+    });
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+      appStateSubscription.remove();
+    };
+  }, [runAutomaticVitalsSync]);
 
   useEffect(() => {
     const cappedHistoryByType: Record<string, V8HistoryBucket> = Object.fromEntries(
@@ -1154,6 +1334,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     historyByType,
     deviceInfo,
     liveModeEnabled,
+    autoSyncStatus,
     startScan,
     stopScan,
     connect,

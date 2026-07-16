@@ -11,7 +11,6 @@ import {
   TouchableOpacity,
   Modal,
   Pressable,
-  Alert,
   ActivityIndicator,
   RefreshControl,
 } from 'react-native';
@@ -31,13 +30,7 @@ import {
   mapSeniorDashboardDeviceToSnapshot,
 } from '../utils/mapSeniorDashboardDeviceToSnapshot';
 import { isMacAddressLike } from '../utils/deviceAssignments';
-import {
-  V8_HAND_BAND_SYNC_REMINDER_MS,
-  isV8HandBandSyncReminderDue,
-  recordV8HandBandSyncPrompt,
-  upsertV8HandBandSyncAssignment,
-  type V8HandBandSyncCacheEntry,
-} from '../utils/v8HandBandSyncCache';
+import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import type { SeniorHomeSnapshot } from '../types/seniorHomeSnapshot';
 
 const HERO_IMAGES = [
@@ -511,8 +504,18 @@ function formatDashboardBattery(snapshot: SeniorHomeSnapshot): string {
   return formatBatteryPercent(snapshot.batteryPercent);
 }
 
+function formatSyncAge(timestamp: number | null, now: Date): string {
+  if (!timestamp) return 'Not synced yet';
+  const elapsedMinutes = Math.max(0, Math.floor((now.getTime() - timestamp) / 60_000));
+  if (elapsedMinutes < 1) return 'Last synced just now';
+  if (elapsedMinutes === 1) return 'Last synced 1 min ago';
+  if (elapsedMinutes < 60) return `Last synced ${elapsedMinutes} mins ago`;
+  return `Last synced ${new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+}
+
 const HomeScreen = () => {
   const navigation = useNavigation<any>();
+  const { autoSyncStatus } = useV8DeviceManager();
   const {
     user,
     selectedSenior,
@@ -550,7 +553,7 @@ const HomeScreen = () => {
   const manualDashboardRefreshCountRef = useRef(0);
   const backgroundDashboardRefreshCountRef = useRef(0);
   const vitalsRequestIdRef = useRef(0);
-  const handBandSyncReminderKeyRef = useRef<string | null>(null);
+  const lastRefreshedVitalsSyncRef = useRef<number | null>(null);
 
   /** Senior id for `/api/v1/senior-dashboard/{id}` — logged-in senior, caretaker's or guardian's selected senior. */
   const activeDashboardSeniorId = useMemo(() => {
@@ -640,111 +643,11 @@ const HomeScreen = () => {
   }, [loadV8VitalsForToday]);
 
   useEffect(() => {
-    let cancelled = false;
-    let nextCheckTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const scheduleNextReminderCheck = (entry: V8HandBandSyncCacheEntry) => {
-      if (cancelled) {
-        return;
-      }
-      if (nextCheckTimer) {
-        clearTimeout(nextCheckTimer);
-      }
-      const nextDueAt = Math.max(
-        (entry.lastSyncedAt ?? 0) + V8_HAND_BAND_SYNC_REMINDER_MS,
-        (entry.lastPromptedAt ?? 0) + V8_HAND_BAND_SYNC_REMINDER_MS,
-      );
-      const delayMs = Math.max(60_000, nextDueAt - Date.now());
-      nextCheckTimer = setTimeout(() => {
-        maybePromptHandBandSync();
-      }, delayMs);
-    };
-
-    const maybePromptHandBandSync = async () => {
-      const seniorId = user?.role === SENIOR_ROLE ? user.user_id?.trim() : '';
-      if (!seniorId || selectedSeniorHandBandMacs.length === 0) {
-        return;
-      }
-
-      try {
-        const assigned = await getAssignedDevicesForSenior(seniorId);
-        if (cancelled) {
-          return;
-        }
-
-        const handBandAssignment = assigned.find(
-          device => !!device.deviceId && isMacAddressLike(device.deviceIdentifier),
-        );
-        const deviceId = handBandAssignment?.deviceId?.trim() ?? '';
-        if (!deviceId) {
-          return;
-        }
-
-        const cacheEntry = await upsertV8HandBandSyncAssignment(
-          seniorId,
-          deviceId,
-          handBandAssignment?.deviceIdentifier,
-        );
-        if (cancelled) {
-          return;
-        }
-        if (!isV8HandBandSyncReminderDue(cacheEntry)) {
-          scheduleNextReminderCheck(cacheEntry);
-          return;
-        }
-
-        const reminderKey = `${seniorId}:${deviceId}:${cacheEntry.lastSyncedAt ?? 'never'}:${cacheEntry.lastPromptedAt ?? 'never'}`;
-        if (handBandSyncReminderKeyRef.current === reminderKey) {
-          return;
-        }
-        handBandSyncReminderKeyRef.current = reminderKey;
-        const promptedEntry = await recordV8HandBandSyncPrompt(seniorId, deviceId);
-        if (promptedEntry) {
-          scheduleNextReminderCheck(promptedEntry);
-        }
-        if (cancelled) {
-          return;
-        }
-
-        Alert.alert(
-          'Sync hand band data?',
-          'Your hand band data has not synced in over an hour. Sync latest data now?',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Sync Now',
-              onPress: () => {
-                navigation.navigate('Device', {
-                  activeTab: 'v8',
-                  showScanHandBandPrompt: true,
-                  showSyncLatestPrompt: true,
-                  promptedAt: Date.now(),
-                });
-              },
-            },
-          ],
-          { cancelable: true },
-        );
-      } catch (error) {
-        console.log('[HomeScreen] Failed to check V8 hand band sync reminder:', error);
-      }
-    };
-
-    maybePromptHandBandSync();
-
-    return () => {
-      cancelled = true;
-      if (nextCheckTimer) {
-        clearTimeout(nextCheckTimer);
-      }
-    };
-  }, [
-    getAssignedDevicesForSenior,
-    navigation,
-    selectedSeniorHandBandMacs,
-    user?.role,
-    user?.user_id,
-  ]);
+    const syncedAt = autoSyncStatus.lastSyncedAt;
+    if (!syncedAt || lastRefreshedVitalsSyncRef.current === syncedAt) return;
+    lastRefreshedVitalsSyncRef.current = syncedAt;
+    loadV8VitalsForToday();
+  }, [autoSyncStatus.lastSyncedAt, loadV8VitalsForToday]);
 
   const fetchDashboardData = useCallback(async (
     mode: 'initial' | 'manual' | 'background' = 'initial',
@@ -1378,6 +1281,15 @@ const HomeScreen = () => {
   const homeStepsValue = formatHomeSteps(todayVitals?.steps);
   const homeBpValue = formatHomeBp(todayVitals);
   const healthCardStatus = formatDeviceActivityStatus(activeDeviceRecord);
+  const showAutomaticHandBandSync = user?.role === SENIOR_ROLE && selectedSeniorHandBandMacs.length > 0;
+  const automaticSyncTitle = autoSyncStatus.phase === 'syncing'
+    ? 'Syncing health data…'
+    : autoSyncStatus.phase === 'waiting'
+      ? 'Waiting for hand band'
+      : autoSyncStatus.phase === 'error'
+        ? 'Automatic sync will retry'
+        : 'Automatic health sync is active';
+  const automaticSyncDetail = `${formatSyncAge(autoSyncStatus.lastSyncedAt, nowTick)} · Every 15 minutes`;
 
   const openLastPositionMap = useCallback(() => {
     const lat = liveSnapshot.latitude;
@@ -1530,6 +1442,30 @@ const HomeScreen = () => {
               </View>
             </View>
           </TouchableOpacity>
+        )}
+
+        {showAutomaticHandBandSync && (
+          <View style={styles.autoSyncCard}>
+            <View style={styles.autoSyncIconWrap}>
+              {autoSyncStatus.phase === 'syncing' ? (
+                <ActivityIndicator size="small" color="#10B981" />
+              ) : (
+                <Icon
+                  name={autoSyncStatus.phase === 'waiting' ? 'watch-outline' : 'sync'}
+                  size={20}
+                  color={autoSyncStatus.phase === 'error' ? '#D97706' : '#10B981'}
+                />
+              )}
+            </View>
+            <View style={styles.autoSyncTextCol}>
+              <Text style={styles.autoSyncTitle}>{automaticSyncTitle}</Text>
+              <Text style={styles.autoSyncDetail}>{automaticSyncDetail}</Text>
+            </View>
+            <View style={styles.autoSyncLiveBadge}>
+              <View style={styles.autoSyncLiveDot} />
+              <Text style={styles.autoSyncLiveText}>AUTO</Text>
+            </View>
+          </View>
         )}
 
         {/* DEVICES Section */}
@@ -1724,6 +1660,64 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     elevation: 3,
     marginBottom: 16,
+  },
+  autoSyncCard: {
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 16,
+    marginBottom: 8,
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#DDF3E8',
+  },
+  autoSyncIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#EAF8F1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  autoSyncTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  autoSyncTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#1B2A4A',
+  },
+  autoSyncDetail: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#8F8276',
+    marginTop: 3,
+  },
+  autoSyncLiveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EAF8F1',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    marginLeft: 8,
+  },
+  autoSyncLiveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#10B981',
+    marginRight: 5,
+  },
+  autoSyncLiveText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#0B8A5B',
+    letterSpacing: 0.5,
   },
   healthCardHeader: {
     flexDirection: 'row',

@@ -129,8 +129,12 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
           ) : null}
         </View>
         <TouchableOpacity
-          style={[styles.linkButton, connected ? styles.linkButtonSecondary : null, busy ? styles.disabled : null]}
-          disabled={busy}
+          style={[
+            styles.linkButton,
+            connected ? styles.linkButtonSecondary : null,
+            busy || (!connected && !matchesSelectedSenior) ? styles.disabled : null,
+          ]}
+          disabled={busy || (!connected && !matchesSelectedSenior)}
           onPress={async () => {
             if (connected) {
               await disconnect(device.id);
@@ -150,11 +154,22 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
           }}
         >
           <Text style={styles.linkButtonText}>
-            {connected ? 'Disconnect' : busy ? 'Working...' : 'Connect'}
+            {connected
+              ? 'Disconnect'
+              : busy
+                ? 'Working...'
+                : matchesSelectedSenior
+                  ? 'Connect'
+                  : 'Not Assigned'}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.linkButton, { marginLeft: 8, backgroundColor: '#EDE4DA' }]}
+          style={[
+            styles.linkButton,
+            { marginLeft: 8, backgroundColor: '#EDE4DA' },
+            !matchesSelectedSenior ? styles.disabled : null,
+          ]}
+          disabled={!matchesSelectedSenior}
           onPress={() => {
             const shouldShowSyncPrompt = pendingSyncLatestPrompt;
             navigation.navigate('V8DeviceManage', {
