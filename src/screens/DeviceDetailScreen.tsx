@@ -64,6 +64,17 @@ type ConfigSectionKey =
   | 'voicePrompts'
   | 'bluetoothAccess';
 
+const CONFIG_SYNC_GROUPS: readonly { label: string; keys: readonly number[] }[] = [
+  { label: 'identity', keys: [0x01, 0x02, 0x03, 0x04, 0x05, 0x08, 0x14, 0x1a, 0x1b] },
+  { label: 'general', keys: [0x09, 0x0a, 0x0e, 0x13] },
+  { label: 'SOS', keys: [0x30, 0x30, 0x30] },
+  { label: 'reporting', keys: [0x44] },
+  { label: 'audio and alarms', keys: [0x10, 0x11, 0x12, 0x0b, 0x0c] },
+  { label: 'feature controls', keys: [0x0f, 0x19] },
+  { label: 'safety alerts', keys: [0x51, 0x53, 0x55, 0x56] },
+  { label: 'network', keys: [0x16, 0x17, 0x18, 0x40, 0x41, 0x42, 0x43] },
+] as const;
+
 const ENABLE_CONTROL_FLAG_BY_KEY = new Map<string, Ev07bFlagDefinition>(
   EV07B_ENABLE_CONTROL_FLAGS.map(flag => [flag.key, flag] as const),
 );
@@ -159,13 +170,6 @@ const ENABLE_CONTROL_SECTION_CONFIG: readonly {
   },
 ] as const;
 
-const ENABLE_CONTROL_SECTION_KEYS: readonly EnableControlSectionKey[] =
-  ENABLE_CONTROL_SECTION_CONFIG.map(section => section.key);
-
-function isEnableControlSection(section: ConfigSectionKey): section is EnableControlSectionKey {
-  return (ENABLE_CONTROL_SECTION_KEYS as readonly string[]).includes(section);
-}
-
 function clampInt(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.floor(value)));
@@ -177,6 +181,27 @@ function parseMacAddress(input: string): Uint8Array | null {
   const parts = cleaned.match(/.{1,2}/g);
   if (!parts) return null;
   return Uint8Array.from(parts.map(part => parseInt(part, 16)));
+}
+
+function ev07bSettingMatches(key: number, expected: Uint8Array, actual: Uint8Array): boolean {
+  // Device time advances between write and readback, so receiving the key is the
+  // meaningful confirmation for this one volatile setting.
+  if (key === 0x06) return true;
+
+  // Working-mode responses may replace the three-byte interval prefix. The last
+  // byte is the mode the Manage screen controls.
+  if (key === 0x0a) {
+    return expected[expected.length - 1] === actual[actual.length - 1];
+  }
+
+  // Text settings can be returned with trailing NUL padding.
+  if ([0x13, 0x17, 0x18, 0x40, 0x41, 0x42].includes(key)) {
+    const normalizeText = (value: Uint8Array) =>
+      Buffer.from(value).toString('ascii').replace(/\0+$/, '').trim();
+    return normalizeText(expected) === normalizeText(actual);
+  }
+
+  return Buffer.from(expected).equals(Buffer.from(actual));
 }
 
 function formatTime(hour?: number, minute?: number): string {
@@ -292,6 +317,7 @@ const DeviceDetailScreen = () => {
   const bleLog = bleLogById[deviceId] ?? [];
 
   const state = connectionStates[deviceId] ?? 'disconnected';
+  const connected = state === 'connected';
   const identity = deviceIdentityById[deviceId];
   const gatt = gattDetailsById[deviceId];
   const dataSnapshot = dataSnapshotById[deviceId];
@@ -368,7 +394,9 @@ const DeviceDetailScreen = () => {
   const [mileageInput, setMileageInput] = useState('');
 
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
   const [savingSection, setSavingSection] = useState<ConfigSectionKey | null>(null);
+  const autoSyncedDeviceRef = useRef<string | null>(null);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     identity: true,
     general: true,
@@ -420,11 +448,14 @@ const DeviceDetailScreen = () => {
   const initOnce = useCallback(
     <T,>(field: string, value: T | undefined, setter: (v: T) => void) => {
       if (value === undefined || value === null) return;
-      if (initializedRef.current.has(field)) return;
+      // A manual/automatic sync is authoritative and may refresh values cached
+      // from an earlier connection. Outside sync, keep protecting in-progress
+      // edits from unrelated identity notifications.
+      if (initializedRef.current.has(field) && !syncing) return;
       initializedRef.current.add(field);
       setter(value);
     },
-    [],
+    [syncing],
   );
 
   useEffect(() => {
@@ -486,26 +517,62 @@ const DeviceDetailScreen = () => {
   }, [identity, initOnce]);
 
   const runSync = useCallback(async () => {
-    try {
-      setStatusMsg('Syncing…');
-      const resp = await sendEv07bConfig(deviceId, {
-        readKeys: [
-          // Identity & read-only
-          0x01, 0x02, 0x03, 0x04, 0x05, 0x08,
-          // Writable config
-          0x06, 0x07, 0x09, 0x0a, 0x0b, 0x0c, 0x0e, 0x0f,
-          0x10, 0x11, 0x12, 0x13, 0x14, 0x16, 0x17, 0x18, 0x19,
-          0x51, 0x53, 0x55, 0x56,
-          0x1a, 0x1b,
-          // SOS + Network
-          0x30, 0x30, 0x30, 0x40, 0x41, 0x42, 0x43, 0x44,
-        ],
-      });
-      setStatusMsg(`Synced (seq ${resp.seqId})`);
-    } catch (e: any) {
-      setStatusMsg(e.message || 'Sync failed');
+    if (!connected) {
+      setStatusMsg('Connect the pendant before syncing settings');
+      return;
     }
-  }, [deviceId, sendEv07bConfig]);
+
+    setSyncing(true);
+    setStatusMsg('Loading settings from pendant…');
+    let successfulKeys = 0;
+    const failedKeys: number[] = [];
+
+    try {
+      for (const group of CONFIG_SYNC_GROUPS) {
+        setStatusMsg(`Loading ${group.label} settings…`);
+        const readWithFallback = async (keys: number[]): Promise<void> => {
+          try {
+            await sendEv07bConfig(deviceId, { readKeys: keys });
+            successfulKeys += keys.length;
+          } catch {
+            // Older firmware rejects a whole read when just one key is unsupported.
+            // Split failed groups until every supported setting has still loaded.
+            if (keys.length === 1) {
+              failedKeys.push(keys[0]);
+              return;
+            }
+            const midpoint = Math.ceil(keys.length / 2);
+            await readWithFallback(keys.slice(0, midpoint));
+            await readWithFallback(keys.slice(midpoint));
+          }
+        };
+        await readWithFallback([...group.keys]);
+      }
+
+      if (successfulKeys === 0) {
+        setStatusMsg('Could not load settings from the pendant');
+      } else if (failedKeys.length > 0) {
+        const unsupported = [...new Set(failedKeys)]
+          .map(key => `0x${key.toString(16).padStart(2, '0')}`)
+          .join(', ');
+        setStatusMsg(`Settings loaded; unsupported keys: ${unsupported}`);
+      } else {
+        setStatusMsg('All pendant settings loaded');
+      }
+    } finally {
+      setSyncing(false);
+    }
+  }, [connected, deviceId, sendEv07bConfig]);
+
+  useEffect(() => {
+    if (!connected) {
+      autoSyncedDeviceRef.current = null;
+      return;
+    }
+    if (autoSyncedDeviceRef.current === deviceId) return;
+    autoSyncedDeviceRef.current = deviceId;
+    runSync().catch(() => {});
+  }, [connected, deviceId, runSync]);
 
   const pushAuthorizedNumber = useCallback((target: WriteBlock[], numberValue: string, slotValue: string, fallbackSlot: number) => {
     const digits = numberValue.replace(/[^0-9]/g, '').slice(0, 20);
@@ -671,11 +738,56 @@ const DeviceDetailScreen = () => {
     identity,
   ]);
 
-  const sendWriteBlocks = useCallback(async (statusLabel: string, writeBlocks: WriteBlock[], successLabel = statusLabel) => {
-    setStatusMsg(`${statusLabel}…`);
-    const resp = await sendEv07bConfig(deviceId, { writeBlocks });
-    setStatusMsg(`${successLabel} saved${resp.seqId != null ? ` (seq ${resp.seqId})` : ''}`);
-    return resp.seqId;
+  const sendWriteBlocks = useCallback(async (statusLabel: string, writeBlocks: WriteBlock[]) => {
+    let lastSeqId: number | undefined;
+
+    // Send and acknowledge one key at a time. This keeps most requests inside
+    // one BLE packet and supports firmware that only applies the first key.
+    for (let index = 0; index < writeBlocks.length; index += 1) {
+      setStatusMsg(
+        writeBlocks.length > 1
+          ? `${statusLabel} (${index + 1}/${writeBlocks.length})…`
+          : `${statusLabel}…`,
+      );
+      const response = await sendEv07bConfig(deviceId, {
+        writeBlocks: [writeBlocks[index]],
+      });
+      lastSeqId = response.seqId;
+    }
+
+    return lastSeqId;
+  }, [deviceId, sendEv07bConfig]);
+
+  const verifyWriteBlocks = useCallback(async (writeBlocks: WriteBlock[]) => {
+    const keys = writeBlocks.map(block => block.key);
+    if (keys.every(key => key === 0x30)) {
+      const response = await sendEv07bConfig(deviceId, { readKeys: keys });
+      const unmatchedReadBlocks = response.blocks.filter(block => block.key === 0x30);
+      for (const expected of writeBlocks) {
+        const matchIndex = unmatchedReadBlocks.findIndex(block =>
+          ev07bSettingMatches(expected.key, expected.value, block.value),
+        );
+        if (matchIndex < 0) {
+          throw new Error('Pendant did not keep one of the SOS numbers');
+        }
+        unmatchedReadBlocks.splice(matchIndex, 1);
+      }
+      return;
+    }
+
+    const uniqueKeys = [...new Set(keys)];
+    for (const key of uniqueKeys) {
+      const response = await sendEv07bConfig(deviceId, { readKeys: [key] });
+      const expectedBlocks = writeBlocks.filter(block => block.key === key);
+      const saved = expectedBlocks.every(expected =>
+        response.blocks.some(block =>
+          block.key === key && ev07bSettingMatches(key, expected.value, block.value),
+        ),
+      );
+      if (!saved) {
+        throw new Error(`Pendant did not confirm setting 0x${key.toString(16).padStart(2, '0')}`);
+      }
+    }
   }, [deviceId, sendEv07bConfig]);
 
   const buildSectionWriteBlocks = useCallback((section: ConfigSectionKey): WriteBlock[] => {
@@ -833,6 +945,15 @@ const DeviceDetailScreen = () => {
   ]);
 
   const handleSectionSave = useCallback(async (section: ConfigSectionKey, label: string) => {
+    if (!connected) {
+      setStatusMsg('Connect the pendant before saving settings');
+      return;
+    }
+    if (syncing) {
+      setStatusMsg('Please wait for pendant settings to finish loading');
+      return;
+    }
+
     try {
       setSavingSection(section);
       const writeBlocks = buildSectionWriteBlocks(section);
@@ -840,35 +961,16 @@ const DeviceDetailScreen = () => {
         setStatusMsg(`Nothing to save for ${label.toLowerCase()}`);
         return;
       }
-      const seqId = await sendWriteBlocks(label, writeBlocks, label);
-      if (section === 'general') {
-        try {
-          const syncResp = await sendEv07bConfig(deviceId, { readKeys: [0x09, 0x0a, 0x0e, 0x13] });
-          setStatusMsg(`${label} saved${syncResp.seqId != null ? ` (seq ${syncResp.seqId})` : seqId != null ? ` (seq ${seqId})` : ''}`);
-        } catch {
-          // Best-effort refresh after general settings update.
-        }
-      } else if (section === 'sos') {
-        try {
-          const syncResp = await sendEv07bConfig(deviceId, { readKeys: [0x30, 0x30, 0x30] });
-          setStatusMsg(`${label} saved${syncResp.seqId != null ? ` (seq ${syncResp.seqId})` : seqId != null ? ` (seq ${seqId})` : ''}`);
-        } catch {
-          // Best-effort refresh after SOS update.
-        }
-      } else if (isEnableControlSection(section)) {
-        try {
-          const syncResp = await sendEv07bConfig(deviceId, { readKeys: [0x0f] });
-          setStatusMsg(`${label} saved${syncResp.seqId != null ? ` (seq ${syncResp.seqId})` : seqId != null ? ` (seq ${seqId})` : ''}`);
-        } catch {
-          // Best-effort refresh after feature-flag update.
-        }
-      }
+      const seqId = await sendWriteBlocks(label, writeBlocks);
+      setStatusMsg(`Verifying ${label.toLowerCase()}…`);
+      await verifyWriteBlocks(writeBlocks);
+      setStatusMsg(`${label} saved and verified${seqId != null ? ` (seq ${seqId})` : ''}`);
     } catch (e: any) {
       setStatusMsg(e.message || `${label} save failed`);
     } finally {
       setSavingSection(null);
     }
-  }, [buildSectionWriteBlocks, deviceId, sendEv07bConfig, sendWriteBlocks]);
+  }, [buildSectionWriteBlocks, connected, sendWriteBlocks, syncing, verifyWriteBlocks]);
 
   const toggleCtrlBit = useCallback((bit: number) => {
     setEnableControl(prev => toggleEv07bFlag(prev, bit));
@@ -896,9 +998,13 @@ const DeviceDetailScreen = () => {
             <Text style={styles.statusText}>{state}</Text>
           </View>
           <View style={styles.row}>
-            <TouchableOpacity style={styles.primaryButton} onPress={runSync}>
+            <TouchableOpacity
+              style={[styles.primaryButton, (syncing || savingSection !== null) && styles.inlineSaveButtonDisabled]}
+              onPress={runSync}
+              disabled={syncing || savingSection !== null}
+            >
               <Icon name="sync" size={16} color="#FFF" />
-              <Text style={styles.primaryButtonText}>Sync Info</Text>
+              <Text style={styles.primaryButtonText}>{syncing ? 'Loading…' : 'Sync Info'}</Text>
             </TouchableOpacity>
           </View>
           {statusMsg ? <Text style={styles.statusMsg}>{statusMsg}</Text> : null}
@@ -975,7 +1081,7 @@ const DeviceDetailScreen = () => {
           expanded={expandedSections.general}
           onToggle={() => toggleSection('general')}
           onSave={() => handleSectionSave('general', 'General settings')}
-          saving={savingSection === 'general'}
+          saving={syncing || savingSection === 'general'}
         >
           <Text style={styles.fieldLabel}>Timezone (15-min units, e.g. 22 = +5:30)</Text>
           <TextInput style={styles.input} value={timezoneInput} onChangeText={setTimezoneInput}
@@ -1006,7 +1112,7 @@ const DeviceDetailScreen = () => {
           expanded={expandedSections.sos}
           onToggle={() => toggleSection('sos')}
           onSave={() => handleSectionSave('sos', 'SOS numbers')}
-          saving={savingSection === 'sos'}
+          saving={syncing || savingSection === 'sos'}
         >
           <Text style={styles.helperText}>
             Enter digits only, including country code. Example: `919500001488`
@@ -1042,7 +1148,7 @@ const DeviceDetailScreen = () => {
           expanded={expandedSections.reporting}
           onToggle={() => toggleSection('reporting')}
           onSave={() => handleSectionSave('reporting', 'Reporting')}
-          saving={savingSection === 'reporting'}
+          saving={syncing || savingSection === 'reporting'}
         >
           <Text style={styles.fieldLabel}>Auto Upload Interval (seconds, 0 = unchanged)</Text>
           <TextInput style={styles.input} value={uploadIntervalInput} onChangeText={setUploadIntervalInput}
@@ -1056,7 +1162,7 @@ const DeviceDetailScreen = () => {
           expanded={expandedSections.audio}
           onToggle={() => toggleSection('audio')}
           onSave={() => handleSectionSave('audio', 'Audio settings')}
-          saving={savingSection === 'audio'}
+          saving={syncing || savingSection === 'audio'}
         >
           <Text style={styles.fieldLabel}>Ring-Tone Volume (0–100)</Text>
           <TextInput style={styles.input} value={ringtoneVol} onChangeText={setRingtoneVol}
@@ -1076,7 +1182,7 @@ const DeviceDetailScreen = () => {
           expanded={expandedSections.alarm}
           onToggle={() => toggleSection('alarm')}
           onSave={() => handleSectionSave('alarm', 'Alarm settings')}
-          saving={savingSection === 'alarm'}
+          saving={syncing || savingSection === 'alarm'}
         >
           <Text style={styles.groupLabel}>Alarm Clock</Text>
           <ToggleRow
@@ -1181,7 +1287,7 @@ const DeviceDetailScreen = () => {
           expanded={expandedSections.alerts}
           onToggle={() => toggleSection('alerts')}
           onSave={() => handleSectionSave('alerts', 'Safety alerts')}
-          saving={savingSection === 'alerts'}
+          saving={syncing || savingSection === 'alerts'}
         >
           <Text style={styles.groupLabel}>Fall Alarm</Text>
           <ToggleRow
@@ -1326,7 +1432,7 @@ const DeviceDetailScreen = () => {
             expanded={expandedSections[section.key]}
             onToggle={() => toggleSection(section.key)}
             onSave={() => handleSectionSave(section.key, section.saveLabel)}
-            saving={savingSection === section.key}
+            saving={syncing || savingSection === section.key}
           >
             <Text style={styles.helperText}>
               {section.description} These toggles are saved back to the device&apos;s enable-control mask.
