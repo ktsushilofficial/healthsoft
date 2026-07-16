@@ -13,6 +13,7 @@ import type {
 import { Buffer } from 'buffer';
 import { decodeBase64ToUtf8, encodeUtf8ToBase64 } from './base64';
 import { buildConfigFrame, parseEv07bFrame } from './ev07bProtocol';
+import { isPendantScanDevice } from './pendantDeviceFilter';
 import {
   decodeEv07bAlarmClock,
   decodeEv07bAsciiSetting,
@@ -538,7 +539,10 @@ export function useBleDeviceManager() {
   }, []);
 
   const startScan = useCallback(
-    async (scanDurationMs: number = 10000) => {
+    async (
+      scanDurationMs: number = 10000,
+      assignedPendantHints: readonly string[] = [],
+    ) => {
       setScanError(null);
 
       if (bleState !== 'PoweredOn') {
@@ -585,6 +589,12 @@ export function useBleDeviceManager() {
               isConnectable: (scannedDevice as any).isConnectable ?? prev?.isConnectable ?? null,
               serviceUUIDs: scannedDevice.serviceUUIDs ?? prev?.serviceUUIDs ?? null,
             };
+
+            // This manager powers the Pendant section. Reject unrelated BLE
+            // advertisements before they enter the list or IMEI probing flow.
+            if (!isPendantScanDevice(next, assignedPendantHints)) {
+              return;
+            }
 
             devicesByIdRef.current[id] = next;
             setDevices(Object.values(devicesByIdRef.current));

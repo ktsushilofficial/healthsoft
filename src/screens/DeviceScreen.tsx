@@ -134,6 +134,16 @@ const DeviceScreen = () => {
     return user?.role === 'SENIOR' ? user.user_id : null;
   }, [isCaretaker, selectedSenior?.userId, user?.role, user?.user_id]);
 
+  const pendantScanHints = useMemo(
+    () => assignedDevices.flatMap(device => [
+      device.name,
+      device.imei,
+      device.serialNumber,
+      device.deviceIdentifier,
+    ]).filter((value): value is string => !!value),
+    [assignedDevices],
+  );
+
   const knownDevices: BleDiscoveredDevice[] = useMemo(() => {
     const map = new Map<string, BleDiscoveredDevice>();
 
@@ -211,14 +221,14 @@ const DeviceScreen = () => {
           text: 'Scan Now',
           onPress: () => {
             if (!isScanning) {
-              startScan();
+              startScan(10000, pendantScanHints);
             }
           },
         },
       ],
       { cancelable: true },
     );
-  }, [activeTab, isScanning, route.params?.promptedAt, route.params?.showScanHandBandPrompt, startScan]);
+  }, [activeTab, isScanning, pendantScanHints, route.params?.promptedAt, route.params?.showScanHandBandPrompt, startScan]);
 
   useEffect(() => {
     let cancelled = false;
@@ -604,9 +614,9 @@ const DeviceScreen = () => {
 
             {activeTab === 'current' ? (
               <View style={styles.card}>
-                <Text style={styles.cardTitle}>Bluetooth Devices</Text>
+                <Text style={styles.cardTitle}>Pendant Devices</Text>
                 <Text style={styles.cardSubtitle}>
-                  Link and manage nearby medical devices for the care plan.
+                  Scan, link and manage nearby assigned pendants.
                 </Text>
                 <TouchableOpacity
                   style={styles.assignedDevicesChip}
@@ -637,7 +647,7 @@ const DeviceScreen = () => {
                     ]}
                     onPress={() => {
                       if (isScanning) stopScan();
-                      else startScan();
+                      else startScan(10000, pendantScanHints);
                     }}
                     disabled={!activeSeniorId || isResolvingScanIdentities}
                   >
@@ -782,9 +792,9 @@ const DeviceScreen = () => {
                 {otherScannedDevices.length > 0 ? (
                   <>
                     <View style={styles.sectionDivider} />
-                    <Text style={styles.sectionTitle}>Other Scanned Devices</Text>
+                    <Text style={styles.sectionTitle}>Other Pendant Devices</Text>
                     <Text style={styles.sectionSubtitle}>
-                      Devices found nearby that are not in the assigned-device list.
+                      Nearby pendants that are not in the assigned-device list.
                     </Text>
 
                     {otherScannedDevices.slice(0, 12).map(device => {
