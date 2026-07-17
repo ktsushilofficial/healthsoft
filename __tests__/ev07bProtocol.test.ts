@@ -1,5 +1,10 @@
 import { buildConfigFrame, parseEv07bFrame } from '../src/bluetooth/ev07bProtocol';
-import { encodeEv07bAuthorizedPhone } from '../src/bluetooth/ev07bConfigCodec';
+import {
+  decodeEv07bGeoAlert,
+  encodeEv07bAuthorizedPhone,
+  encodeEv07bGeoAlert,
+  type Ev07bGeoAlertConfig,
+} from '../src/bluetooth/ev07bConfigCodec';
 
 describe('ev07bProtocol', () => {
   test('encodes requested keys inside one F0 read block', () => {
@@ -52,5 +57,47 @@ describe('ev07bProtocol', () => {
     expect(parsed?.blocks[0].key).toBe(0x30);
     expect(parsed?.blocks[1].key).toBe(0x30);
     expect(parsed?.keys[0x30]).toEqual(parsed?.blocks[1].value);
+  });
+
+  test.each([
+    {
+      type: 'circle' as const,
+      radiusMeters: 250,
+      points: [{ latitude: 12.9716, longitude: 77.5946 }],
+    },
+    {
+      type: 'polygon' as const,
+      radiusMeters: 0,
+      points: [
+        { latitude: 12.97, longitude: 77.59 },
+        { latitude: 12.98, longitude: 77.6 },
+        { latitude: 12.99, longitude: 77.61 },
+      ],
+    },
+  ])('preserves a $type geofence through a complete BLE config frame', shape => {
+    const config: Ev07bGeoAlertConfig = {
+      index: 2,
+      enabled: true,
+      direction: 'out',
+      ...shape,
+    };
+    const frame = buildConfigFrame({
+      seqId: 0x4321,
+      writeBlocks: [{ key: 0x51, value: encodeEv07bGeoAlert(config) }],
+    });
+
+    const parsed = parseEv07bFrame(frame);
+    const decoded = decodeEv07bGeoAlert(parsed?.blocks[0].value);
+
+    expect(parsed?.command).toBe(0x02);
+    expect(parsed?.blocks[0].key).toBe(0x51);
+    expect(decoded).toMatchObject({
+      index: 2,
+      enabled: true,
+      direction: 'out',
+      type: shape.type,
+      radiusMeters: shape.radiusMeters,
+    });
+    expect(decoded?.points).toHaveLength(shape.points.length);
   });
 });

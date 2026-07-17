@@ -6,7 +6,10 @@ import type { V8ConnectionState, V8Device } from './types';
 import { isV8NativeAvailable, v8Emitter, v8Native } from './nativeV8';
 import type { V8DailyVitalSummary, V8DeviceInfo, V8HistoryBucket, V8VitalSample, V8WebVitalSummary, V8WebVitalsSyncPayload } from './models';
 import { parseV8Payload } from './parser';
-import { normalizeMacAddress } from '../utils/deviceAssignments';
+import {
+  getAssignedHandBandMacAddress,
+  normalizeMacAddress,
+} from '../utils/deviceAssignments';
 import {
   V8_HAND_BAND_AUTO_SYNC_INTERVAL_MS,
   getV8HandBandSyncEntry,
@@ -407,17 +410,8 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           .map(value => normalizeMacAddress(value))
           .filter((value): value is string => !!value),
       );
-      const scannedDevice = devicesById[normalizedTargetId];
-      const scanCandidates = [deviceId, scannedDevice?.name, scannedDevice?.localName]
-        .map(value => normalizeMacAddress(value))
-        .filter((value): value is string => !!value);
-      const matchesScannedAssignment = scanCandidates.some(candidate => assignedMacs.has(candidate));
-      const matchesRememberedAssignment =
-        normalizeId(lastConnectedDeviceId) === normalizedTargetId &&
-        !!normalizeMacAddress(deviceInfo.mac) &&
-        assignedMacs.has(normalizeMacAddress(deviceInfo.mac)!);
-      if (assignedMacs.size === 0 || (!matchesScannedAssignment && !matchesRememberedAssignment)) {
-        throw new Error('This Hand Band is not assigned to the selected senior. Connection is blocked.');
+      if (assignedMacs.size === 0) {
+        throw new Error('No Hand Band MAC address is assigned to the selected senior.');
       }
       if (scanStopTimerRef.current) {
         clearTimeout(scanStopTimerRef.current);
@@ -442,6 +436,17 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         ...prev,
         [normalizedTargetId]: 'connecting',
       }));
+      // Never carry a previously connected band's identity into verification
+      // of a newly selected scan result.
+      setDeviceInfo({
+        imei: null,
+        deviceName: null,
+        mac: null,
+        batteryPercent: null,
+        firmwareVersion: null,
+        deviceTime: null,
+        updatedAt: null,
+      });
       try {
         await v8Native.connect(deviceId);
       } catch (error) {
@@ -452,7 +457,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         throw error;
       }
     },
-    [activeDeviceId, deviceInfo.mac, devicesById, lastConnectedDeviceId, selectedSeniorHandBandMacs],
+    [activeDeviceId, selectedSeniorHandBandMacs],
   );
 
   const disconnect = useCallback(
@@ -478,6 +483,34 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     },
     [activeDeviceId],
   );
+
+  useEffect(() => {
+    if (!activeDeviceId || connectionStates[activeDeviceId] !== 'connected') return;
+    const connectedMac = normalizeMacAddress(deviceInfo.mac);
+    if (!connectedMac) return;
+
+    const assignedMacs = new Set(
+      selectedSeniorHandBandMacs
+        .map(value => normalizeMacAddress(value))
+        .filter((value): value is string => !!value),
+    );
+    if (assignedMacs.has(connectedMac)) {
+      setScanError(null);
+      return;
+    }
+
+    setScanError('Connected Hand Band MAC is not assigned to the selected senior. It was disconnected.');
+    setConnectionStates(prev => ({ ...prev, [activeDeviceId]: 'disconnecting' }));
+    setLastConnectedDeviceId(null);
+    Keychain.resetGenericPassword({ service: V8_SESSION_SERVICE }).catch(() => {});
+    v8Native?.disconnect()
+      .catch(() => {})
+      .finally(() => {
+        setConnectionStates(prev => ({ ...prev, [activeDeviceId]: 'disconnected' }));
+        setActiveDeviceId(current => (current === activeDeviceId ? null : current));
+        setDeviceInfo(prev => ({ ...prev, mac: null, updatedAt: Date.now() }));
+      });
+  }, [activeDeviceId, connectionStates, deviceInfo.mac, selectedSeniorHandBandMacs]);
 
   const requestDeviceVersion = useCallback(async () => {
     if (!v8Native) return;
@@ -925,7 +958,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           stressLatest: day.stressLatest,
         }));
     },
-    [v8Native],
+    [],
   );
 
   const syncDailyVitalsToBackend = useCallback(
@@ -952,12 +985,14 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       const assignedMacDebug = assignedDevices.map(device => ({
         deviceId: device.deviceId,
         deviceIdentifier: device.deviceIdentifier,
-        normalizedIdentifier: normalizeMacAddress(device.deviceIdentifier),
+        assignedMac: getAssignedHandBandMacAddress(device),
         status: device.status,
       }));
       console.log('[V8 Sync Debug] Candidate assigned devices:', assignedMacDebug);
 
-      const matchedAssigned = assignedDevices.find(device => normalizeMacAddress(device.deviceIdentifier) === connectedMac);
+      const matchedAssigned = assignedDevices.find(
+        device => getAssignedHandBandMacAddress(device) === connectedMac,
+      );
       const deviceUUID = matchedAssigned?.deviceId?.trim();
       if (!deviceUUID) {
         throw new Error('Assigned Hand Band device UUID was not found for selected senior.');

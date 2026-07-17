@@ -71,6 +71,24 @@ export function isMacAddressLike(value?: string | null): boolean {
   return normalizeMac(value) !== null;
 }
 
+export function getAssignedHandBandMacAddress(
+  device: Pick<
+    SeniorAssignedDevice,
+    'bluetoothMacAddress' | 'deviceIdentifier' | 'serialNumber'
+  >,
+): string | null {
+  const candidates = [
+    device.bluetoothMacAddress,
+    device.deviceIdentifier,
+    device.serialNumber,
+  ];
+  for (const candidate of candidates) {
+    const mac = normalizeMac(candidate);
+    if (mac) return mac;
+  }
+  return null;
+}
+
 function normalizeLabel(value?: string | null): string | null {
   if (!value) return null;
   const trimmed = value.trim().toLowerCase();

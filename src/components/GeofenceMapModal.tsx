@@ -37,10 +37,10 @@ type Props = {
 
 const INDIA_CENTER: LatLng = { latitude: 20.5937, longitude: 78.9629 };
 const DEFAULT_RADIUS_METERS = 100;
-const MIN_RADIUS_METERS = 25;
-const MAX_RADIUS_METERS = 5000;
-const MAX_POLYGON_POINTS = 15;
-const RADIUS_PRESETS = [50, 100, 250, 500, 1000];
+const MIN_RADIUS_METERS = 100;
+const MAX_RADIUS_METERS = 65535;
+const MAX_POLYGON_POINTS = 4;
+const RADIUS_PRESETS = [100, 250, 500, 1000, 5000];
 
 const clampRadius = (value: number) =>
   Math.min(MAX_RADIUS_METERS, Math.max(MIN_RADIUS_METERS, Math.round(value)));
@@ -147,7 +147,7 @@ const GeofenceMapModal = ({
             <Text style={styles.subtitle}>
               {type === 'circle'
                 ? 'Tap the map or drag the pin to choose the center.'
-                : 'Tap to add 3–15 boundary points. Drag points to adjust.'}
+                : 'Tap to add 3–4 boundary points. Drag points to adjust.'}
             </Text>
           </View>
           <TouchableOpacity
@@ -293,6 +293,8 @@ const GeofenceMapModal = ({
             </View>
             {points.length < 3 ? (
               <Text style={styles.hint}>Add at least {3 - points.length} more point(s) to create the fence.</Text>
+            ) : points.length === MAX_POLYGON_POINTS ? (
+              <Text style={styles.hint}>Maximum 4 boundary points selected. Drag, undo, or clear to adjust.</Text>
             ) : null}
           </View>
         )}

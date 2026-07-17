@@ -6,8 +6,7 @@ import * as Keychain from 'react-native-keychain';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import {
   extractSeniorAssignedDevices,
-  isMacAddressLike,
-  normalizeMacAddress,
+  getAssignedHandBandMacAddress,
   type SeniorAssignedDevice,
 } from '../utils/deviceAssignments';
 import { clearAllCachedAssignedDeviceMatches } from '../utils/assignedDeviceMatchCache';
@@ -1220,8 +1219,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         const nextMacs = Array.from(
           new Set(
             assigned
-              .filter(device => isMacAddressLike(device.deviceIdentifier))
-              .map(device => normalizeMacAddress(device.deviceIdentifier))
+              .map(device => getAssignedHandBandMacAddress(device))
               .filter((value): value is string => !!value),
           ),
         );

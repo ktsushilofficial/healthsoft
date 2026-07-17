@@ -17,7 +17,10 @@ import {
   encodeEv07bNoMotionAlert,
   encodeEv07bNoDisturb,
   encodeEv07bTiltAlert,
+  ev07bGeoAlertValuesMatch,
   EV07B_ENABLE_CONTROL_FLAGS,
+  EV07B_GEO_ALERT_MAX_RADIUS_METERS,
+  EV07B_GEO_ALERT_MIN_RADIUS_METERS,
   EV07B_VOICE_PROMPT_FLAGS,
   EV07B_WEEKDAY_OPTIONS,
   hasEv07bFlag,
@@ -60,6 +63,7 @@ type ConfigSectionKey =
   | 'audio'
   | 'alarm'
   | 'alerts'
+  | 'geofence'
   | EnableControlSectionKey
   | 'smsTemplates'
   | 'voicePrompts'
@@ -72,7 +76,8 @@ const CONFIG_SYNC_GROUPS: readonly { label: string; keys: readonly number[] }[] 
   { label: 'reporting', keys: [0x44] },
   { label: 'audio and alarms', keys: [0x10, 0x11, 0x12, 0x0b, 0x0c] },
   { label: 'feature controls', keys: [0x0f, 0x19] },
-  { label: 'safety alerts', keys: [0x51, 0x53, 0x55, 0x56] },
+  { label: 'safety alerts', keys: [0x53, 0x55, 0x56] },
+  { label: 'geofence', keys: [0x51] },
   { label: 'network', keys: [0x16, 0x17, 0x18, 0x40, 0x41, 0x42, 0x43] },
 ] as const;
 
@@ -202,6 +207,12 @@ function ev07bSettingMatches(key: number, expected: Uint8Array, actual: Uint8Arr
     return normalizeText(expected) === normalizeText(actual);
   }
 
+  // Firmware may normalize unused geofence flag bits (for example polygon
+  // radius or circle point-count bits), so compare the decoded setting.
+  if (key === 0x51) {
+    return ev07bGeoAlertValuesMatch(expected, actual);
+  }
+
   return Buffer.from(expected).equals(Buffer.from(actual));
 }
 
@@ -296,6 +307,9 @@ function parseGeoPointsInput(input: string): BleGeoPoint[] {
       const longitude = Number(longitudeRaw);
       if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
         throw new Error('Geo fence polygon points must use "latitude, longitude" on each line');
+      }
+      if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+        throw new Error('Geo fence coordinates are outside the valid latitude/longitude range');
       }
       return { latitude, longitude };
     });
@@ -411,6 +425,7 @@ const DeviceDetailScreen = () => {
     audio: false,
     alarm: false,
     alerts: false,
+    geofence: false,
     featureFeedback: false,
     featureCalling: false,
     featureBluetooth: false,
@@ -426,9 +441,19 @@ const DeviceDetailScreen = () => {
   });
 
   const geofenceMapCenter = useMemo(() => {
+    if (!geoAlertLatitude.trim() || !geoAlertLongitude.trim()) {
+      return identity?.geoAlertPoints?.[0] ?? null;
+    }
     const latitude = Number(geoAlertLatitude);
     const longitude = Number(geoAlertLongitude);
-    if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+    if (
+      Number.isFinite(latitude) &&
+      latitude >= -90 &&
+      latitude <= 90 &&
+      Number.isFinite(longitude) &&
+      longitude >= -180 &&
+      longitude <= 180
+    ) {
       return { latitude, longitude };
     }
     return identity?.geoAlertPoints?.[0] ?? null;
@@ -730,16 +755,42 @@ const DeviceDetailScreen = () => {
       if (geoPoints.length < 3) {
         throw new Error('Geo Fence polygon needs at least 3 points');
       }
+      if (geoPoints.length > 4) {
+        throw new Error('Geo Fence polygon supports at most 4 points');
+      }
     } else {
-      const latitude = Number(nextLatitude);
-      const longitude = Number(nextLongitude);
-      if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+      const latitude = nextLatitude.trim() ? Number(nextLatitude) : Number.NaN;
+      const longitude = nextLongitude.trim() ? Number(nextLongitude) : Number.NaN;
+      if (
+        Number.isFinite(latitude) &&
+        latitude >= -90 &&
+        latitude <= 90 &&
+        Number.isFinite(longitude) &&
+        longitude >= -180 &&
+        longitude <= 180
+      ) {
         geoPoints = [{ latitude, longitude }];
       } else if (identity?.geoAlertPoints?.[0]) {
         geoPoints = [identity.geoAlertPoints[0]];
       } else {
-        throw new Error('Geo Fence latitude and longitude are required');
+        throw new Error('Geo Fence needs valid latitude and longitude');
       }
+    }
+
+    const radiusMeters = nextType === 'circle'
+      ? Number(overrides?.radiusMeters ?? geoAlertRadiusMeters)
+      : 0;
+    if (
+      nextType === 'circle' &&
+      (
+        !Number.isFinite(radiusMeters) ||
+        radiusMeters < EV07B_GEO_ALERT_MIN_RADIUS_METERS ||
+        radiusMeters > EV07B_GEO_ALERT_MAX_RADIUS_METERS
+      )
+    ) {
+      throw new Error(
+        `Geo Fence circle radius must be ${EV07B_GEO_ALERT_MIN_RADIUS_METERS}-${EV07B_GEO_ALERT_MAX_RADIUS_METERS} meters`,
+      );
     }
 
     return {
@@ -749,7 +800,7 @@ const DeviceDetailScreen = () => {
         enabled: nextEnabled,
         direction: overrides?.direction ?? geoAlertDirection,
         type: nextType,
-        radiusMeters: clampInt(Number(overrides?.radiusMeters ?? geoAlertRadiusMeters), 0, 65535),
+        radiusMeters,
         points: geoPoints,
       }),
     };
@@ -804,15 +855,27 @@ const DeviceDetailScreen = () => {
 
     const uniqueKeys = [...new Set(keys)];
     for (const key of uniqueKeys) {
-      const response = await sendEv07bConfig(deviceId, { readKeys: [key] });
       const expectedBlocks = writeBlocks.filter(block => block.key === key);
-      const saved = expectedBlocks.every(expected =>
-        response.blocks.some(block =>
-          block.key === key && ev07bSettingMatches(key, expected.value, block.value),
-        ),
-      );
+      const maxAttempts = key === 0x51 ? 3 : 1;
+      let saved = false;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        if (attempt > 0) {
+          await new Promise<void>(resolve => setTimeout(resolve, attempt * 200));
+        }
+        const response = await sendEv07bConfig(deviceId, { readKeys: [key] });
+        saved = expectedBlocks.every(expected =>
+          response.blocks.some(block =>
+            block.key === key && ev07bSettingMatches(key, expected.value, block.value),
+          ),
+        );
+        if (saved) break;
+      }
       if (!saved) {
-        throw new Error(`Pendant did not confirm setting 0x${key.toString(16).padStart(2, '0')}`);
+        throw new Error(
+          key === 0x51
+            ? 'Pendant did not confirm the geofence setting'
+            : `Pendant did not confirm setting 0x${key.toString(16).padStart(2, '0')}`,
+        );
       }
     }
   }, [deviceId, sendEv07bConfig]);
@@ -834,12 +897,12 @@ const DeviceDetailScreen = () => {
     setGeofenceMapVisible(false);
 
     if (!connected) {
-      setStatusMsg('Geofence selected. Connect the pendant and save Safety Alerts.');
+      setStatusMsg('Geofence selected. Connect the pendant and save Geofence.');
       return;
     }
 
     try {
-      setSavingSection('alerts');
+      setSavingSection('geofence');
       const writeBlock = buildGeoAlertWriteBlock(
         selection.type === 'circle'
           ? {
@@ -959,14 +1022,15 @@ const DeviceDetailScreen = () => {
       case 'alarm':
         return [buildAlarmClockWriteBlock(), buildNoDisturbWriteBlock()];
       case 'alerts': {
-        const writes: WriteBlock[] = [
+        return [
           buildNoMotionWriteBlock(),
           buildTiltWriteBlock(),
           buildFallWriteBlock(),
         ];
+      }
+      case 'geofence': {
         const geoWrite = buildGeoAlertWriteBlock();
-        if (geoWrite) writes.push(geoWrite);
-        return writes;
+        return geoWrite ? [geoWrite] : [];
       }
       case 'featureFeedback':
       case 'featureCalling':
@@ -1433,9 +1497,17 @@ const DeviceDetailScreen = () => {
                 keyboardType="number-pad" placeholder="30" maxLength={4} />
             </View>
           </View>
+        </CollapsibleSection>
 
-          <View style={styles.divider} />
-          <Text style={styles.groupLabel}>Geo Fence</Text>
+        {/* ── Geofence ── */}
+        <CollapsibleSection
+          title="Geofence"
+          icon="map"
+          expanded={expandedSections.geofence}
+          onToggle={() => toggleSection('geofence')}
+          onSave={() => handleSectionSave('geofence', 'Geofence')}
+          saving={syncing || savingSection === 'geofence'}
+        >
           <ToggleRow
             label="Enabled"
             value={geoAlertEnabled}
@@ -1493,7 +1565,9 @@ const DeviceDetailScreen = () => {
 
           {geoAlertType === 'circle' ? (
             <>
-              <Text style={styles.fieldLabel}>Radius (meters)</Text>
+              <Text style={styles.fieldLabel}>
+                Radius ({EV07B_GEO_ALERT_MIN_RADIUS_METERS}-{EV07B_GEO_ALERT_MAX_RADIUS_METERS} meters)
+              </Text>
               <TextInput style={styles.input} value={geoAlertRadiusMeters} onChangeText={setGeoAlertRadiusMeters}
                 keyboardType="number-pad" placeholder="100" maxLength={5} />
               <View style={styles.timeRow}>
@@ -1523,7 +1597,7 @@ const DeviceDetailScreen = () => {
                 textAlignVertical="top"
               />
               <Text style={styles.helperText}>
-                Enter one `latitude, longitude` pair per line. Polygon fences need at least 3 points.
+                Enter one `latitude, longitude` pair per line. Polygon fences require 3 or 4 points.
               </Text>
             </>
           )}

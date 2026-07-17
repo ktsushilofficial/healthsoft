@@ -1,6 +1,8 @@
 import {
   extractSeniorAssignedDevices,
   findAssignedDeviceForBleDevice,
+  getAssignedHandBandMacAddress,
+  normalizeMacAddress,
   resolveDisplayedImei,
 } from '../src/utils/deviceAssignments';
 
@@ -64,5 +66,23 @@ describe('deviceAssignments', () => {
     ]);
 
     expect(resolveDisplayedImei(undefined, assignedDevices[0])).toBe('123456789012345');
+  });
+
+  it('resolves an assigned hand-band MAC without using the BLE device ID', () => {
+    const [fromDedicatedField, fromIdentifier] = extractSeniorAssignedDevices([
+      {
+        assignmentId: 'assignment-1',
+        deviceIdentifier: 'backend-device-id',
+        bluetoothMacAddress: 'AA:BB:CC:DD:EE:FF',
+      },
+      {
+        assignmentId: 'assignment-2',
+        deviceIdentifier: '11-22-33-44-55-66',
+      },
+    ]);
+
+    expect(getAssignedHandBandMacAddress(fromDedicatedField)).toBe('AABBCCDDEEFF');
+    expect(getAssignedHandBandMacAddress(fromIdentifier)).toBe('112233445566');
+    expect(normalizeMacAddress('ios-core-bluetooth-uuid')).toBeNull();
   });
 });
