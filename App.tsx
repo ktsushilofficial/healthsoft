@@ -21,6 +21,7 @@ import ActivityScreen from './src/screens/ActivityScreen';
 import { BleProvider } from './src/bluetooth/BleProvider';
 import { V8BleProvider } from './src/v8/V8BleProvider';
 import V8DeviceManageScreen from './src/screens/V8DeviceManageScreen';
+import ECGMeasurementScreen from './src/screens/ECGMeasurementScreen';
 import {
   requestNotificationPermission,
   getFCMToken,
@@ -66,6 +67,7 @@ const AppNavigator = () => {
           <Stack.Screen name="HomeDevices" component={HomeDevicesScreen} />
           <Stack.Screen name="Activity" component={ActivityScreen} />
           <Stack.Screen name="V8DeviceManage" component={V8DeviceManageScreen} />
+          <Stack.Screen name="ECGMeasurement" component={ECGMeasurementScreen} />
           <Stack.Screen name="PendantDetail" component={PendantDetailScreen} />
         </>
       )}

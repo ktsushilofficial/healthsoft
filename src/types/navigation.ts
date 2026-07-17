@@ -11,4 +11,5 @@ export type DeviceStackParamList = {
     showSyncLatestPrompt?: boolean;
     promptToken?: string | number | null;
   };
+  ECGMeasurement: undefined;
 };

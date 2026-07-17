@@ -30,6 +30,10 @@ type NativeV8Module = {
   requestHRV(mode: number, startDate: string | number): Promise<boolean>;
   requestSpo2?(mode: number, startDate: string | number): Promise<boolean>;
   requestTemperature?(mode: number, startDate: string | number): Promise<boolean>;
+  setEcgRealtimeEnabled(enabled: boolean): Promise<boolean>;
+  startEcgMeasurement(): Promise<boolean>;
+  stopEcgMeasurement(): Promise<boolean>;
+  exitEcgMeasurement(): Promise<boolean>;
 };
 
 const nativeModule = NativeModules.V8BleModule as NativeV8Module | undefined;

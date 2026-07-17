@@ -294,6 +294,51 @@ RCT_REMAP_METHOD(setRealtimeStepEnabled,
 #endif
 }
 
+RCT_REMAP_METHOD(setEcgRealtimeEnabled,
+                 setEcgRealtimeEnabledWithEnabled:(BOOL)enabled
+                 resolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"setEcgRealtimeEnabled"];
+#else
+  NSData *cmd = [[BleSDK_V8 sharedManager] setECGRealtimeDuringHRVEnabled:enabled];
+  [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
+}
+
+RCT_REMAP_METHOD(startEcgMeasurement,
+                 startEcgMeasurementWithResolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"startEcgMeasurement"];
+#else
+  NSData *cmd = [[BleSDK_V8 sharedManager] ppgWithMode:1 ppgStatus:0];
+  [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
+}
+
+RCT_REMAP_METHOD(stopEcgMeasurement,
+                 stopEcgMeasurementWithResolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"stopEcgMeasurement"];
+#else
+  NSData *cmd = [[BleSDK_V8 sharedManager] ppgWithMode:3 ppgStatus:0];
+  [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
+}
+
+RCT_REMAP_METHOD(exitEcgMeasurement,
+                 exitEcgMeasurementWithResolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"exitEcgMeasurement"];
+#else
+  NSData *cmd = [[BleSDK_V8 sharedManager] ppgWithMode:5 ppgStatus:0];
+  [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
+}
+
 RCT_REMAP_METHOD(requestTotalActivity,
                  requestTotalActivityWithMode:(nonnull NSNumber *)mode
                  startDateEpochMs:(nonnull NSNumber *)startDateEpochMs

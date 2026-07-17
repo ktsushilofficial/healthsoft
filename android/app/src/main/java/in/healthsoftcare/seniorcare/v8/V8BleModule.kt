@@ -280,6 +280,26 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun setEcgRealtimeEnabled(enabled: Boolean, promise: Promise) {
+    enqueueVendorCommand(BleSDK.setECGRealtimeDuringHRVEnabled(enabled), promise)
+  }
+
+  @ReactMethod
+  fun startEcgMeasurement(promise: Promise) {
+    enqueueVendorCommand(BleSDK.ppgWithMode(1, 0), promise)
+  }
+
+  @ReactMethod
+  fun stopEcgMeasurement(promise: Promise) {
+    enqueueVendorCommand(BleSDK.ppgWithMode(3, 0), promise)
+  }
+
+  @ReactMethod
+  fun exitEcgMeasurement(promise: Promise) {
+    enqueueVendorCommand(BleSDK.ppgWithMode(5, 0), promise)
+  }
+
+  @ReactMethod
   fun requestTotalActivity(mode: Int, startDate: String, promise: Promise) {
     enqueueVendorCommand(BleSDK.GetTotalActivityDataWithMode(mode.toByte(), startDate), promise)
   }

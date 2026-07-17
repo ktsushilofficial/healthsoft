@@ -120,7 +120,7 @@ const ActionBtn = ({
 const V8DeviceManageScreen = () => {
   const { user } = useAuth();
   const normalizeId = (id?: string | null) => (id ?? '').trim().toLowerCase();
-  const navigation = useNavigation();
+  const navigation = useNavigation<any>();
   const route = useRoute();
   const { deviceId, deviceName } = (route.params as RouteParams) ?? {};
 
@@ -778,6 +778,24 @@ const V8DeviceManageScreen = () => {
           </View>
         ) : null}
 
+        {isSeniorUser ? (
+          <TouchableOpacity
+            style={[s.ecgBtn, !connected ? s.disabled : null]}
+            disabled={!connected}
+            onPress={() => navigation.navigate('ECGMeasurement')}
+            activeOpacity={0.75}
+          >
+            <View style={s.ecgBtnIcon}>
+              <Icon name="pulse" size={20} color="#D64545" />
+            </View>
+            <View style={s.ecgBtnTextWrap}>
+              <Text style={s.ecgBtnTitle}>Take ECG</Text>
+              <Text style={s.ecgBtnSubtitle}>{connected ? 'Start a guided ECG recording' : 'Connect this hand band first'}</Text>
+            </View>
+            <Icon name="chevron-forward" size={19} color="#B96767" />
+          </TouchableOpacity>
+        ) : null}
+
         {/* ── Disconnect ── */}
         <TouchableOpacity
           style={[s.disconnectBtn, !connected ? s.disabled : null]}
@@ -1048,6 +1066,31 @@ const s = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
+
+  ecgBtn: {
+    marginHorizontal: 16,
+    marginBottom: 12,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#F1D4D4',
+  },
+  ecgBtnIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FDECEC',
+    marginRight: 11,
+  },
+  ecgBtnTextWrap: { flex: 1 },
+  ecgBtnTitle: { color: '#3A302C', fontSize: 14, fontWeight: '700' },
+  ecgBtnSubtitle: { color: '#8A8078', fontSize: 11, marginTop: 2 },
 
   /* disconnect */
   disconnectBtn: {

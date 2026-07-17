@@ -1537,6 +1537,27 @@ const HomeScreen = () => {
           </View>
         )}
 
+        {showAutomaticHandBandSync && (
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Take an ECG with the hand band"
+            activeOpacity={0.82}
+            style={styles.ecgHomeCard}
+            onPress={() => navigation.navigate('ECGMeasurement')}
+          >
+            <View style={styles.ecgHomeIconWrap}>
+              <Icon name="pulse" size={22} color="#D64545" />
+            </View>
+            <View style={styles.ecgHomeTextCol}>
+              <Text style={styles.ecgHomeTitle}>Take an ECG</Text>
+              <Text style={styles.ecgHomeDetail}>
+                {handBandConnected ? 'Hand band connected · Ready to measure' : 'Connect your hand band to begin'}
+              </Text>
+            </View>
+            <Icon name="chevron-forward" size={20} color="#B96767" />
+          </TouchableOpacity>
+        )}
+
         {/* DEVICES Section */}
         <View style={styles.devicesSectionHeader}>
           <Text style={styles.devicesSectionTitle}>DEVICES</Text>
@@ -1813,6 +1834,31 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#0B8A5B',
   },
+  ecgHomeCard: {
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 16,
+    marginTop: 4,
+    marginBottom: 12,
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#F3D6D6',
+  },
+  ecgHomeIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#FDECEC',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  ecgHomeTextCol: { flex: 1 },
+  ecgHomeTitle: { color: '#1B2A4A', fontSize: 14, fontWeight: '800' },
+  ecgHomeDetail: { color: '#8F8276', fontSize: 12, marginTop: 3 },
   healthCardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',

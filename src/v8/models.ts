@@ -26,6 +26,42 @@ export type V8DeviceInfo = {
   updatedAt: number | null;
 };
 
+export type V8EcgPhase =
+  | 'idle'
+  | 'starting'
+  | 'measuring'
+  | 'processing'
+  | 'completed'
+  | 'failed';
+
+export type V8EcgSession = {
+  id: string;
+  seniorId: string;
+  phase: V8EcgPhase;
+  startedAt: number;
+  completedAt: number | null;
+  durationMs: number | null;
+  samples: number[];
+  sampleRateHz: number | null;
+  heartRate: number | null;
+  signalQuality: string | null;
+  classification: string | null;
+  statusMessage: string | null;
+  error: string | null;
+  deviceMac: string | null;
+  firmwareVersion: string | null;
+};
+
+export type V8EcgEvent = {
+  kind: 'started' | 'samples' | 'status' | 'completed' | 'stopped' | 'failed' | 'unknown';
+  samples: number[];
+  heartRate: number | null;
+  sampleRateHz: number | null;
+  signalQuality: string | null;
+  classification: string | null;
+  statusMessage: string | null;
+};
+
 export type V8HistoryBucket = {
   dataType: string | null;
   entries: V8VitalSample[];
