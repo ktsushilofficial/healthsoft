@@ -1,5 +1,5 @@
 import React, { useMemo, useEffect, useCallback, useState, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Switch, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Switch, Platform, Keyboard } from 'react-native';
 import { Buffer } from 'buffer';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -485,11 +485,13 @@ const DeviceDetailScreen = () => {
   // the device. Subsequent identity updates (e.g. after Save ACK) never
   // overwrite values the user may have changed.
   const initializedRef = useRef<Set<string>>(new Set());
+  const editedFieldsRef = useRef<Set<string>>(new Set());
 
   // Reset initialized tracking when the device disconnects (new session).
   useEffect(() => {
     if (state === 'disconnected') {
       initializedRef.current.clear();
+      editedFieldsRef.current.clear();
     }
   }, [state]);
 
@@ -497,6 +499,7 @@ const DeviceDetailScreen = () => {
   const initOnce = useCallback(
     <T,>(field: string, value: T | undefined, setter: (v: T) => void) => {
       if (value === undefined || value === null) return;
+      if (editedFieldsRef.current.has(field)) return;
       // A manual/automatic sync is authoritative and may refresh values cached
       // from an earlier connection. Outside sync, keep protecting in-progress
       // edits from unrelated identity notifications.
@@ -752,23 +755,26 @@ const DeviceDetailScreen = () => {
       geoPoints = nextPointsInput.trim()
         ? parseGeoPointsInput(nextPointsInput)
         : (identity?.geoAlertPoints ?? []);
-      if (geoPoints.length < 3) {
-        throw new Error('Geo Fence polygon needs at least 3 points');
-      }
-      if (geoPoints.length > 4) {
-        throw new Error('Geo Fence polygon supports at most 4 points');
+      if (geoPoints.length !== 4) {
+        throw new Error('Geo Fence polygon requires exactly 4 points');
       }
     } else {
-      const latitude = nextLatitude.trim() ? Number(nextLatitude) : Number.NaN;
-      const longitude = nextLongitude.trim() ? Number(nextLongitude) : Number.NaN;
-      if (
-        Number.isFinite(latitude) &&
-        latitude >= -90 &&
-        latitude <= 90 &&
-        Number.isFinite(longitude) &&
-        longitude >= -180 &&
-        longitude <= 180
-      ) {
+      const latitudeInput = nextLatitude.trim();
+      const longitudeInput = nextLongitude.trim();
+      const hasEditedCoordinates = latitudeInput.length > 0 || longitudeInput.length > 0;
+      if (hasEditedCoordinates) {
+        const latitude = Number(latitudeInput);
+        const longitude = Number(longitudeInput);
+        if (
+          !Number.isFinite(latitude) ||
+          latitude < -90 ||
+          latitude > 90 ||
+          !Number.isFinite(longitude) ||
+          longitude < -180 ||
+          longitude > 180
+        ) {
+          throw new Error('Geo Fence needs valid latitude and longitude');
+        }
         geoPoints = [{ latitude, longitude }];
       } else if (identity?.geoAlertPoints?.[0]) {
         geoPoints = [identity.geoAlertPoints[0]];
@@ -885,13 +891,19 @@ const DeviceDetailScreen = () => {
       ? pointsToMultiline(selection.points)
       : geoAlertPointsInput;
 
+    editedFieldsRef.current.add('geoAlertEnabled');
+    editedFieldsRef.current.add('geoAlertType');
     setGeoAlertEnabled(true);
     setGeoAlertType(selection.type);
     if (selection.type === 'circle') {
+      editedFieldsRef.current.add('geoAlertLatitude');
+      editedFieldsRef.current.add('geoAlertLongitude');
+      editedFieldsRef.current.add('geoAlertRadiusMeters');
       setGeoAlertLatitude(String(selection.center.latitude));
       setGeoAlertLongitude(String(selection.center.longitude));
       setGeoAlertRadiusMeters(String(selection.radiusMeters));
     } else {
+      editedFieldsRef.current.add('geoAlertPointsInput');
       setGeoAlertPointsInput(pointsInput);
     }
     setGeofenceMapVisible(false);
@@ -1093,6 +1105,7 @@ const DeviceDetailScreen = () => {
   ]);
 
   const handleSectionSave = useCallback(async (section: ConfigSectionKey, label: string) => {
+    Keyboard.dismiss();
     if (!connected) {
       setStatusMsg('Connect the pendant before saving settings');
       return;
@@ -1138,7 +1151,11 @@ const DeviceDetailScreen = () => {
         <View style={{ width: 22 }} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+      >
         {/* ── Status & Actions ── */}
         <View style={styles.card}>
           <View style={styles.statusRow}>
@@ -1148,7 +1165,10 @@ const DeviceDetailScreen = () => {
           <View style={styles.row}>
             <TouchableOpacity
               style={[styles.primaryButton, (syncing || savingSection !== null) && styles.inlineSaveButtonDisabled]}
-              onPress={runSync}
+              onPress={() => {
+                editedFieldsRef.current.clear();
+                runSync();
+              }}
               disabled={syncing || savingSection !== null}
             >
               <Icon name="sync" size={16} color="#FFF" />
@@ -1511,11 +1531,19 @@ const DeviceDetailScreen = () => {
           <ToggleRow
             label="Enabled"
             value={geoAlertEnabled}
-            onValueChange={setGeoAlertEnabled}
+            onValueChange={value => {
+              editedFieldsRef.current.add('geoAlertEnabled');
+              setGeoAlertEnabled(value);
+            }}
           />
           <Text style={styles.fieldLabel}>Fence Slot (0-15)</Text>
-          <TextInput style={styles.input} value={geoAlertIndex} onChangeText={setGeoAlertIndex}
-            keyboardType="number-pad" placeholder="0" maxLength={2} />
+          <TextInput
+            style={[styles.input, styles.readOnlyInput]}
+            value={geoAlertIndex}
+            editable={false}
+            selectTextOnFocus={false}
+            placeholder="0"
+          />
 
           <Text style={styles.fieldLabel}>Direction</Text>
           <View style={styles.modeRow}>
@@ -1523,7 +1551,10 @@ const DeviceDetailScreen = () => {
               <TouchableOpacity
                 key={option.value}
                 style={[styles.modeChip, geoAlertDirection === option.value && styles.modeChipActive]}
-                onPress={() => setGeoAlertDirection(option.value)}
+                onPress={() => {
+                  editedFieldsRef.current.add('geoAlertDirection');
+                  setGeoAlertDirection(option.value);
+                }}
               >
                 <Text style={[styles.modeChipText, geoAlertDirection === option.value && styles.modeChipTextActive]}>
                   {option.label}
@@ -1538,7 +1569,10 @@ const DeviceDetailScreen = () => {
               <TouchableOpacity
                 key={option.value}
                 style={[styles.modeChip, geoAlertType === option.value && styles.modeChipActive]}
-                onPress={() => setGeoAlertType(option.value)}
+                onPress={() => {
+                  editedFieldsRef.current.add('geoAlertType');
+                  setGeoAlertType(option.value);
+                }}
               >
                 <Text style={[styles.modeChipText, geoAlertType === option.value && styles.modeChipTextActive]}>
                   {option.label}
@@ -1562,24 +1596,42 @@ const DeviceDetailScreen = () => {
             </View>
             <Icon name="chevron-forward" size={18} color="#8B7F74" />
           </TouchableOpacity>
+          <Text style={styles.helperText}>
+            Geofence values are read-only. Use Choose on map to update them.
+          </Text>
 
           {geoAlertType === 'circle' ? (
             <>
               <Text style={styles.fieldLabel}>
                 Radius ({EV07B_GEO_ALERT_MIN_RADIUS_METERS}-{EV07B_GEO_ALERT_MAX_RADIUS_METERS} meters)
               </Text>
-              <TextInput style={styles.input} value={geoAlertRadiusMeters} onChangeText={setGeoAlertRadiusMeters}
-                keyboardType="number-pad" placeholder="100" maxLength={5} />
+              <TextInput
+                style={[styles.input, styles.readOnlyInput]}
+                value={geoAlertRadiusMeters}
+                editable={false}
+                selectTextOnFocus={false}
+                placeholder="100"
+              />
               <View style={styles.timeRow}>
                 <View style={styles.timeField}>
                   <Text style={styles.fieldLabel}>Latitude</Text>
-                  <TextInput style={styles.input} value={geoAlertLatitude} onChangeText={setGeoAlertLatitude}
-                    keyboardType="decimal-pad" placeholder="12.97160" />
+                  <TextInput
+                    style={[styles.input, styles.readOnlyInput]}
+                    value={geoAlertLatitude}
+                    editable={false}
+                    selectTextOnFocus={false}
+                    placeholder="12.97160"
+                  />
                 </View>
                 <View style={styles.timeField}>
                   <Text style={styles.fieldLabel}>Longitude</Text>
-                  <TextInput style={styles.input} value={geoAlertLongitude} onChangeText={setGeoAlertLongitude}
-                    keyboardType="decimal-pad" placeholder="77.59460" />
+                  <TextInput
+                    style={[styles.input, styles.readOnlyInput]}
+                    value={geoAlertLongitude}
+                    editable={false}
+                    selectTextOnFocus={false}
+                    placeholder="77.59460"
+                  />
                 </View>
               </View>
             </>
@@ -1587,20 +1639,20 @@ const DeviceDetailScreen = () => {
             <>
               <Text style={styles.fieldLabel}>Polygon Points</Text>
               <TextInput
-                style={[styles.input, styles.multilineInput]}
+                style={[styles.input, styles.readOnlyInput, styles.multilineInput]}
                 value={geoAlertPointsInput}
-                onChangeText={setGeoAlertPointsInput}
-                placeholder={'12.97160, 77.59460\n12.97210, 77.59520\n12.97080, 77.59590'}
-                autoCapitalize="none"
-                autoCorrect={false}
+                placeholder={'12.97160, 77.59460\n12.97210, 77.59520\n12.97120, 77.59600\n12.97080, 77.59490'}
+                editable={false}
+                selectTextOnFocus={false}
                 multiline
                 textAlignVertical="top"
               />
               <Text style={styles.helperText}>
-                Enter one `latitude, longitude` pair per line. Polygon fences require 3 or 4 points.
+                Polygon fences require exactly 4 map points.
               </Text>
             </>
           )}
+
         </CollapsibleSection>
 
         {ENABLE_CONTROL_SECTION_CONFIG.map(section => (
@@ -2006,6 +2058,10 @@ const styles = StyleSheet.create({
   multilineInput: {
     minHeight: 92,
     paddingTop: 10,
+  },
+  readOnlyInput: {
+    color: '#7A726A',
+    backgroundColor: '#F1EEE9',
   },
 
   /* Mode chips */

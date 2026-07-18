@@ -70,8 +70,9 @@ describe('ev07bProtocol', () => {
       radiusMeters: 0,
       points: [
         { latitude: 12.97, longitude: 77.59 },
-        { latitude: 12.98, longitude: 77.6 },
-        { latitude: 12.99, longitude: 77.61 },
+        { latitude: 12.98, longitude: 77.60 },
+        { latitude: 12.98, longitude: 77.59 },
+        { latitude: 12.97, longitude: 77.60 },
       ],
     },
   ])('preserves a $type geofence through a complete BLE config frame', shape => {

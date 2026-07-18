@@ -1,4 +1,5 @@
 import { Buffer } from 'buffer';
+import { orderQuadrilateralPoints } from '../utils/geofencePolygon';
 
 export interface Ev07bAlarmClockConfig {
   index: number;
@@ -257,19 +258,25 @@ export function decodeEv07bGeoAlert(value?: Uint8Array | null): Ev07bGeoAlertCon
 export function encodeEv07bGeoAlert(config: Ev07bGeoAlertConfig): Uint8Array {
   const type: Ev07bGeoAlertConfig['type'] = config.type === 'polygon' ? 'polygon' : 'circle';
   const rawPoints = Array.isArray(config.points) ? config.points : [];
-  const points = (type === 'circle' ? rawPoints.slice(0, 1) : rawPoints.slice(0, 4)).map(point => ({
+  const normalizedPoints = (type === 'circle' ? rawPoints.slice(0, 1) : rawPoints.slice(0, 4)).map(point => ({
     latitude: Math.max(-90, Math.min(90, point.latitude)),
     longitude: Math.max(-180, Math.min(180, point.longitude)),
   }));
 
-  if (points.length === 0) {
+  if (normalizedPoints.length === 0) {
     throw new Error('Geo fence requires at least one coordinate');
   }
-  if (type === 'polygon' && points.length < 3) {
-    throw new Error('Geo fence polygon requires at least 3 points');
+  if (type === 'polygon' && normalizedPoints.length !== 4) {
+    throw new Error('Geo fence polygon requires exactly 4 points');
+  }
+  const points = type === 'polygon'
+    ? orderQuadrilateralPoints(normalizedPoints)
+    : normalizedPoints;
+  if (!points) {
+    throw new Error('Geo fence polygon requires four separate outside corners');
   }
 
-  const pointCount = type === 'circle' ? 1 : clampInt(points.length, 3, 4);
+  const pointCount = type === 'circle' ? 1 : 4;
   // Radius is meaningful only for circles. EV-07B firmware rejects circle
   // radii below 100 m, and may reject/normalize non-zero polygon radius bits.
   const radiusMeters = type === 'circle'

@@ -236,13 +236,14 @@ describe('ev07bConfigCodec', () => {
       radiusMeters: 0,
       points: [
         { latitude: 12.97, longitude: 77.59 },
-        { latitude: 12.98, longitude: 77.6 },
-        { latitude: 12.99, longitude: 77.61 },
+        { latitude: 12.98, longitude: 77.60 },
+        { latitude: 12.98, longitude: 77.59 },
+        { latitude: 12.97, longitude: 77.60 },
       ],
     });
     const decoded = decodeEv07bGeoAlert(encoded);
 
-    expect(Array.from(encoded.slice(0, 4))).toEqual([0x31, 0x04, 0x00, 0x00]);
+    expect(Array.from(encoded.slice(0, 4))).toEqual([0x41, 0x04, 0x00, 0x00]);
     expect(decoded).toMatchObject({
       index: 1,
       enabled: false,
@@ -250,9 +251,7 @@ describe('ev07bConfigCodec', () => {
       type: 'polygon',
       radiusMeters: 0,
     });
-    expect(decoded?.points).toHaveLength(3);
-    expect(decoded?.points[2].latitude).toBeCloseTo(12.99, 5);
-    expect(decoded?.points[2].longitude).toBeCloseTo(77.61, 5);
+    expect(decoded?.points).toHaveLength(4);
   });
 
   test('limits polygon geo alert payload to four points', () => {
@@ -263,16 +262,31 @@ describe('ev07bConfigCodec', () => {
       type: 'polygon',
       radiusMeters: 0,
       points: [
-        { latitude: 12.97, longitude: 77.59 },
-        { latitude: 12.98, longitude: 77.60 },
-        { latitude: 12.99, longitude: 77.61 },
-        { latitude: 13.00, longitude: 77.62 },
-        { latitude: 13.01, longitude: 77.63 },
+        { latitude: 12, longitude: 77 },
+        { latitude: 13, longitude: 78 },
+        { latitude: 13, longitude: 77 },
+        { latitude: 12, longitude: 78 },
+        { latitude: 14, longitude: 79 },
       ],
     }));
 
     expect(decoded?.points).toHaveLength(4);
-    expect(decoded?.points[3].latitude).toBeCloseTo(13.00, 5);
+    expect(decoded?.points).not.toContainEqual({ latitude: 14, longitude: 79 });
+  });
+
+  test('rejects a triangle polygon geo alert payload', () => {
+    expect(() => encodeEv07bGeoAlert({
+      index: 1,
+      enabled: true,
+      direction: 'out',
+      type: 'polygon',
+      radiusMeters: 0,
+      points: [
+        { latitude: 12, longitude: 77 },
+        { latitude: 13, longitude: 78 },
+        { latitude: 13, longitude: 77 },
+      ],
+    })).toThrow('requires exactly 4 points');
   });
 
   test('normalizes invalid circle radius and unused polygon radius', () => {
@@ -292,8 +306,9 @@ describe('ev07bConfigCodec', () => {
       radiusMeters: 500,
       points: [
         { latitude: 12.97, longitude: 77.59 },
-        { latitude: 12.98, longitude: 77.6 },
-        { latitude: 12.99, longitude: 77.61 },
+        { latitude: 12.98, longitude: 77.60 },
+        { latitude: 12.98, longitude: 77.59 },
+        { latitude: 12.97, longitude: 77.60 },
       ],
     }));
 
@@ -321,8 +336,9 @@ describe('ev07bConfigCodec', () => {
       radiusMeters: 0,
       points: [
         { latitude: 12.97, longitude: 77.59 },
-        { latitude: 12.98, longitude: 77.6 },
-        { latitude: 12.99, longitude: 77.61 },
+        { latitude: 12.98, longitude: 77.60 },
+        { latitude: 12.98, longitude: 77.59 },
+        { latitude: 12.97, longitude: 77.60 },
       ],
     });
     const normalizedPolygon = polygon.slice();
