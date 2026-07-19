@@ -11,6 +11,7 @@ import {
   RefreshControl,
   ImageBackground,
   Dimensions,
+  Platform,
 } from 'react-native';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -24,7 +25,6 @@ import LinearGradient from 'react-native-linear-gradient';
 import { useAuth } from '../context/AuthContext';
 import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import { emptySeniorHomeSnapshot } from '../types/seniorHomeSnapshot';
-import { buildOpenStreetMapMarkerUrl } from '../utils/openStreetMap';
 import type { SeniorDashboardDeviceRecord } from '../types/seniorDashboard';
 import type { GuardianSeniorProfileRow } from '../types/guardianDashboard';
 import {
@@ -37,6 +37,7 @@ const CARETAKER_ROLE = 'CARE_TAKER';
 const GUARDIAN_ROLE = 'GUARDIAN';
 const NA = 'NA';
 const DASHBOARD_AUTO_REFRESH_MS = 30_000;
+const MAP_PROVIDER_NAME = Platform.OS === 'ios' ? 'Apple Maps' : 'Google Maps';
 
 function displayStr(value: string | null | undefined): string {
   if (value == null || String(value).trim() === '') {
@@ -587,10 +588,10 @@ const PendantDetailScreen = () => {
     const lat = liveSnapshot.latitude;
     const lon = liveSnapshot.longitude;
     if (lat == null || lon == null) return;
-    const url = buildOpenStreetMapMarkerUrl(lat, lon);
-    navigation.navigate('WebView', {
-      url,
-      title: 'Last position (OpenStreetMap)',
+    navigation.navigate('LocationMap', {
+      latitude: lat,
+      longitude: lon,
+      title: 'Last position',
     });
   }, [liveSnapshot.latitude, liveSnapshot.longitude, navigation]);
 
@@ -669,7 +670,7 @@ const PendantDetailScreen = () => {
                       View on map
                     </Text>
                     <Text style={styles.mapButtonSubtitle}>
-                      {hasLiveCoordinates ? 'OpenStreetMap · marker at this point' : NA}
+                      {hasLiveCoordinates ? `${MAP_PROVIDER_NAME} · marker at this point` : NA}
                     </Text>
                   </View>
                   <Icon name="chevron-forward" size={18} color="#C7C1BA" />

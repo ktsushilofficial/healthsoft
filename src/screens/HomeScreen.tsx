@@ -23,7 +23,6 @@ import SeniorSelectionModal from '../components/SeniorSelectionModal';
 import GuardianWelcomeModal from '../components/GuardianWelcomeModal';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { emptySeniorHomeSnapshot } from '../types/seniorHomeSnapshot';
-import { buildOpenStreetMapMarkerUrl } from '../utils/openStreetMap';
 import type { SeniorDashboardDeviceRecord } from '../types/seniorDashboard';
 import type { GuardianSeniorProfileRow } from '../types/guardianDashboard';
 import {
@@ -1345,10 +1344,10 @@ const HomeScreen = () => {
     const lat = liveSnapshot.latitude;
     const lon = liveSnapshot.longitude;
     if (lat == null || lon == null) return;
-    const url = buildOpenStreetMapMarkerUrl(lat, lon);
-    navigation.navigate('WebView', {
-      url,
-      title: 'Last position (OpenStreetMap)',
+    navigation.navigate('LocationMap', {
+      latitude: lat,
+      longitude: lon,
+      title: 'Last position',
     });
   }, [liveSnapshot.latitude, liveSnapshot.longitude, navigation]);
 
