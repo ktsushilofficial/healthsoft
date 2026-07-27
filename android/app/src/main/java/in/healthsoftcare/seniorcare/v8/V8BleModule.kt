@@ -345,6 +345,13 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
       promise.reject("CMD_EMPTY", "Vendor command is empty")
       return
     }
+    if (bluetoothGatt == null || writeCharacteristic == null) {
+      promise.reject(
+        "NOT_READY",
+        "The hand band connection is not ready. Wait a moment and try again.",
+      )
+      return
+    }
     writeQueue.offer(command)
     processWriteQueue()
     promise.resolve(true)
@@ -356,7 +363,6 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
     val gatt = bluetoothGatt
     val characteristic = writeCharacteristic
     if (gatt == null || characteristic == null) {
-      writeQueue.clear()
       return
     }
     val command = writeQueue.poll() ?: return

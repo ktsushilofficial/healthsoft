@@ -40,6 +40,23 @@ describe('V8 ECG helpers', () => {
     expect(event.heartRate).toBe(68);
   });
 
+  it('parses Android real-time ECG packets emitted as PPG raw data', () => {
+    const event = parseV8EcgPayload(
+      {
+        dataType: '64',
+        dataEnd: false,
+        dicData: {
+          arrayPpgRawData: '8451200,8451456,8450944,8451712',
+          packetID: '7',
+        },
+      },
+      'android',
+    );
+
+    expect(event.kind).toBe('samples');
+    expect(event.samples).toEqual([8451200, 8451456, 8450944, 8451712]);
+  });
+
   it('does not confuse Android blood-oxygen type 55 with iOS ECG success', () => {
     expect(
       parseV8EcgPayload({ dataType: '55', Blood_oxygen: 97 }, 'android').kind,

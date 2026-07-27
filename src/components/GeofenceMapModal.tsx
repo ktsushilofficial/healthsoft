@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Modal,
+  PermissionsAndroid,
   Platform,
   SafeAreaView,
   StyleSheet,
@@ -20,6 +21,7 @@ import MapView, {
   type MapPressEvent,
   type MarkerDragStartEndEvent,
 } from 'react-native-maps';
+import { orderQuadrilateralPoints } from '../utils/geofencePolygon';
 
 export type GeofenceMapSelection =
   | { type: 'circle'; center: LatLng; radiusMeters: number }
@@ -37,10 +39,10 @@ type Props = {
 
 const INDIA_CENTER: LatLng = { latitude: 20.5937, longitude: 78.9629 };
 const DEFAULT_RADIUS_METERS = 100;
-const MIN_RADIUS_METERS = 25;
-const MAX_RADIUS_METERS = 5000;
-const MAX_POLYGON_POINTS = 15;
-const RADIUS_PRESETS = [50, 100, 250, 500, 1000];
+const MIN_RADIUS_METERS = 100;
+const MAX_RADIUS_METERS = 65535;
+const MAX_POLYGON_POINTS = 4;
+const RADIUS_PRESETS = [100, 250, 500, 1000, 5000];
 
 const clampRadius = (value: number) =>
   Math.min(MAX_RADIUS_METERS, Math.max(MIN_RADIUS_METERS, Math.round(value)));
@@ -58,10 +60,57 @@ const GeofenceMapModal = ({
   const [center, setCenter] = useState<LatLng>(initialCenter ?? initialPoints[0] ?? INDIA_CENTER);
   const [radiusMeters, setRadiusMeters] = useState(clampRadius(initialRadiusMeters));
   const [points, setPoints] = useState<LatLng[]>(initialPoints.slice(0, MAX_POLYGON_POINTS));
+  const [selectedPointIndex, setSelectedPointIndex] = useState<number | null>(null);
   const [locating, setLocating] = useState(false);
+  const [locationPermissionGranted, setLocationPermissionGranted] = useState(
+    Platform.OS === 'ios',
+  );
 
-  const fetchCurrentLocation = useCallback((showError = true) => {
+  const fetchCurrentLocation = useCallback(async (showError = true) => {
     setLocating(true);
+    if (Platform.OS === 'android') {
+      try {
+        const alreadyGranted = await PermissionsAndroid.check(
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+        );
+        const result = alreadyGranted
+          ? PermissionsAndroid.RESULTS.GRANTED
+          : await PermissionsAndroid.request(
+              PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+              {
+                title: 'Location access',
+                message: 'Location access is used to center the geofence map on your position.',
+                buttonPositive: 'Allow',
+                buttonNegative: 'Not now',
+              },
+            );
+        const granted = result === PermissionsAndroid.RESULTS.GRANTED;
+        setLocationPermissionGranted(granted);
+        if (!granted) {
+          setLocating(false);
+          if (showError) {
+            Alert.alert(
+              'Location permission needed',
+              result === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN
+                ? 'Allow location access for Guardians in Android settings, then try again.'
+                : 'Allow location access to center the map on your position. You can still place geofence points manually.',
+            );
+          }
+          return;
+        }
+      } catch {
+        setLocationPermissionGranted(false);
+        setLocating(false);
+        if (showError) {
+          Alert.alert(
+            'Location unavailable',
+            'Location permission could not be requested. You can still place geofence points manually.',
+          );
+        }
+        return;
+      }
+    }
+
     Geolocation.setRNConfiguration({
       skipPermissionRequests: false,
       authorizationLevel: 'whenInUse',
@@ -69,6 +118,7 @@ const GeofenceMapModal = ({
     });
     Geolocation.getCurrentPosition(
       position => {
+        setLocationPermissionGranted(true);
         const coordinate = {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
@@ -84,6 +134,9 @@ const GeofenceMapModal = ({
         setLocating(false);
       },
       error => {
+        if (error.code === 1) {
+          setLocationPermissionGranted(false);
+        }
         setLocating(false);
         if (showError) {
           Alert.alert(
@@ -103,7 +156,8 @@ const GeofenceMapModal = ({
     setCenter(initialCenter ?? initialPoints[0] ?? INDIA_CENTER);
     setRadiusMeters(clampRadius(initialRadiusMeters));
     setPoints(initialPoints.slice(0, MAX_POLYGON_POINTS));
-    fetchCurrentLocation(false);
+    setSelectedPointIndex(null);
+    fetchCurrentLocation(false).catch(() => {});
   }, [fetchCurrentLocation, initialCenter, initialPoints, initialRadiusMeters, visible]);
 
   const initialRegion = useMemo(() => {
@@ -115,12 +169,18 @@ const GeofenceMapModal = ({
     };
   }, [initialCenter, initialPoints]);
 
+  const orderedPolygonPoints = useMemo(
+    () => orderQuadrilateralPoints(points),
+    [points],
+  );
+
   const handleMapPress = (event: MapPressEvent) => {
     const coordinate = event.nativeEvent.coordinate;
     if (type === 'circle') {
       setCenter(coordinate);
       return;
     }
+    setSelectedPointIndex(null);
     setPoints(current =>
       current.length >= MAX_POLYGON_POINTS ? current : [...current, coordinate],
     );
@@ -133,7 +193,12 @@ const GeofenceMapModal = ({
     ));
   };
 
-  const canApply = type === 'circle' || points.length >= 3;
+  const removePolygonPoint = (index: number) => {
+    setPoints(current => current.filter((_, pointIndex) => pointIndex !== index));
+    setSelectedPointIndex(null);
+  };
+
+  const canApply = type === 'circle' || orderedPolygonPoints !== null;
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onCancel}>
@@ -147,7 +212,7 @@ const GeofenceMapModal = ({
             <Text style={styles.subtitle}>
               {type === 'circle'
                 ? 'Tap the map or drag the pin to choose the center.'
-                : 'Tap to add 3–15 boundary points. Drag points to adjust.'}
+                : 'Tap to add exactly 4 corner points. Drag points to adjust.'}
             </Text>
           </View>
           <TouchableOpacity
@@ -156,8 +221,8 @@ const GeofenceMapModal = ({
             onPress={() => {
               if (type === 'circle') {
                 onApply({ type, center, radiusMeters });
-              } else {
-                onApply({ type, points });
+              } else if (orderedPolygonPoints) {
+                onApply({ type, points: orderedPolygonPoints });
               }
             }}
           >
@@ -174,8 +239,8 @@ const GeofenceMapModal = ({
             onPress={handleMapPress}
             showsCompass
             showsScale
-            showsUserLocation
-            showsMyLocationButton
+            showsUserLocation={locationPermissionGranted}
+            showsMyLocationButton={locationPermissionGranted}
             toolbarEnabled={false}
           >
             {type === 'circle' ? (
@@ -197,9 +262,9 @@ const GeofenceMapModal = ({
               </>
             ) : (
               <>
-                {points.length >= 3 ? (
+                {orderedPolygonPoints ? (
                   <Polygon
-                    coordinates={points}
+                    coordinates={orderedPolygonPoints}
                     strokeColor="#E97812"
                     strokeWidth={2}
                     fillColor="rgba(242, 140, 40, 0.22)"
@@ -210,8 +275,11 @@ const GeofenceMapModal = ({
                     key={`${index}-${point.latitude}-${point.longitude}`}
                     coordinate={point}
                     draggable
-                    title={`Boundary point ${index + 1}`}
-                    pinColor="#F28C28"
+                    stopPropagation
+                    title={`Boundary point ${index + 1} — select and remove below`}
+                    pinColor={selectedPointIndex === index ? '#C84E20' : '#F28C28'}
+                    onPress={() => setSelectedPointIndex(index)}
+                    onDragStart={() => setSelectedPointIndex(index)}
                     onDragEnd={event => updatePolygonPoint(index, event)}
                   />
                 ))}
@@ -276,24 +344,47 @@ const GeofenceMapModal = ({
               </View>
               <View style={styles.polygonActions}>
                 <TouchableOpacity
+                  style={[styles.textAction, selectedPointIndex === null && styles.disabledButton]}
+                  disabled={selectedPointIndex === null}
+                  onPress={() => {
+                    if (selectedPointIndex !== null) {
+                      removePolygonPoint(selectedPointIndex);
+                    }
+                  }}
+                >
+                  <Text style={styles.textActionText}>Remove</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
                   style={[styles.textAction, points.length === 0 && styles.disabledButton]}
                   disabled={points.length === 0}
-                  onPress={() => setPoints(current => current.slice(0, -1))}
+                  onPress={() => {
+                    setPoints(current => current.slice(0, -1));
+                    setSelectedPointIndex(null);
+                  }}
                 >
                   <Text style={styles.textActionText}>Undo</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.textAction, points.length === 0 && styles.disabledButton]}
                   disabled={points.length === 0}
-                  onPress={() => setPoints([])}
+                  onPress={() => {
+                    setPoints([]);
+                    setSelectedPointIndex(null);
+                  }}
                 >
                   <Text style={styles.textActionText}>Clear</Text>
                 </TouchableOpacity>
               </View>
             </View>
-            {points.length < 3 ? (
-              <Text style={styles.hint}>Add at least {3 - points.length} more point(s) to create the fence.</Text>
-            ) : null}
+            {selectedPointIndex !== null ? (
+              <Text style={styles.hint}>Point {selectedPointIndex + 1} selected. Tap Remove to replace it.</Text>
+            ) : points.length < MAX_POLYGON_POINTS ? (
+              <Text style={styles.hint}>Add {MAX_POLYGON_POINTS - points.length} more point(s) to draw the four-sided fence.</Text>
+            ) : !orderedPolygonPoints ? (
+              <Text style={styles.hint}>Move the markers so all four are separate outside corners.</Text>
+            ) : (
+              <Text style={styles.hint}>Four-sided boundary ready. Drag, undo, or clear to adjust.</Text>
+            )}
           </View>
         )}
       </SafeAreaView>

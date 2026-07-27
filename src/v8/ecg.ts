@@ -4,6 +4,9 @@ const ECG_SAMPLE_KEYS = new Set([
   'arrayecgrawdata',
   'arrayecgdata',
   'arrayecg',
+  // The V8 Android SDK exposes ECG real-time packets as
+  // dicData.arrayPpgRawData when setECGRealtimeDuringHRVEnabled is active.
+  'arrayppgrawdata',
   'ecgdata',
   'ecgvalue',
   'kecgdatastring',

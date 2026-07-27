@@ -16,6 +16,7 @@ import {
   encodeEv07bNoMotionAlert,
   encodeEv07bNoDisturb,
   encodeEv07bTiltAlert,
+  ev07bGeoAlertValuesMatch,
   hasEv07bFlag,
   normalizeEv07bWorkdayMask,
   toggleEv07bFlag,
@@ -214,6 +215,7 @@ describe('ev07bConfigCodec', () => {
     });
     const decoded = decodeEv07bGeoAlert(encoded);
 
+    expect(Array.from(encoded.slice(0, 4))).toEqual([0x12, 0x03, 0x96, 0x00]);
     expect(decoded).toMatchObject({
       index: 2,
       enabled: true,
@@ -234,12 +236,14 @@ describe('ev07bConfigCodec', () => {
       radiusMeters: 0,
       points: [
         { latitude: 12.97, longitude: 77.59 },
-        { latitude: 12.98, longitude: 77.6 },
-        { latitude: 12.99, longitude: 77.61 },
+        { latitude: 12.98, longitude: 77.60 },
+        { latitude: 12.98, longitude: 77.59 },
+        { latitude: 12.97, longitude: 77.60 },
       ],
     });
     const decoded = decodeEv07bGeoAlert(encoded);
 
+    expect(Array.from(encoded.slice(0, 4))).toEqual([0x41, 0x04, 0x00, 0x00]);
     expect(decoded).toMatchObject({
       index: 1,
       enabled: false,
@@ -247,8 +251,101 @@ describe('ev07bConfigCodec', () => {
       type: 'polygon',
       radiusMeters: 0,
     });
-    expect(decoded?.points).toHaveLength(3);
-    expect(decoded?.points[2].latitude).toBeCloseTo(12.99, 5);
-    expect(decoded?.points[2].longitude).toBeCloseTo(77.61, 5);
+    expect(decoded?.points).toHaveLength(4);
+  });
+
+  test('limits polygon geo alert payload to four points', () => {
+    const decoded = decodeEv07bGeoAlert(encodeEv07bGeoAlert({
+      index: 1,
+      enabled: true,
+      direction: 'out',
+      type: 'polygon',
+      radiusMeters: 0,
+      points: [
+        { latitude: 12, longitude: 77 },
+        { latitude: 13, longitude: 78 },
+        { latitude: 13, longitude: 77 },
+        { latitude: 12, longitude: 78 },
+        { latitude: 14, longitude: 79 },
+      ],
+    }));
+
+    expect(decoded?.points).toHaveLength(4);
+    expect(decoded?.points).not.toContainEqual({ latitude: 14, longitude: 79 });
+  });
+
+  test('rejects a triangle polygon geo alert payload', () => {
+    expect(() => encodeEv07bGeoAlert({
+      index: 1,
+      enabled: true,
+      direction: 'out',
+      type: 'polygon',
+      radiusMeters: 0,
+      points: [
+        { latitude: 12, longitude: 77 },
+        { latitude: 13, longitude: 78 },
+        { latitude: 13, longitude: 77 },
+      ],
+    })).toThrow('requires exactly 4 points');
+  });
+
+  test('normalizes invalid circle radius and unused polygon radius', () => {
+    const circle = decodeEv07bGeoAlert(encodeEv07bGeoAlert({
+      index: 0,
+      enabled: true,
+      direction: 'out',
+      type: 'circle',
+      radiusMeters: 50,
+      points: [{ latitude: 12.9716, longitude: 77.5946 }],
+    }));
+    const polygon = decodeEv07bGeoAlert(encodeEv07bGeoAlert({
+      index: 0,
+      enabled: true,
+      direction: 'out',
+      type: 'polygon',
+      radiusMeters: 500,
+      points: [
+        { latitude: 12.97, longitude: 77.59 },
+        { latitude: 12.98, longitude: 77.60 },
+        { latitude: 12.98, longitude: 77.59 },
+        { latitude: 12.97, longitude: 77.60 },
+      ],
+    }));
+
+    expect(circle?.radiusMeters).toBe(100);
+    expect(polygon?.radiusMeters).toBe(0);
+  });
+
+  test('matches firmware-normalized circle and polygon values semantically', () => {
+    const circle = encodeEv07bGeoAlert({
+      index: 2,
+      enabled: true,
+      direction: 'in',
+      type: 'circle',
+      radiusMeters: 150,
+      points: [{ latitude: 12.9716, longitude: 77.5946 }],
+    });
+    const normalizedCircle = circle.slice();
+    normalizedCircle[0] &= 0x0f;
+
+    const polygon = encodeEv07bGeoAlert({
+      index: 1,
+      enabled: true,
+      direction: 'out',
+      type: 'polygon',
+      radiusMeters: 0,
+      points: [
+        { latitude: 12.97, longitude: 77.59 },
+        { latitude: 12.98, longitude: 77.60 },
+        { latitude: 12.98, longitude: 77.59 },
+        { latitude: 12.97, longitude: 77.60 },
+      ],
+    });
+    const normalizedPolygon = polygon.slice();
+    normalizedPolygon[2] = 0x7b;
+
+    expect(ev07bGeoAlertValuesMatch(circle, normalizedCircle)).toBe(true);
+    expect(ev07bGeoAlertValuesMatch(polygon, normalizedPolygon)).toBe(true);
+    expect(ev07bGeoAlertValuesMatch(circle, polygon)).toBe(false);
   });
 });

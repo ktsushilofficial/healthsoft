@@ -86,6 +86,15 @@ function readDeviceIdentifier(row: SeniorDashboardDeviceRecord): string {
   return readStringField(row, 'ident') ?? readStringField(row, 'imei') ?? '';
 }
 
+function readDeviceUuid(row: SeniorDashboardDeviceRecord): string {
+  return (
+    readStringField(row, 'device.uuid') ??
+    readStringField(row, 'deviceUUID') ??
+    readStringField(row, 'deviceUuid') ??
+    ''
+  );
+}
+
 const HomeDevicesScreen = () => {
   const navigation = useNavigation<any>();
   const route = useRoute();
@@ -145,6 +154,7 @@ const HomeDevicesScreen = () => {
               navigation.navigate('PendantDetail', {
                 seniorId: params.activeSeniorId || undefined,
                 imei: readDeviceIdentifier(item.row),
+                deviceUuid: readDeviceUuid(item.row),
                 deviceName: item.label,
               });
             }}

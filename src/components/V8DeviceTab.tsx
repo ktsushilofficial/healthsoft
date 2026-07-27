@@ -16,10 +16,6 @@ type V8DeviceTabProps = {
 const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8DeviceTabProps) => {
   const normalizeId = (id?: string | null) => (id ?? '').trim().toLowerCase();
   const compactMac = (value?: string | null) => normalizeMacAddress(value);
-  const macSuffix6 = (value?: string | null) => {
-    const normalized = compactMac(value);
-    return normalized ? normalized.slice(-6) : null;
-  };
   const navigation = useNavigation<NativeStackNavigationProp<DeviceStackParamList>>();
   const { selectedSeniorHandBandMacs } = useAuth();
   const {
@@ -61,47 +57,18 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
 
   const matchedDeviceIds = useMemo(() => {
     const matched = new Set<string>();
-    const selectedMacSuffixes = new Set(
-      selectedSeniorHandBandMacs
-        .map(mac => macSuffix6(mac))
-        .filter((value): value is string => !!value),
-    );
-    devices.forEach(device => {
-      const candidates = [
-        compactMac(device.id),
-        compactMac(device.name),
-        compactMac(device.localName),
-      ];
-      const suffixCandidates = [
-        macSuffix6(device.id),
-        macSuffix6(device.name),
-        macSuffix6(device.localName),
-      ].filter((value): value is string => !!value);
-
-      const directMatch = candidates.some(
-        candidate => !!candidate && selectedSeniorMacSet.has(candidate),
-      );
-      const suffixMatch = suffixCandidates.some(suffix => selectedMacSuffixes.has(suffix));
-
-      if (directMatch || suffixMatch) {
-        matched.add(device.id);
-      }
-    });
-
     const connectedDeviceMac = compactMac(deviceInfo.mac);
     if (connectedDeviceMac && selectedSeniorMacSet.has(connectedDeviceMac)) {
-      const normalizedActiveId = normalizeId(deviceInfo.imei);
-      const byImeiDevice = devices.find(d => normalizeId(d.id) === normalizedActiveId);
-      if (byImeiDevice) {
-        matched.add(byImeiDevice.id);
-      } else if (devices.length === 1) {
-        // Single scanned device + confirmed connected MAC match -> treat it as selected senior device.
-        matched.add(devices[0].id);
+      const connectedDevices = devices.filter(
+        device => connectionStates[normalizeId(device.id)] === 'connected',
+      );
+      if (connectedDevices.length === 1) {
+        matched.add(connectedDevices[0].id);
       }
     }
 
     return matched;
-  }, [deviceInfo.imei, deviceInfo.mac, devices, selectedSeniorHandBandMacs, selectedSeniorMacSet]);
+  }, [connectionStates, deviceInfo.mac, devices, selectedSeniorMacSet]);
 
   const myHandBandDevices = useMemo(
     () => devices.filter(device => matchedDeviceIds.has(device.id)),
@@ -118,6 +85,7 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
     const busy = state === 'connecting' || state === 'disconnecting';
     const connected = state === 'connected';
     const matchesSelectedSenior = matchedDeviceIds.has(device.id);
+    const canVerifyMac = selectedSeniorHandBandMacs.length > 0;
     return (
       <View key={device.id} style={styles.deviceRow}>
         <View style={styles.deviceInfo}>
@@ -132,15 +100,18 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
           style={[
             styles.linkButton,
             connected ? styles.linkButtonSecondary : null,
-            busy || (!connected && !matchesSelectedSenior) ? styles.disabled : null,
+            busy || (!connected && !canVerifyMac) ? styles.disabled : null,
           ]}
-          disabled={busy || (!connected && !matchesSelectedSenior)}
+          disabled={busy || (!connected && !canVerifyMac)}
           onPress={async () => {
             if (connected) {
               await disconnect(device.id);
               return;
             }
             await connect(device.id);
+            if (!matchesSelectedSenior) {
+              return;
+            }
             const shouldShowSyncPrompt = pendingSyncLatestPrompt;
             navigation.navigate('V8DeviceManage', {
               deviceId: device.id,
@@ -160,7 +131,9 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
                 ? 'Working...'
                 : matchesSelectedSenior
                   ? 'Connect'
-                  : 'Not Assigned'}
+                  : canVerifyMac
+                    ? 'Verify MAC'
+                    : 'No Assigned MAC'}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity

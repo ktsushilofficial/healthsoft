@@ -6,13 +6,13 @@ import * as Keychain from 'react-native-keychain';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import {
   extractSeniorAssignedDevices,
-  isMacAddressLike,
-  normalizeMacAddress,
+  getAssignedHandBandMacAddress,
   type SeniorAssignedDevice,
 } from '../utils/deviceAssignments';
 import { clearAllCachedAssignedDeviceMatches } from '../utils/assignedDeviceMatchCache';
 import type { SeniorDashboardApiResponse } from '../types/seniorDashboard';
 import type { GuardianDashboardApiResponse } from '../types/guardianDashboard';
+import type { GeofenceExitApiResponse } from '../types/geofenceExit';
 import { API_BASE_URL } from '../config/api';
 import type { V8DailyVitalsSyncPayload, V8WebVitalsSyncPayload } from '../v8/models';
 
@@ -93,6 +93,10 @@ interface AuthContextType {
   getAssignedDevicesForSenior: (seniorId: string) => Promise<SeniorAssignedDevice[]>;
   getSeniorDashboard: (seniorId: string) => Promise<SeniorDashboardApiResponse>;
   getGuardianDashboard: (guardianUserId: string) => Promise<GuardianDashboardApiResponse>;
+  getGeofenceExitTicket: (
+    deviceUUID: string,
+    ident: string,
+  ) => Promise<GeofenceExitApiResponse | null>;
   syncV8DailyVitals: (seniorId: string, payload: V8DailyVitalsSyncPayload) => Promise<void>;
   syncV8VitalsByDevice: (payload: V8WebVitalsSyncPayload) => Promise<void>;
   getV8VitalsSummary: (deviceUUID: string, days: number) => Promise<unknown>;
@@ -208,6 +212,9 @@ const fallbackAuthContext: AuthContextType = {
   getGuardianDashboard: async () => {
     throw missingProviderError();
   },
+  getGeofenceExitTicket: async () => {
+    throw missingProviderError();
+  },
   syncV8DailyVitals: async () => {
     throw missingProviderError();
   },
@@ -230,6 +237,9 @@ const apiClient = axios.create({
 const isUnauthorizedError = (error: unknown): boolean =>
   axios.isAxiosError(error) &&
   (error.response?.status === 401 || error.response?.status === 403);
+
+const isNotFoundError = (error: unknown): boolean =>
+  axios.isAxiosError(error) && error.response?.status === 404;
 
 const getErrorMessage = (error: unknown): string => {
   if (axios.isAxiosError(error)) {
@@ -285,6 +295,16 @@ const stringifyForLog = (value: unknown): string => {
   }
 };
 
+const redactHeadersForLog = (
+  headers: Record<string, string>,
+): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [
+      key,
+      /authorization|token/i.test(key) && value ? '<redacted>' : value,
+    ]),
+  );
+
 const normalizeCountryCode = (countryCode?: string): string | undefined => {
   if (!countryCode) {
     return undefined;
@@ -305,7 +325,7 @@ const logApiRequest = (
   data?: unknown,
 ) => {
   console.log(
-    `[API Request] ${method} ${API_BASE_URL}${path}\nHeaders: ${stringifyForLog(headers)}\nBody: ${stringifyForLog(data)}`,
+    `[API Request] ${method} ${API_BASE_URL}${path}\nHeaders: ${stringifyForLog(redactHeadersForLog(headers))}\nBody: ${stringifyForLog(data)}`,
   );
 };
 
@@ -330,13 +350,13 @@ const logApiError = (
 ) => {
   if (axios.isAxiosError(error)) {
     console.log(
-      `[API Error] ${method} ${API_BASE_URL}${path}\nHeaders: ${stringifyForLog(headers)}\nBody: ${stringifyForLog(data)}\nStatus: ${error.response?.status ?? 'unknown'}\nResponse Headers: ${stringifyForLog(error.response?.headers)}\nResponse Body: ${stringifyForLog(error.response?.data)}`,
+      `[API Error] ${method} ${API_BASE_URL}${path}\nHeaders: ${stringifyForLog(redactHeadersForLog(headers))}\nBody: ${stringifyForLog(data)}\nStatus: ${error.response?.status ?? 'unknown'}\nResponse Headers: ${stringifyForLog(error.response?.headers)}\nResponse Body: ${stringifyForLog(error.response?.data)}`,
     );
     return;
   }
 
   console.log(
-    `[API Error] ${method} ${API_BASE_URL}${path}\nHeaders: ${stringifyForLog(headers)}\nBody: ${stringifyForLog(data)}\nError: ${stringifyForLog(error)}`,
+    `[API Error] ${method} ${API_BASE_URL}${path}\nHeaders: ${stringifyForLog(redactHeadersForLog(headers))}\nBody: ${stringifyForLog(data)}\nError: ${stringifyForLog(error)}`,
   );
 };
 
@@ -642,6 +662,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       try {
         return await performRequest<T>(path, method, data, refreshedTokens, extraHeaders);
       } catch (retryError) {
+        throw new Error(getErrorMessage(retryError));
+      }
+    }
+  };
+
+  /**
+   * Same authenticated request flow as authorizedRequest, but treats HTTP 404
+   * as an expected "no current resource" result. The geofence-exit endpoint
+   * uses that response when a pendant has no matching alert.
+   */
+  const authorizedOptionalRequest = async <T,>(
+    path: string,
+    method: Method,
+    data?: unknown,
+    extraHeaders?: Record<string, string>,
+  ): Promise<T | null> => {
+    if (!tokensRef.current?.accessToken) {
+      throw new Error('Session expired. Please sign in again.');
+    }
+
+    try {
+      return await performRequest<T>(path, method, data, undefined, extraHeaders);
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        return null;
+      }
+      if (!isUnauthorizedError(error)) {
+        throw new Error(getErrorMessage(error));
+      }
+
+      const refreshedTokens = await refreshTokens();
+      if (!refreshedTokens) {
+        await clearSession();
+        throw new Error('Session expired. Please sign in again.');
+      }
+
+      try {
+        return await performRequest<T>(path, method, data, refreshedTokens, extraHeaders);
+      } catch (retryError) {
+        if (isNotFoundError(retryError)) {
+          return null;
+        }
         throw new Error(getErrorMessage(retryError));
       }
     }
@@ -1220,8 +1282,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         const nextMacs = Array.from(
           new Set(
             assigned
-              .filter(device => isMacAddressLike(device.deviceIdentifier))
-              .map(device => normalizeMacAddress(device.deviceIdentifier))
+              .map(device => getAssignedHandBandMacAddress(device))
               .filter((value): value is string => !!value),
           ),
         );
@@ -1274,6 +1335,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     } catch (error) {
       throw new Error(getErrorMessage(error));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const getGeofenceExitTicket = useCallback(async (
+    deviceUUID: string,
+    ident: string,
+  ): Promise<GeofenceExitApiResponse | null> => {
+    const uuid = deviceUUID.trim();
+    const normalizedIdent = ident.trim();
+    if (!uuid) {
+      throw new Error('Device UUID is required for the geofence alert.');
+    }
+    if (!normalizedIdent) {
+      throw new Error('Device identifier is required for the geofence alert.');
+    }
+
+    return await authorizedOptionalRequest<GeofenceExitApiResponse>(
+      `/api/v1/tickets/geofence-exit/${encodeURIComponent(uuid)}/${encodeURIComponent(normalizedIdent)}`,
+      'GET',
+      undefined,
+      { Accept: 'application/json' },
+    );
+    // authorizedOptionalRequest is stable (reads from refs internally)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1364,6 +1448,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       getAssignedDevicesForSenior,
       getSeniorDashboard,
       getGuardianDashboard,
+      getGeofenceExitTicket,
       syncV8DailyVitals,
       syncV8VitalsByDevice,
       getV8VitalsSummary,
@@ -1372,7 +1457,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     [
       user, isAuthenticated, isInitializing, isCaretaker, authMethod,
       seniors, selectedSenior, selectedSeniorHandBandMacs, refreshUserProfile, getMySeniors, getAssignedDevicesForSenior,
-      getSeniorDashboard, getGuardianDashboard, syncV8DailyVitals, syncV8VitalsByDevice, getV8VitalsSummary,
+      getSeniorDashboard, getGuardianDashboard, getGeofenceExitTicket, syncV8DailyVitals, syncV8VitalsByDevice, getV8VitalsSummary,
     ],
   );
 

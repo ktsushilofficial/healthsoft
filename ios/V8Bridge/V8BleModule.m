@@ -538,7 +538,6 @@ RCT_REMAP_METHOD(requestTemperature,
 }
 
 - (void)centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)peripheral {
-  [self emitConnection:@"connected" deviceId:peripheral.identifier.UUIDString];
   [peripheral discoverServices:nil];
 }
 
@@ -586,6 +585,22 @@ didDiscoverCharacteristicsForService:(CBService *)service
       self.notifyCharacteristic = characteristic;
       [peripheral setNotifyValue:YES forCharacteristic:characteristic];
     }
+  }
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral
+didUpdateNotificationStateForCharacteristic:(CBCharacteristic *)characteristic
+             error:(NSError *)error {
+  if (error || characteristic != self.notifyCharacteristic || !characteristic.isNotifying) {
+    if (error) {
+      [self emitConnection:@"error" deviceId:peripheral.identifier.UUIDString];
+    }
+    return;
+  }
+  if (self.writeCharacteristic) {
+    // Report connected only after commands can be written and responses can be
+    // received. JavaScript can now safely request the real device MAC.
+    [self emitConnection:@"connected" deviceId:peripheral.identifier.UUIDString];
   }
 }
 
