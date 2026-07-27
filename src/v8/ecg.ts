@@ -7,6 +7,9 @@ const ECG_SAMPLE_KEYS = new Set([
   // The V8 Android SDK exposes ECG real-time packets as
   // dicData.arrayPpgRawData when setECGRealtimeDuringHRVEnabled is active.
   'arrayppgrawdata',
+  // The bundled V8 iOS SDK uses dicData.arrayPPGData for the same real-time
+  // stream before/alongside its later arrayEcgRawData packets.
+  'arrayppgdata',
   'ecgdata',
   'ecgvalue',
   'kecgdatastring',
@@ -158,6 +161,8 @@ export function parseV8EcgPayload(
       'ECG_Status',
       'status',
       'message',
+      'startStatus',
+      'ecgAndPpgStatusData',
       'ppgMeasurementProgress',
     ]),
   );
@@ -169,8 +174,12 @@ export function parseV8EcgPayload(
       findValue(records, [
         'ECGHrValue',
         'EcgHR',
+        'ecgHeartRate',
         'HeartRate',
         'heartRate',
+        'heartValue',
+        'hrValue',
+        'HR',
         'PPGHrValue',
       ]),
     ),
@@ -217,6 +226,9 @@ export function createV8EcgSession(
     durationMs: null,
     samples: [],
     sampleRateHz: null,
+    firstSampleAt: null,
+    firstSampleCount: 0,
+    lastSampleAt: null,
     heartRate: null,
     signalQuality: null,
     classification: null,
@@ -225,6 +237,31 @@ export function createV8EcgSession(
     deviceMac,
     firmwareVersion,
   };
+}
+
+export function estimateObservedSampleRateHz(
+  totalSampleCount: number,
+  firstSampleCount: number,
+  firstSampleAt: number | null,
+  lastSampleAt: number | null,
+): number | null {
+  if (
+    firstSampleAt == null ||
+    lastSampleAt == null ||
+    lastSampleAt - firstSampleAt < 500
+  ) {
+    return null;
+  }
+
+  const samplesAfterFirstPacket = Math.max(
+    0,
+    totalSampleCount - firstSampleCount,
+  );
+  if (samplesAfterFirstPacket === 0) return null;
+
+  const elapsedSeconds = (lastSampleAt - firstSampleAt) / 1000;
+  const observedRate = Math.round(samplesAfterFirstPacket / elapsedSeconds);
+  return observedRate > 0 ? observedRate : null;
 }
 
 export function downsampleEcg(samples: number[], maxPoints: number): number[] {

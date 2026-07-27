@@ -6,7 +6,11 @@ import type { V8ConnectionState, V8Device } from './types';
 import { isV8NativeAvailable, v8Emitter, v8Native } from './nativeV8';
 import type { V8DailyVitalSummary, V8DeviceInfo, V8EcgSession, V8HistoryBucket, V8VitalSample, V8WebVitalSummary, V8WebVitalsSyncPayload } from './models';
 import { parseV8Payload } from './parser';
-import { createV8EcgSession, parseV8EcgPayload } from './ecg';
+import {
+  createV8EcgSession,
+  estimateObservedSampleRateHz,
+  parseV8EcgPayload,
+} from './ecg';
 import {
   getAssignedHandBandMacAddress,
   normalizeMacAddress,
@@ -81,6 +85,14 @@ const V8_ECG_USER = 'v8-ecg';
 const MAX_ECG_SAMPLES = 120_000;
 const MAX_PERSISTED_ECG_SAMPLES = 4_000;
 const normalizeId = (id?: string | null) => (id ?? '').trim().toLowerCase();
+const logV8Debug = (label: string, value?: unknown) => {
+  if (!__DEV__) return;
+  if (value === undefined) {
+    console.log(`[V8 Debug] ${label}`);
+    return;
+  }
+  console.log(`[V8 Debug] ${label}`, value);
+};
 
 const sampleDayKey = (sample: V8VitalSample): string | null => {
   const raw = sample.timestamp?.trim();
@@ -146,7 +158,13 @@ const diffDaysYmdUtc = (fromYmd: string, toYmd: string): number => {
 };
 
 const useV8BleManagerInternal = (): V8BleContextValue => {
-  const { user, syncV8VitalsByDevice, getAssignedDevicesForSenior, selectedSeniorHandBandMacs } = useAuth();
+  const {
+    user,
+    selectedSenior,
+    syncV8VitalsByDevice,
+    getAssignedDevicesForSenior,
+    selectedSeniorHandBandMacs,
+  } = useAuth();
   const [devicesById, setDevicesById] = useState<Record<string, V8Device>>({});
   const [connectionStates, setConnectionStates] = useState<Record<string, V8ConnectionState>>({});
   const [scanError, setScanError] = useState<string | null>(null);
@@ -169,6 +187,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   const [suppressAutoConnectUntil, setSuppressAutoConnectUntil] = useState<number>(0);
   const [liveModeEnabled, setLiveModeEnabled] = useState(false);
   const [ecgSession, setEcgSession] = useState<V8EcgSession | null>(null);
+  const ecgSessionRef = useRef<V8EcgSession | null>(null);
   const [autoSyncStatus, setAutoSyncStatus] = useState<V8AutoSyncStatus>({
     enabled: false,
     phase: 'disabled',
@@ -176,6 +195,15 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     nextSyncAt: null,
     error: null,
   });
+  const ecgSeniorId = useMemo(() => {
+    if (user?.role === 'SENIOR') {
+      return user.user_id?.trim() ?? '';
+    }
+    if (user?.role === 'CARE_TAKER' || user?.role === 'GUARDIAN') {
+      return selectedSenior?.userId?.trim() ?? '';
+    }
+    return '';
+  }, [selectedSenior?.userId, user?.role, user?.user_id]);
   const liveSnapshotInFlightRef = useRef(false);
   const liveSnapshotPromiseRef = useRef<Promise<void> | null>(null);
   const scanStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -205,7 +233,11 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   }, [historyByType]);
 
   useEffect(() => {
-    if (user?.role !== 'SENIOR') {
+    ecgSessionRef.current = ecgSession;
+  }, [ecgSession]);
+
+  useEffect(() => {
+    if (!ecgSeniorId) {
       setEcgSession(null);
       return;
     }
@@ -217,7 +249,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           const parsed = JSON.parse(value.password) as V8EcgSession;
           if (
             parsed?.id &&
-            parsed.seniorId === user.user_id &&
+            parsed.seniorId === ecgSeniorId &&
             parsed.phase === 'completed' &&
             Array.isArray(parsed.samples)
           ) {
@@ -231,10 +263,10 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     return () => {
       active = false;
     };
-  }, [user?.role, user?.user_id]);
+  }, [ecgSeniorId]);
 
   useEffect(() => {
-    if (user?.role !== 'SENIOR' || ecgSession?.phase !== 'completed') return;
+    if (!ecgSeniorId || ecgSession?.seniorId !== ecgSeniorId || ecgSession.phase !== 'completed') return;
     const persisted: V8EcgSession = {
       ...ecgSession,
       samples: ecgSession.samples.slice(-MAX_PERSISTED_ECG_SAMPLES),
@@ -243,7 +275,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       service: V8_ECG_SERVICE,
       accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
     }).catch(() => {});
-  }, [ecgSession, user?.role]);
+  }, [ecgSeniorId, ecgSession]);
 
   useEffect(() => {
     if (
@@ -314,6 +346,10 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     if (!v8Emitter) return;
 
     const scanSub = v8Emitter.addListener('V8ScanResult', evt => {
+      logV8Debug('Scan result received', {
+        receivedAt: new Date().toISOString(),
+        event: evt,
+      });
       const id = evt?.id as string | undefined;
       if (!id) return;
       const normalizedId = normalizeId(id);
@@ -331,6 +367,10 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     });
 
     const stateSub = v8Emitter.addListener('V8ConnectionState', evt => {
+      logV8Debug('Connection state received', {
+        receivedAt: new Date().toISOString(),
+        event: evt,
+      });
       const rawDeviceId = (evt?.deviceId as string | undefined) ?? 'default';
       const normalizedDeviceId = normalizeId(rawDeviceId || 'default');
       const state = (evt?.state as V8ConnectionState | undefined) ?? 'disconnected';
@@ -371,6 +411,10 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
 
     const dataSub = v8Emitter.addListener('V8Data', evt => {
       const event = evt as ParsedData;
+      logV8Debug('Data packet received', {
+        receivedAt: new Date().toISOString(),
+        event,
+      });
       setDataEvents(prev => [event, ...prev].slice(0, 50));
       if (event.type !== 'parsed' || !event.payload) return;
       setEcgSession(prev => {
@@ -382,17 +426,43 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         const combinedSamples = ecgEvent.samples.length > 0
           ? [...prev.samples, ...ecgEvent.samples].slice(-MAX_ECG_SAMPLES)
           : prev.samples;
+        const firstSampleAt = ecgEvent.samples.length > 0
+          ? prev.firstSampleAt ?? now
+          : prev.firstSampleAt;
+        const firstSampleCount =
+          ecgEvent.samples.length > 0 && prev.firstSampleAt == null
+            ? combinedSamples.length
+            : prev.firstSampleCount;
+        const lastSampleAt =
+          ecgEvent.samples.length > 0 ? now : prev.lastSampleAt;
+        const observedSampleRate = estimateObservedSampleRateHz(
+          combinedSamples.length,
+          firstSampleCount,
+          firstSampleAt,
+          lastSampleAt,
+        );
+        logV8Debug('ECG packet parsed', {
+          sessionId: prev.id,
+          packet: ecgEvent,
+          packetSampleCount: ecgEvent.samples.length,
+          totalSampleCount: combinedSamples.length,
+          observedSampleRateHz: observedSampleRate,
+          firstSampleAt,
+          lastSampleAt,
+        });
         const completed = ecgEvent.kind === 'completed';
         const failed = ecgEvent.kind === 'failed';
         const nextPhase = completed
           ? 'completed'
           : failed
             ? 'failed'
-            : ecgEvent.kind === 'stopped'
+            : prev.phase === 'processing'
               ? 'processing'
-              : ecgEvent.kind === 'started' || ecgEvent.kind === 'samples'
-                ? 'measuring'
-                : prev.phase;
+              : ecgEvent.kind === 'stopped'
+                ? 'processing'
+                : ecgEvent.kind === 'started' || ecgEvent.kind === 'samples'
+                  ? 'measuring'
+                  : prev.phase;
         const defaultStatus = completed
           ? 'ECG recording completed'
           : failed
@@ -406,7 +476,13 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           completedAt: completed || failed ? now : prev.completedAt,
           durationMs: completed || failed ? now - prev.startedAt : prev.durationMs,
           samples: combinedSamples,
-          sampleRateHz: ecgEvent.sampleRateHz ?? prev.sampleRateHz,
+          sampleRateHz:
+            ecgEvent.sampleRateHz ??
+            observedSampleRate ??
+            prev.sampleRateHz,
+          firstSampleAt,
+          firstSampleCount,
+          lastSampleAt,
           heartRate: ecgEvent.heartRate ?? prev.heartRate,
           signalQuality: ecgEvent.signalQuality ?? prev.signalQuality,
           classification: ecgEvent.classification ?? prev.classification,
@@ -499,21 +575,28 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       scanStopTimerRef.current = null;
     }
     try {
+      logV8Debug('Starting scan', {
+        filters: ['v8', 'jstyle', 'band'],
+        startedAt: new Date().toISOString(),
+      });
       setScanError(null);
       setIsScanning(true);
       await native.startScan(['v8', 'jstyle', 'band']);
       scanStopTimerRef.current = setTimeout(() => {
+        logV8Debug('Stopping scan after timeout');
         native.stopScan().catch(() => {});
         setIsScanning(false);
         scanStopTimerRef.current = null;
       }, 12000);
     } catch (error) {
+      logV8Debug('Scan failed', error);
       setIsScanning(false);
       setScanError(error instanceof Error ? error.message : 'Failed to scan for V8 devices.');
     }
   }, []);
 
   const stopScan = useCallback(async () => {
+    logV8Debug('Stopping scan manually');
     if (scanStopTimerRef.current) {
       clearTimeout(scanStopTimerRef.current);
       scanStopTimerRef.current = null;
@@ -673,8 +756,11 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
 
   const startEcgMeasurement = useCallback(async () => {
     const native = v8Native;
-    if (user?.role !== 'SENIOR') {
-      throw new Error('Only senior users can take an ECG measurement.');
+    if (!ecgSeniorId) {
+      throw new Error('Select a senior before starting an ECG measurement.');
+    }
+    if (selectedSeniorHandBandMacs.length === 0) {
+      throw new Error('No hand band is assigned to the selected senior.');
     }
     if (!native) {
       throw new Error('The hand band ECG module is unavailable on this device.');
@@ -682,20 +768,38 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     if (!Object.values(connectionStates).some(state => state === 'connected')) {
       throw new Error('Connect the assigned hand band before starting ECG.');
     }
+    const connectedMac = normalizeMacAddress(deviceInfo.mac);
+    const assignedMacs = selectedSeniorHandBandMacs
+      .map(value => normalizeMacAddress(value))
+      .filter((value): value is string => !!value);
+    if (!connectedMac || !assignedMacs.includes(connectedMac)) {
+      throw new Error(
+        'The connected hand band is not assigned to the selected senior.',
+      );
+    }
     if (ecgCompletionTimerRef.current) {
       clearTimeout(ecgCompletionTimerRef.current);
       ecgCompletionTimerRef.current = null;
     }
 
-    const session = createV8EcgSession(user.user_id, deviceInfo.mac, deviceInfo.firmwareVersion);
+    const session = createV8EcgSession(ecgSeniorId, deviceInfo.mac, deviceInfo.firmwareVersion);
+    logV8Debug('Starting ECG measurement', {
+      session,
+      connectedMac,
+      assignedMacs,
+      startedAt: new Date().toISOString(),
+    });
     setEcgSession(session);
     try {
       await native.setEcgRealtimeEnabled(true);
+      logV8Debug('ECG real-time streaming enabled');
       await native.startEcgMeasurement();
+      logV8Debug('ECG start command sent');
       setEcgSession(prev => prev?.id === session.id
         ? { ...prev, phase: 'measuring', statusMessage: 'ECG measurement is running…' }
         : prev);
     } catch (error) {
+      logV8Debug('ECG start failed', error);
       await native.setEcgRealtimeEnabled(false).catch(() => {});
       const message = error instanceof Error ? error.message : 'Unable to start ECG measurement.';
       const now = Date.now();
@@ -711,29 +815,64 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         : prev);
       throw error;
     }
-  }, [connectionStates, deviceInfo.firmwareVersion, deviceInfo.mac, user?.role, user?.user_id]);
+  }, [
+    connectionStates,
+    deviceInfo.firmwareVersion,
+    deviceInfo.mac,
+    ecgSeniorId,
+    selectedSeniorHandBandMacs,
+  ]);
 
   const finishEcgMeasurement = useCallback(async () => {
     const native = v8Native;
     if (!native) throw new Error('The hand band ECG module is unavailable on this device.');
-    setEcgSession(prev => prev && ['starting', 'measuring'].includes(prev.phase)
+    logV8Debug('Finishing ECG measurement');
+    const finishingSessionId = ecgSessionRef.current?.id ?? null;
+    setEcgSession(prev =>
+      prev &&
+      prev.id === finishingSessionId &&
+      ['starting', 'measuring'].includes(prev.phase)
       ? { ...prev, phase: 'processing', statusMessage: 'Finishing ECG recording…' }
       : prev);
+    let stopError: unknown = null;
     try {
       await native.stopEcgMeasurement();
-      await native.setEcgRealtimeEnabled(false);
+      logV8Debug('ECG stop command sent');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to finish ECG measurement.';
+      logV8Debug('ECG stop command failed', error);
+      stopError = error;
+    }
+    try {
+      await native.setEcgRealtimeEnabled(false);
+      logV8Debug('ECG real-time streaming disabled');
+    } catch (error) {
+      logV8Debug('Disabling ECG real-time streaming failed', error);
+    }
+    try {
+      await native.exitEcgMeasurement();
+      logV8Debug('ECG exit command sent');
+    } catch (error) {
+      logV8Debug('ECG exit command failed', error);
+    }
+
+    if (stopError) {
+      const message = stopError instanceof Error ? stopError.message : 'Unable to finish ECG measurement.';
       setEcgSession(prev => prev ? { ...prev, phase: 'failed', error: message, statusMessage: message } : prev);
-      throw error;
+      throw stopError;
     }
 
     if (ecgCompletionTimerRef.current) clearTimeout(ecgCompletionTimerRef.current);
     ecgCompletionTimerRef.current = setTimeout(() => {
       setEcgSession(prev => {
-        if (!prev || prev.phase !== 'processing') return prev;
+        if (
+          !prev ||
+          prev.id !== finishingSessionId ||
+          !['processing', 'measuring'].includes(prev.phase)
+        ) {
+          return prev;
+        }
         const now = Date.now();
-        return {
+        const completedSession: V8EcgSession = {
           ...prev,
           phase: 'completed',
           completedAt: now,
@@ -742,9 +881,11 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
             ? 'ECG recording completed'
             : 'Recording completed; no waveform was returned by this firmware.',
         };
+        logV8Debug('ECG session completed locally', completedSession);
+        return completedSession;
       });
       ecgCompletionTimerRef.current = null;
-    }, 1800);
+    }, 1000);
   }, []);
 
   const cancelEcgMeasurement = useCallback(async () => {

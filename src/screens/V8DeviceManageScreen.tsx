@@ -118,7 +118,7 @@ const ActionBtn = ({
 /* ── main screen ───────────────────────────────────────── */
 
 const V8DeviceManageScreen = () => {
-  const { user } = useAuth();
+  const { user, selectedSenior, selectedSeniorHandBandMacs } = useAuth();
   const normalizeId = (id?: string | null) => (id ?? '').trim().toLowerCase();
   const navigation = useNavigation<any>();
   const route = useRoute();
@@ -135,6 +135,11 @@ const V8DeviceManageScreen = () => {
   const state = connectionStates[normalizeId(deviceId)] ?? 'disconnected';
   const connected = state === 'connected';
   const isSeniorUser = user?.role === 'SENIOR';
+  const canUseEcg =
+    selectedSeniorHandBandMacs.length > 0 &&
+    (isSeniorUser ||
+      ((user?.role === 'CARE_TAKER' || user?.role === 'GUARDIAN') &&
+        !!selectedSenior?.userId));
 
   const [refreshingLive, setRefreshingLive] = useState(false);
   const [rangeVitalsFetching, setRangeVitalsFetching] = useState(false);
@@ -778,7 +783,7 @@ const V8DeviceManageScreen = () => {
           </View>
         ) : null}
 
-        {isSeniorUser ? (
+        {canUseEcg ? (
           <TouchableOpacity
             style={[s.ecgBtn, !connected ? s.disabled : null]}
             disabled={!connected}

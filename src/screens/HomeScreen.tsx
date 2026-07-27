@@ -1289,6 +1289,12 @@ const HomeScreen = () => {
   const homeBpValue = formatHomeBp(todayVitals);
   const healthCardStatus = formatDeviceActivityStatus(activeDeviceRecord);
   const showAutomaticHandBandSync = user?.role === SENIOR_ROLE && selectedSeniorHandBandMacs.length > 0;
+  const showHandBandEcg =
+    !!activeDashboardSeniorId &&
+    selectedSeniorHandBandMacs.length > 0 &&
+    (user?.role === SENIOR_ROLE ||
+      user?.role === CARETAKER_ROLE ||
+      user?.role === GUARDIAN_ROLE);
   const automaticSyncTitle = autoSyncStatus.phase === 'syncing'
     ? 'Syncing health data…'
     : autoSyncStatus.phase === 'waiting'
@@ -1536,7 +1542,7 @@ const HomeScreen = () => {
           </View>
         )}
 
-        {showAutomaticHandBandSync && (
+        {showHandBandEcg && (
           <TouchableOpacity
             accessibilityRole="button"
             accessibilityLabel="Take an ECG with the hand band"

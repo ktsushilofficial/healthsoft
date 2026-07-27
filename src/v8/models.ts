@@ -43,6 +43,9 @@ export type V8EcgSession = {
   durationMs: number | null;
   samples: number[];
   sampleRateHz: number | null;
+  firstSampleAt: number | null;
+  firstSampleCount: number;
+  lastSampleAt: number | null;
   heartRate: number | null;
   signalQuality: string | null;
   classification: string | null;

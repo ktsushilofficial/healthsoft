@@ -19,7 +19,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import Svg, { Line, Path } from 'react-native-svg';
+import { captureRef } from 'react-native-view-shot';
 import { useAuth } from '../context/AuthContext';
+import {
+  shareEcgReportPdf,
+  shareEcgReportPng,
+  type EcgReportShareMetadata,
+} from '../utils/ecgReport';
 import { downsampleEcg } from '../v8/ecg';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 
@@ -105,7 +111,7 @@ const EcgWaveform = ({
 const ECGMeasurementScreen = () => {
   const navigation = useNavigation<any>();
   const { width } = useWindowDimensions();
-  const { user } = useAuth();
+  const { user, selectedSenior, selectedSeniorHandBandMacs } = useAuth();
   const {
     connectionStates,
     ensureAutoConnect,
@@ -117,11 +123,38 @@ const ECGMeasurementScreen = () => {
   } = useV8DeviceManager();
   const [now, setNow] = useState(Date.now());
   const [actionBusy, setActionBusy] = useState(false);
+  const [exportBusy, setExportBusy] = useState<'png' | 'pdf' | null>(null);
   const allowLeaveRef = useRef(false);
+  const reportRef = useRef<View>(null);
   const connected = Object.values(connectionStates).some(
     state => state === 'connected',
   );
+  const ecgSeniorId =
+    user?.role === 'SENIOR'
+      ? user.user_id?.trim()
+      : user?.role === 'CARE_TAKER' || user?.role === 'GUARDIAN'
+        ? selectedSenior?.userId?.trim()
+        : '';
+  const canUseEcg =
+    !!ecgSeniorId && selectedSeniorHandBandMacs.length > 0;
   const active = !!ecgSession && ACTIVE_PHASES.has(ecgSession.phase);
+  const reportReady = ecgSession?.phase === 'completed';
+  const reportSeniorName = useMemo(() => {
+    if (user?.role === 'SENIOR') {
+      return [user.first_name, user.last_name].filter(Boolean).join(' ') ||
+        'Senior';
+    }
+    return selectedSenior
+      ? [selectedSenior.firstName, selectedSenior.lastName]
+          .filter(Boolean)
+          .join(' ') || 'Selected senior'
+      : 'Selected senior';
+  }, [
+    selectedSenior,
+    user?.first_name,
+    user?.last_name,
+    user?.role,
+  ]);
 
   useEffect(() => {
     if (!active) return;
@@ -196,15 +229,75 @@ const ECGMeasurementScreen = () => {
     ]);
   };
 
-  if (user?.role !== 'SENIOR') {
+  const captureReportPng = useCallback(async (): Promise<string> => {
+    if (!reportRef.current || !ecgSession || !reportReady) {
+      throw new Error('Complete the recording before exporting the report.');
+    }
+    return captureRef(reportRef, {
+      format: 'png',
+      quality: 1,
+      result: 'base64',
+    });
+  }, [ecgSession, reportReady]);
+
+  const buildShareMetadata = useCallback((): EcgReportShareMetadata => {
+    const recordedDate = new Date(
+      ecgSession?.completedAt ?? ecgSession?.startedAt ?? Date.now(),
+    );
+    const datePart = recordedDate.toISOString().slice(0, 10);
+    const safeSeniorName = reportSeniorName
+      .replace(/[^a-zA-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase();
+    return {
+      fileStem: `healthsoft-waveform-${safeSeniorName || 'senior'}-${datePart}`,
+      title: 'Healthsoft hand band waveform report',
+      subject: `Healthsoft waveform report - ${reportSeniorName} - ${datePart}`,
+    };
+  }, [ecgSession?.completedAt, ecgSession?.startedAt, reportSeniorName]);
+
+  const handleShareReport = useCallback(
+    async (format: 'png' | 'pdf') => {
+      if (exportBusy) return;
+      setExportBusy(format);
+      try {
+        const pngBase64 = await captureReportPng();
+        const metadata = buildShareMetadata();
+        if (format === 'png') {
+          await shareEcgReportPng(pngBase64, metadata);
+        } else {
+          await shareEcgReportPdf(pngBase64, metadata);
+        }
+      } catch (error) {
+        Alert.alert(
+          'Unable to share report',
+          error instanceof Error
+            ? error.message
+            : 'The waveform report could not be created.',
+        );
+      } finally {
+        setExportBusy(null);
+      }
+    },
+    [buildShareMetadata, captureReportPng, exportBusy],
+  );
+
+  if (!canUseEcg) {
+    const needsSeniorSelection =
+      (user?.role === 'CARE_TAKER' || user?.role === 'GUARDIAN') &&
+      !selectedSenior?.userId;
+    const restrictionMessage = needsSeniorSelection
+      ? 'Select a senior before starting an ECG measurement.'
+      : ecgSeniorId
+        ? 'The selected senior does not have an assigned hand band.'
+        : 'ECG measurements are available to seniors, caretakers, and guardians.';
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.restricted}>
           <Icon name="lock-closed-outline" size={42} color="#8A817A" />
-          <Text style={styles.restrictedTitle}>Senior access only</Text>
+          <Text style={styles.restrictedTitle}>ECG unavailable</Text>
           <Text style={styles.restrictedText}>
-            ECG measurements must be started by the senior wearing the hand
-            band.
+            {restrictionMessage}
           </Text>
           <TouchableOpacity
             style={styles.secondaryButton}
@@ -229,6 +322,12 @@ const ECGMeasurementScreen = () => {
     : ecgSession.phase === 'processing'
     ? 'Processing'
     : 'Measuring';
+  const missingMetricStatus =
+    active && ecgSession.samples.length === 0
+      ? 'Waiting'
+      : active
+        ? 'Receiving'
+        : 'Not provided';
 
   return (
     <SafeAreaView style={styles.container}>
@@ -286,7 +385,42 @@ const ECGMeasurementScreen = () => {
             ))}
           </View>
         ) : (
-          <>
+          <View
+            ref={reportRef}
+            collapsable={false}
+            style={reportReady ? styles.reportCard : undefined}
+          >
+            {reportReady ? (
+              <View style={styles.reportHeader}>
+                <View style={styles.reportBrandRow}>
+                  <View style={styles.reportBrandIcon}>
+                    <Icon name="pulse" size={19} color="#FFFFFF" />
+                  </View>
+                  <View>
+                    <Text style={styles.reportBrand}>HEALTHSOFT</Text>
+                    <Text style={styles.reportType}>
+                      Hand band waveform report
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.reportMetaRow}>
+                  <View>
+                    <Text style={styles.reportMetaLabel}>Senior</Text>
+                    <Text style={styles.reportMetaValue}>
+                      {reportSeniorName}
+                    </Text>
+                  </View>
+                  <View style={styles.reportMetaRight}>
+                    <Text style={styles.reportMetaLabel}>Recorded</Text>
+                    <Text style={styles.reportMetaValue}>
+                      {new Date(
+                        ecgSession.completedAt ?? ecgSession.startedAt,
+                      ).toLocaleString()}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            ) : null}
             <View style={styles.measurementHeader}>
               <View>
                 <Text style={styles.phaseLabel}>{phaseLabel}</Text>
@@ -315,7 +449,10 @@ const ECGMeasurementScreen = () => {
               </View>
             </View>
 
-            <EcgWaveform samples={ecgSession.samples} width={width - 48} />
+            <EcgWaveform
+              samples={ecgSession.samples}
+              width={reportReady ? width - 80 : width - 48}
+            />
 
             <View style={styles.statusCard}>
               <Text style={styles.statusTitle}>
@@ -327,19 +464,7 @@ const ECGMeasurementScreen = () => {
               <View style={styles.metricsRow}>
                 <View style={styles.metric}>
                   <Text style={styles.metricValue}>
-                    {ecgSession.heartRate ?? '—'}
-                  </Text>
-                  <Text style={styles.metricLabel}>Heart rate</Text>
-                </View>
-                <View style={styles.metric}>
-                  <Text style={styles.metricValue}>
-                    {ecgSession.signalQuality ?? '—'}
-                  </Text>
-                  <Text style={styles.metricLabel}>Signal quality</Text>
-                </View>
-                <View style={styles.metric}>
-                  <Text style={styles.metricValue}>
-                    {ecgSession.sampleRateHz ?? '—'}
+                    {ecgSession.sampleRateHz ?? missingMetricStatus}
                   </Text>
                   <Text style={styles.metricLabel}>Sample Hz</Text>
                 </View>
@@ -357,7 +482,13 @@ const ECGMeasurementScreen = () => {
                 </View>
               ) : null}
             </View>
-          </>
+            {reportReady ? (
+              <Text style={styles.reportDisclaimer}>
+                Device-generated waveform for informational use only. This
+                report is not a medical diagnosis.
+              </Text>
+            ) : null}
+          </View>
         )}
 
         {!ecgSession ? (
@@ -405,13 +536,55 @@ const ECGMeasurementScreen = () => {
             </TouchableOpacity>
           </View>
         ) : (
-          <TouchableOpacity
-            style={styles.primaryButton}
-            onPress={resetEcgMeasurement}
-          >
-            <Icon name="refresh" size={19} color="#FFFFFF" />
-            <Text style={styles.primaryButtonText}>Take another ECG</Text>
-          </TouchableOpacity>
+          <View style={styles.completedActions}>
+            {reportReady ? (
+              <View style={styles.shareRow}>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  disabled={!!exportBusy}
+                  style={[
+                    styles.shareButton,
+                    exportBusy && styles.disabledButton,
+                  ]}
+                  onPress={() => handleShareReport('png')}
+                >
+                  {exportBusy === 'png' ? (
+                    <ActivityIndicator color="#9D3C35" />
+                  ) : (
+                    <Icon name="image-outline" size={18} color="#9D3C35" />
+                  )}
+                  <Text style={styles.shareButtonText}>Share PNG</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  disabled={!!exportBusy}
+                  style={[
+                    styles.shareButton,
+                    exportBusy && styles.disabledButton,
+                  ]}
+                  onPress={() => handleShareReport('pdf')}
+                >
+                  {exportBusy === 'pdf' ? (
+                    <ActivityIndicator color="#9D3C35" />
+                  ) : (
+                    <Icon
+                      name="document-text-outline"
+                      size={18}
+                      color="#9D3C35"
+                    />
+                  )}
+                  <Text style={styles.shareButtonText}>Share PDF</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+            <TouchableOpacity
+              style={styles.primaryButton}
+              onPress={resetEcgMeasurement}
+            >
+              <Icon name="refresh" size={19} color="#FFFFFF" />
+              <Text style={styles.primaryButtonText}>Take another ECG</Text>
+            </TouchableOpacity>
+          </View>
         )}
 
         <Text style={styles.disclaimer}>
@@ -570,10 +743,68 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 16,
   },
+  reportCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 16,
+    marginBottom: 16,
+  },
+  reportHeader: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E8E0DB',
+    paddingBottom: 14,
+    marginBottom: 8,
+  },
+  reportBrandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  reportBrandIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: '#D64545',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  reportBrand: {
+    color: '#2E2925',
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  reportType: { color: '#756D67', fontSize: 11, marginTop: 2 },
+  reportMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 14,
+  },
+  reportMetaRight: { alignItems: 'flex-end', flex: 1, marginLeft: 12 },
+  reportMetaLabel: {
+    color: '#938A83',
+    fontSize: 9,
+    textTransform: 'uppercase',
+    letterSpacing: 0.7,
+  },
+  reportMetaValue: {
+    color: '#403A35',
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 3,
+  },
+  reportDisclaimer: {
+    color: '#8A817A',
+    fontSize: 9,
+    lineHeight: 13,
+    textAlign: 'center',
+    marginHorizontal: 8,
+    marginTop: -4,
+  },
   statusTitle: { color: '#39332F', fontSize: 15, fontWeight: '700' },
   errorText: { color: '#B33D32', fontSize: 13, marginTop: 6, lineHeight: 18 },
-  metricsRow: { flexDirection: 'row', marginTop: 16 },
-  metric: { flex: 1 },
+  metricsRow: { alignItems: 'center', marginTop: 16 },
+  metric: { alignItems: 'center' },
   metricValue: { color: '#2E2925', fontSize: 17, fontWeight: '700' },
   metricLabel: { color: '#8A817A', fontSize: 10, marginTop: 2 },
   resultRow: {
@@ -610,6 +841,21 @@ const styles = StyleSheet.create({
   },
   cancelButtonText: { color: '#9D3C35', fontSize: 14, fontWeight: '800' },
   finishButton: { flex: 1 },
+  completedActions: { gap: 10 },
+  shareRow: { flexDirection: 'row', gap: 10 },
+  shareButton: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 15,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5CACA',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  shareButtonText: { color: '#9D3C35', fontSize: 13, fontWeight: '800' },
   disclaimer: {
     color: '#8A817A',
     fontSize: 11,

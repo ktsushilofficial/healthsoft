@@ -73,6 +73,17 @@ jest.mock('react-native-vector-icons/Ionicons', () => 'Icon');
 
 jest.mock('react-native-linear-gradient', () => 'LinearGradient');
 
+jest.mock('react-native-view-shot', () => ({
+  captureRef: jest.fn(async () => 'mock-png-base64'),
+}));
+
+jest.mock('react-native-share', () => ({
+  __esModule: true,
+  default: {
+    open: jest.fn(async () => ({ success: true })),
+  },
+}));
+
 jest.mock('react-native-country-picker-modal', () => 'CountryPicker');
 
 jest.mock('@react-native-community/geolocation', () => ({

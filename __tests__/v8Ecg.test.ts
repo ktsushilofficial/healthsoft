@@ -1,6 +1,7 @@
 import {
   createV8EcgSession,
   downsampleEcg,
+  estimateObservedSampleRateHz,
   parseV8EcgPayload,
 } from '../src/v8/ecg';
 
@@ -57,6 +58,22 @@ describe('V8 ECG helpers', () => {
     expect(event.samples).toEqual([8451200, 8451456, 8450944, 8451712]);
   });
 
+  it('parses the iOS real-time stream emitted as arrayPPGData', () => {
+    const event = parseV8EcgPayload(
+      {
+        dataType: '70',
+        dataEnd: false,
+        dicData: {
+          arrayPPGData: [1048572, 1048598, 1048611, 1048580],
+        },
+      },
+      'ios',
+    );
+
+    expect(event.kind).toBe('samples');
+    expect(event.samples).toEqual([1048572, 1048598, 1048611, 1048580]);
+  });
+
   it('does not confuse Android blood-oxygen type 55 with iOS ECG success', () => {
     expect(
       parseV8EcgPayload({ dataType: '55', Blood_oxygen: 97 }, 'android').kind,
@@ -74,10 +91,19 @@ describe('V8 ECG helpers', () => {
         phase: 'starting',
         startedAt: 1000,
         samples: [],
+        firstSampleAt: null,
+        firstSampleCount: 0,
+        lastSampleAt: null,
         deviceMac: 'AA:BB:CC:DD:EE:FF',
         firmwareVersion: '1.2.3',
       }),
     );
+  });
+
+  it('calculates observed sample frequency after multiple packets arrive', () => {
+    expect(estimateObservedSampleRateHz(260, 10, 1000, 2000)).toBe(250);
+    expect(estimateObservedSampleRateHz(10, 10, 1000, 2000)).toBeNull();
+    expect(estimateObservedSampleRateHz(260, 10, 1000, 1200)).toBeNull();
   });
 
   it('downsamples long waveforms while retaining the requested size', () => {
