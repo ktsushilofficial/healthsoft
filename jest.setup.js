@@ -71,6 +71,24 @@ jest.mock('@react-native-firebase/messaging', () => mockMessaging);
 
 jest.mock('react-native-vector-icons/Ionicons', () => 'Icon');
 
+jest.mock('react-native-linear-gradient', () => 'LinearGradient');
+
+jest.mock('react-native-country-picker-modal', () => 'CountryPicker');
+
+jest.mock('@react-native-community/geolocation', () => ({
+  setRNConfiguration: jest.fn(),
+  getCurrentPosition: jest.fn(),
+}));
+
+jest.mock('react-native-maps', () => ({
+  __esModule: true,
+  default: 'MapView',
+  Circle: 'Circle',
+  Marker: 'Marker',
+  Polygon: 'Polygon',
+  PROVIDER_GOOGLE: 'google',
+}));
+
 jest.mock('react-native-webview', () => ({
   WebView: 'WebView',
 }));

@@ -1571,6 +1571,10 @@ const HomeScreen = () => {
                     navigation.navigate('PendantDetail', {
                       seniorId: activeDashboardSeniorId || user?.user_id,
                       imei: row.ident || row.imei || '',
+                      deviceUuid:
+                        readStringField(row, 'device.uuid') ??
+                        readStringField(row, 'deviceUUID') ??
+                        readStringField(row, 'deviceUuid'),
                       deviceName: getSeniorDashboardDeviceLabel(row),
                     });
                   }}
