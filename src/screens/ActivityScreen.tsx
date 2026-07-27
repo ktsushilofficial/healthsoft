@@ -40,8 +40,32 @@ const RANGE_OPTIONS: ActivityRangeOption[] = [
   { key: 'today', label: 'Today', queryDays: 1 },
   { key: 'yesterday', label: 'Yesterday', queryDays: 2 },
   { key: 'this_week', label: 'This Week', queryDays: 7 },
-  { key: 'last_one_month', label: 'Last 1 Month', queryDays: 31 },
+  { key: 'last_one_month', label: 'Last 1 Month', queryDays: 30 },
 ];
+
+function sumMetric(
+  rows: VitalsSummaryRow[],
+  selector: (row: VitalsSummaryRow) => number | null,
+): number {
+  return rows.reduce((sum, row) => sum + (selector(row) ?? 0), 0);
+}
+
+function averageRowsWithFixedDivisor(
+  rows: VitalsSummaryRow[],
+  divisor: 7 | 30,
+): VitalsSummaryRow | null {
+  if (rows.length === 0) return null;
+
+  return {
+    recordDate: rows[0]?.recordDate ?? '',
+    steps: sumMetric(rows, row => row.steps) / divisor,
+    hrAvg: sumMetric(rows, row => row.hrAvg) / divisor,
+    spo2Avg: sumMetric(rows, row => row.spo2Avg) / divisor,
+    tempAvg: sumMetric(rows, row => row.tempAvg) / divisor,
+    systolicBpAvg: sumMetric(rows, row => row.systolicBpAvg) / divisor,
+    diastolicBpAvg: sumMetric(rows, row => row.diastolicBpAvg) / divisor,
+  };
+}
 
 function ymdDate(value: string): Date | null {
   const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -238,9 +262,9 @@ const ActivityScreen = () => {
     const yesterday = new Date(today);
     yesterday.setDate(today.getDate() - 1);
     const startOfWeek = new Date(today);
-    startOfWeek.setDate(today.getDate() - today.getDay());
+    startOfWeek.setDate(today.getDate() - 6);
     const lastOneMonthStart = new Date(today);
-    lastOneMonthStart.setDate(today.getDate() - 30);
+    lastOneMonthStart.setDate(today.getDate() - 29);
 
     const inRange = (date: Date): boolean => {
       switch (selectedRange) {
@@ -263,7 +287,24 @@ const ActivityScreen = () => {
     });
   }, [rows, selectedRange]);
 
-  const todayRow = visibleRows[0] ?? null;
+  const summaryRow = useMemo(() => {
+    if (selectedRange === 'this_week') {
+      return averageRowsWithFixedDivisor(visibleRows, 7);
+    }
+    if (selectedRange === 'last_one_month') {
+      return averageRowsWithFixedDivisor(visibleRows, 30);
+    }
+    return visibleRows[0] ?? null;
+  }, [selectedRange, visibleRows]);
+
+  const summaryPeriodLabel =
+    selectedRange === 'this_week'
+      ? 'Weekly Average'
+      : selectedRange === 'last_one_month'
+        ? 'Monthly Average'
+        : selectedRange === 'yesterday'
+          ? 'Yesterday'
+          : 'Today';
 
   if (!ready) {
     return (
@@ -338,8 +379,10 @@ const ActivityScreen = () => {
               <Icon name="footsteps" size={26} color="#F28C28" />
             </View>
             <View style={styles.metricInfo}>
-              <Text style={styles.metricValue}>{todayRow?.steps != null ? `${todayRow.steps}` : 'NA'}</Text>
-              <Text style={styles.metricLabel}>Today Step Count</Text>
+              <Text style={styles.metricValue}>
+                {summaryRow?.steps != null ? `${Math.round(summaryRow.steps)}` : 'NA'}
+              </Text>
+              <Text style={styles.metricLabel}>{summaryPeriodLabel} Step Count</Text>
               <View style={styles.progressTrack}>
                 <View style={styles.progressFill} />
                 <View style={styles.goalChip}>
@@ -356,13 +399,13 @@ const ActivityScreen = () => {
             <View style={styles.metricInfo}>
               <View style={styles.inlineRow}>
                 <Text style={styles.metricValue}>
-                  {todayRow?.systolicBpAvg != null && todayRow?.diastolicBpAvg != null
-                    ? `${Math.round(todayRow.systolicBpAvg)}/${Math.round(todayRow.diastolicBpAvg)}`
+                  {summaryRow?.systolicBpAvg != null && summaryRow?.diastolicBpAvg != null
+                    ? `${Math.round(summaryRow.systolicBpAvg)}/${Math.round(summaryRow.diastolicBpAvg)}`
                     : 'NA'}
                 </Text>
                 <Text style={styles.metricUnit}>mmHg</Text>
               </View>
-              <Text style={styles.metricLabel}>Blood Pressure</Text>
+              <Text style={styles.metricLabel}>{summaryPeriodLabel} Blood Pressure</Text>
             </View>
           </View>
 
@@ -371,8 +414,10 @@ const ActivityScreen = () => {
               <Icon name="water" size={24} color="#F28C28" />
             </View>
             <View style={styles.metricInfo}>
-              <Text style={styles.metricValue}>{todayRow?.spo2Avg != null ? `${Math.round(todayRow.spo2Avg)}%` : 'NA'}</Text>
-              <Text style={styles.metricLabel}>Blood Oxygen</Text>
+              <Text style={styles.metricValue}>
+                {summaryRow?.spo2Avg != null ? `${Math.round(summaryRow.spo2Avg)}%` : 'NA'}
+              </Text>
+              <Text style={styles.metricLabel}>{summaryPeriodLabel} Blood Oxygen</Text>
             </View>
           </View>
 
@@ -382,10 +427,12 @@ const ActivityScreen = () => {
             </View>
             <View style={styles.metricInfo}>
               <View style={styles.inlineRow}>
-                <Text style={styles.metricValue}>{todayRow?.hrAvg != null ? `${Math.round(todayRow.hrAvg)}` : 'NA'}</Text>
+                <Text style={styles.metricValue}>
+                  {summaryRow?.hrAvg != null ? `${Math.round(summaryRow.hrAvg)}` : 'NA'}
+                </Text>
                 <Text style={styles.metricUnit}>BPM</Text>
               </View>
-              <Text style={styles.metricLabel}>Heart Rate</Text>
+              <Text style={styles.metricLabel}>{summaryPeriodLabel} Heart Rate</Text>
             </View>
           </View>
 
@@ -396,11 +443,11 @@ const ActivityScreen = () => {
             <View style={styles.metricInfo}>
               <View style={styles.inlineRow}>
                 <Text style={styles.metricValue}>
-                  {todayRow?.tempAvg != null ? `${todayRow.tempAvg.toFixed(1)}` : 'NA'}
+                  {summaryRow?.tempAvg != null ? `${summaryRow.tempAvg.toFixed(1)}` : 'NA'}
                 </Text>
                 <Text style={styles.metricUnit}>°C</Text>
               </View>
-              <Text style={styles.metricLabel}>Body Temperature</Text>
+              <Text style={styles.metricLabel}>{summaryPeriodLabel} Body Temperature</Text>
             </View>
           </View>
 
