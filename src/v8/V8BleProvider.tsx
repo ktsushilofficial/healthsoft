@@ -84,6 +84,7 @@ const V8_ECG_SERVICE = 'healthsoft.v8.ecg.latest';
 const V8_ECG_USER = 'v8-ecg';
 const MAX_ECG_SAMPLES = 120_000;
 const MAX_PERSISTED_ECG_SAMPLES = 4_000;
+const MIN_ECG_SAMPLE_RATE_HZ = 250;
 const normalizeId = (id?: string | null) => (id ?? '').trim().toLowerCase();
 const logV8Debug = (label: string, value?: unknown) => {
   if (!__DEV__) return;
@@ -423,18 +424,39 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         const ecgEvent = parseV8EcgPayload(event.payload!, ecgPlatform);
         if (ecgEvent.kind === 'unknown') return prev;
         const now = Date.now();
-        const combinedSamples = ecgEvent.samples.length > 0
-          ? [...prev.samples, ...ecgEvent.samples].slice(-MAX_ECG_SAMPLES)
+        // Firmware 0032 emits two short dataType=54 control/ack payloads before
+        // its continuous dataType=70 stream. Once that real stream arrives,
+        // discard the control values and do not let later type=54 close acks
+        // replace the recorded waveform.
+        const sourceSwitchedToPpg =
+          ecgEvent.waveformSource === 'ppg' &&
+          prev.waveformSource !== 'ppg';
+        const ignoreEcgAfterPpg =
+          ecgEvent.waveformSource === 'ecg' &&
+          prev.waveformSource === 'ppg';
+        const incomingSamples = ignoreEcgAfterPpg ? [] : ecgEvent.samples;
+        const previousSamples = sourceSwitchedToPpg ? [] : prev.samples;
+        const combinedSamples = incomingSamples.length > 0
+          ? [...previousSamples, ...incomingSamples].slice(-MAX_ECG_SAMPLES)
           : prev.samples;
-        const firstSampleAt = ecgEvent.samples.length > 0
-          ? prev.firstSampleAt ?? now
+        const previousFirstSampleAt = sourceSwitchedToPpg
+          ? null
           : prev.firstSampleAt;
+        const firstSampleAt = incomingSamples.length > 0
+          ? previousFirstSampleAt ?? now
+          : previousFirstSampleAt;
         const firstSampleCount =
-          ecgEvent.samples.length > 0 && prev.firstSampleAt == null
+          incomingSamples.length > 0 && previousFirstSampleAt == null
             ? combinedSamples.length
-            : prev.firstSampleCount;
+            : sourceSwitchedToPpg
+              ? 0
+              : prev.firstSampleCount;
         const lastSampleAt =
-          ecgEvent.samples.length > 0 ? now : prev.lastSampleAt;
+          incomingSamples.length > 0
+            ? now
+            : sourceSwitchedToPpg
+              ? null
+              : prev.lastSampleAt;
         const observedSampleRate = estimateObservedSampleRateHz(
           combinedSamples.length,
           firstSampleCount,
@@ -444,7 +466,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         logV8Debug('ECG packet parsed', {
           sessionId: prev.id,
           packet: ecgEvent,
-          packetSampleCount: ecgEvent.samples.length,
+          packetSampleCount: incomingSamples.length,
           totalSampleCount: combinedSamples.length,
           observedSampleRateHz: observedSampleRate,
           firstSampleAt,
@@ -452,6 +474,15 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         });
         const completed = ecgEvent.kind === 'completed';
         const failed = ecgEvent.kind === 'failed';
+        const waveformSource = sourceSwitchedToPpg
+          ? 'ppg'
+          : prev.waveformSource === 'ppg'
+            ? 'ppg'
+            : ecgEvent.waveformSource ?? prev.waveformSource;
+        const nextSampleRateHz =
+          ecgEvent.sampleRateHz ??
+          observedSampleRate ??
+          (sourceSwitchedToPpg ? null : prev.sampleRateHz);
         const nextPhase = completed
           ? 'completed'
           : failed
@@ -464,11 +495,19 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
                   ? 'measuring'
                   : prev.phase;
         const defaultStatus = completed
-          ? 'ECG recording completed'
+          ? waveformSource === 'ppg'
+            ? 'The hand band returned a pulse (PPG) waveform, not ECG.'
+            : waveformSource === 'ecg' &&
+                nextSampleRateHz != null &&
+                nextSampleRateHz < MIN_ECG_SAMPLE_RATE_HZ
+              ? 'Recording completed with insufficient ECG sample frequency.'
+              : 'ECG recording completed'
           : failed
             ? 'ECG measurement failed'
             : ecgEvent.kind === 'samples'
-              ? 'Receiving ECG waveform…'
+              ? waveformSource === 'ecg'
+                ? 'Receiving ECG waveform…'
+                : 'Receiving hand band waveform…'
               : prev.statusMessage;
         return {
           ...prev,
@@ -476,10 +515,8 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           completedAt: completed || failed ? now : prev.completedAt,
           durationMs: completed || failed ? now - prev.startedAt : prev.durationMs,
           samples: combinedSamples,
-          sampleRateHz:
-            ecgEvent.sampleRateHz ??
-            observedSampleRate ??
-            prev.sampleRateHz,
+          waveformSource,
+          sampleRateHz: nextSampleRateHz,
           firstSampleAt,
           firstSampleCount,
           lastSampleAt,
@@ -877,9 +914,15 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           phase: 'completed',
           completedAt: now,
           durationMs: now - prev.startedAt,
-          statusMessage: prev.samples.length > 0
-            ? 'ECG recording completed'
-            : 'Recording completed; no waveform was returned by this firmware.',
+          statusMessage: prev.waveformSource === 'ppg'
+            ? 'The hand band returned a pulse (PPG) waveform, not ECG.'
+            : prev.waveformSource === 'ecg' &&
+                prev.sampleRateHz != null &&
+                prev.sampleRateHz < MIN_ECG_SAMPLE_RATE_HZ
+              ? 'Recording completed with insufficient ECG sample frequency.'
+              : prev.samples.length > 0
+              ? 'ECG recording completed'
+              : 'Recording completed; no waveform was returned by this firmware.',
         };
         logV8Debug('ECG session completed locally', completedSession);
         return completedSession;

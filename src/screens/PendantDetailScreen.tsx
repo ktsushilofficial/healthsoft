@@ -27,17 +27,10 @@ import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/nativ
 import { emptySeniorHomeSnapshot } from '../types/seniorHomeSnapshot';
 import type { SeniorDashboardDeviceRecord } from '../types/seniorDashboard';
 import type { GuardianSeniorProfileRow } from '../types/guardianDashboard';
-import type { GeofenceExitApiResponse } from '../types/geofenceExit';
 import {
   getSeniorDashboardDeviceLabel,
   mapSeniorDashboardDeviceToSnapshot,
 } from '../utils/mapSeniorDashboardDeviceToSnapshot';
-import {
-  formatGeofenceRaisedAt,
-  getGeofenceExitCoordinate,
-  getGeofenceLatestCoordinate,
-  isActiveGeofenceExit,
-} from '../utils/geofenceExit';
 
 const SENIOR_ROLE = 'SENIOR';
 const CARETAKER_ROLE = 'CARE_TAKER';
@@ -297,7 +290,6 @@ const PendantDetailScreen = () => {
     user,
     getSeniorDashboard,
     getGuardianDashboard,
-    getGeofenceExitTicket,
   } = useAuth();
   const [dashboardDevices, setDashboardDevices] = useState<SeniorDashboardDeviceRecord[]>([]);
   const [dashboardLoading, setDashboardLoading] = useState(false);
@@ -306,13 +298,9 @@ const PendantDetailScreen = () => {
   const [guardianDevicePositions, setGuardianDevicePositions] = useState<SeniorDashboardDeviceRecord[]>([]);
   const [guardianDeviceAlarms, setGuardianDeviceAlarms] = useState<SeniorDashboardDeviceRecord[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [geofenceExit, setGeofenceExit] = useState<GeofenceExitApiResponse | null>(null);
-  const [geofenceLoading, setGeofenceLoading] = useState(false);
-  const [geofenceError, setGeofenceError] = useState<string | null>(null);
 
   const isMountedRef = useRef(true);
   const dashboardRequestIdRef = useRef(0);
-  const geofenceRequestIdRef = useRef(0);
   const initialDashboardLoadCountRef = useRef(0);
   const manualDashboardRefreshCountRef = useRef(0);
   const backgroundDashboardRefreshCountRef = useRef(0);
@@ -507,7 +495,7 @@ const PendantDetailScreen = () => {
     );
   }, [dashboardDevices, imei]);
 
-  const geofenceDeviceUuid = useMemo(() => {
+  const pendantDeviceUuid = useMemo(() => {
     const routeValue = typeof routeDeviceUuid === 'string' ? routeDeviceUuid.trim() : '';
     if (routeValue) return routeValue;
     if (!matchedDeviceRecord) return '';
@@ -519,79 +507,12 @@ const PendantDetailScreen = () => {
     );
   }, [matchedDeviceRecord, routeDeviceUuid]);
 
-  const geofenceIdent = useMemo(() => {
-    const routeValue = typeof imei === 'string' ? imei.trim() : '';
-    if (routeValue) return routeValue;
-    if (!matchedDeviceRecord) return '';
-    return (
-      readStringField(matchedDeviceRecord, 'ident') ??
-      readStringField(matchedDeviceRecord, 'imei') ??
-      ''
-    );
-  }, [imei, matchedDeviceRecord]);
-
-  const fetchGeofenceExit = useCallback(async (showLoader = false) => {
-    if (!geofenceDeviceUuid || !geofenceIdent) {
-      setGeofenceExit(null);
-      setGeofenceError(null);
-      setGeofenceLoading(false);
-      return;
-    }
-
-    const requestId = ++geofenceRequestIdRef.current;
-    if (showLoader) setGeofenceLoading(true);
-    setGeofenceError(null);
-
-    try {
-      const response = await getGeofenceExitTicket(geofenceDeviceUuid, geofenceIdent);
-      if (!isMountedRef.current || geofenceRequestIdRef.current !== requestId) return;
-      setGeofenceExit(response);
-    } catch (error) {
-      if (!isMountedRef.current || geofenceRequestIdRef.current !== requestId) return;
-      setGeofenceError(
-        error instanceof Error ? error.message : 'Geofence status could not be loaded.',
-      );
-    } finally {
-      if (isMountedRef.current && geofenceRequestIdRef.current === requestId) {
-        setGeofenceLoading(false);
-      }
-    }
-  }, [geofenceDeviceUuid, geofenceIdent, getGeofenceExitTicket]);
-
-  useFocusEffect(
-    useCallback(() => {
-      if (!geofenceDeviceUuid || !geofenceIdent) return;
-
-      void fetchGeofenceExit(true);
-      const intervalId = setInterval(() => {
-        void fetchGeofenceExit(false);
-      }, DASHBOARD_AUTO_REFRESH_MS);
-      return () => clearInterval(intervalId);
-    }, [fetchGeofenceExit, geofenceDeviceUuid, geofenceIdent]),
-  );
-
   const liveSnapshot = useMemo(() => {
     if (matchedDeviceRecord) {
       return mapSeniorDashboardDeviceToSnapshot(matchedDeviceRecord);
     }
     return emptySeniorHomeSnapshot();
   }, [matchedDeviceRecord]);
-
-  const activeGeofenceExit = isActiveGeofenceExit(geofenceExit);
-  const geofenceExitCoordinate = getGeofenceExitCoordinate(geofenceExit);
-  const geofenceLatestCoordinate = getGeofenceLatestCoordinate(geofenceExit);
-  const geofenceRaisedAt = formatGeofenceRaisedAt(geofenceExit);
-  const geofenceSeverity =
-    geofenceExit?.ticket?.severity?.trim().toUpperCase() || 'ALERT';
-
-  const openGeofenceExitMap = useCallback(() => {
-    const coordinate = geofenceExitCoordinate ?? geofenceLatestCoordinate;
-    if (!coordinate) return;
-    navigation.navigate('LocationMap', {
-      ...coordinate,
-      title: geofenceExitCoordinate ? 'Geofence exit location' : 'Latest pendant position',
-    });
-  }, [geofenceExitCoordinate, geofenceLatestCoordinate, navigation]);
 
   const hasLiveCoordinates =
     liveSnapshot.latitude != null &&
@@ -687,8 +608,14 @@ const PendantDetailScreen = () => {
       latitude: lat,
       longitude: lon,
       title: 'Last position',
+      deviceUuid: pendantDeviceUuid,
     });
-  }, [liveSnapshot.latitude, liveSnapshot.longitude, navigation]);
+  }, [
+    pendantDeviceUuid,
+    liveSnapshot.latitude,
+    liveSnapshot.longitude,
+    navigation,
+  ]);
 
   const locationThumb = {
     uri: 'https://images.unsplash.com/photo-1524661135-423995f22d0f?auto=format&fit=crop&w=600&q=80',
@@ -712,7 +639,6 @@ const PendantDetailScreen = () => {
             refreshing={refreshing}
             onRefresh={() => {
               void fetchDashboardData('manual');
-              void fetchGeofenceExit(false);
             }}
             colors={['#FF9500']}
             tintColor="#FF9500"
@@ -732,22 +658,6 @@ const PendantDetailScreen = () => {
             <Text style={styles.errorText}>{dashboardError}</Text>
           </View>
         )}
-
-        {geofenceLoading && matchedDeviceRecord ? (
-          <View style={styles.geofenceStatusRow}>
-            <ActivityIndicator size="small" color="#DC2626" />
-            <Text style={styles.geofenceStatusText}>Checking geofence alerts…</Text>
-          </View>
-        ) : null}
-
-        {geofenceError && matchedDeviceRecord ? (
-          <View style={styles.geofenceErrorRow}>
-            <Icon name="warning-outline" size={18} color="#B45309" />
-            <Text style={styles.geofenceErrorText}>
-              Geofence status unavailable: {geofenceError}
-            </Text>
-          </View>
-        ) : null}
 
         {!dashboardLoading && matchedDeviceRecord ? (
           <>
@@ -790,63 +700,6 @@ const PendantDetailScreen = () => {
               </View>
               <Image source={locationThumb} style={styles.weatherImage} />
             </View>
-
-            {activeGeofenceExit ? (
-              <View style={styles.geofenceAlertCard}>
-                <View style={styles.geofenceAlertHeader}>
-                  <View style={styles.geofenceAlertIcon}>
-                    <Icon name="location" size={24} color="#FFFFFF" />
-                  </View>
-                  <View style={styles.geofenceAlertTitleCol}>
-                    <Text style={styles.geofenceAlertEyebrow}>GEOFENCE ALERT</Text>
-                    <Text style={styles.geofenceAlertTitle}>Pendant left the safe zone</Text>
-                  </View>
-                  <View style={styles.geofenceSeverityBadge}>
-                    <Text style={styles.geofenceSeverityText}>{geofenceSeverity}</Text>
-                  </View>
-                </View>
-
-                <Text style={styles.geofenceAlertBody}>
-                  A geofence exit was reported for this pendant. Please check the senior’s
-                  current location and safety.
-                </Text>
-
-                <View style={styles.geofenceMetaRow}>
-                  <View style={styles.geofenceOpenBadge}>
-                    <View style={styles.geofenceOpenDot} />
-                    <Text style={styles.geofenceOpenText}>OPEN</Text>
-                  </View>
-                  <Text style={styles.geofenceRaisedAt}>
-                    {geofenceRaisedAt ? `Raised ${geofenceRaisedAt}` : 'Time unavailable'}
-                  </Text>
-                </View>
-
-                {geofenceExitCoordinate ? (
-                  <Text style={styles.geofenceCoordinateText}>
-                    Exit point: {geofenceExitCoordinate.latitude.toFixed(6)},{' '}
-                    {geofenceExitCoordinate.longitude.toFixed(6)}
-                  </Text>
-                ) : null}
-                {geofenceLatestCoordinate ? (
-                  <Text style={styles.geofenceCoordinateText}>
-                    Latest position: {geofenceLatestCoordinate.latitude.toFixed(6)},{' '}
-                    {geofenceLatestCoordinate.longitude.toFixed(6)}
-                  </Text>
-                ) : null}
-
-                {geofenceExitCoordinate || geofenceLatestCoordinate ? (
-                  <TouchableOpacity
-                    style={styles.geofenceMapButton}
-                    activeOpacity={0.85}
-                    onPress={openGeofenceExitMap}
-                  >
-                    <Icon name="map-outline" size={18} color="#991B1B" />
-                    <Text style={styles.geofenceMapButtonText}>View alert location on map</Text>
-                    <Icon name="chevron-forward" size={18} color="#991B1B" />
-                  </TouchableOpacity>
-                ) : null}
-              </View>
-            ) : null}
 
             {/* Active Emergency Banner */}
             {(liveSnapshot.alarmSeverity === 'critical' || liveSnapshot.alarmSeverity === 'warning') ? (
@@ -1025,41 +878,6 @@ const styles = StyleSheet.create({
     color: '#EF4444',
     textAlign: 'center',
   },
-  geofenceStatusRow: {
-    marginHorizontal: 16,
-    marginTop: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 10,
-    backgroundColor: '#FFF7ED',
-  },
-  geofenceStatusText: {
-    marginLeft: 9,
-    color: '#9A3412',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  geofenceErrorRow: {
-    marginHorizontal: 16,
-    marginTop: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#FCD34D',
-    backgroundColor: '#FFFBEB',
-  },
-  geofenceErrorText: {
-    flex: 1,
-    marginLeft: 8,
-    color: '#92400E',
-    fontSize: 12,
-    lineHeight: 17,
-  },
   weatherCard: {
     backgroundColor: '#FFFFFF',
     marginHorizontal: 16,
@@ -1166,123 +984,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#8A7565',
     marginTop: 2,
-  },
-  geofenceAlertCard: {
-    marginHorizontal: 16,
-    marginBottom: 16,
-    padding: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#FCA5A5',
-    backgroundColor: '#FEF2F2',
-    shadowColor: '#DC2626',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  geofenceAlertHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  geofenceAlertIcon: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 22,
-    backgroundColor: '#DC2626',
-  },
-  geofenceAlertTitleCol: {
-    flex: 1,
-    minWidth: 0,
-    marginLeft: 12,
-  },
-  geofenceAlertEyebrow: {
-    color: '#DC2626',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.7,
-  },
-  geofenceAlertTitle: {
-    marginTop: 2,
-    color: '#7F1D1D',
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  geofenceSeverityBadge: {
-    marginLeft: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 8,
-    backgroundColor: '#FEE2E2',
-  },
-  geofenceSeverityText: {
-    color: '#991B1B',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  geofenceAlertBody: {
-    marginTop: 13,
-    color: '#7F1D1D',
-    fontSize: 13,
-    lineHeight: 19,
-  },
-  geofenceMetaRow: {
-    marginTop: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  geofenceOpenBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 8,
-    backgroundColor: '#FFFFFF',
-  },
-  geofenceOpenDot: {
-    width: 7,
-    height: 7,
-    marginRight: 5,
-    borderRadius: 4,
-    backgroundColor: '#DC2626',
-  },
-  geofenceOpenText: {
-    color: '#991B1B',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  geofenceRaisedAt: {
-    flex: 1,
-    marginLeft: 10,
-    color: '#991B1B',
-    fontSize: 11,
-    textAlign: 'right',
-  },
-  geofenceCoordinateText: {
-    marginTop: 8,
-    color: '#7F1D1D',
-    fontSize: 12,
-    fontVariant: ['tabular-nums'],
-  },
-  geofenceMapButton: {
-    marginTop: 14,
-    paddingVertical: 11,
-    paddingHorizontal: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#FCA5A5',
-    backgroundColor: '#FFFFFF',
-  },
-  geofenceMapButtonText: {
-    flex: 1,
-    marginLeft: 9,
-    color: '#991B1B',
-    fontSize: 13,
-    fontWeight: '700',
   },
   emergencyBanner: {
     flexDirection: 'row',

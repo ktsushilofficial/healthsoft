@@ -12,8 +12,16 @@ import {
 import { clearAllCachedAssignedDeviceMatches } from '../utils/assignedDeviceMatchCache';
 import type { SeniorDashboardApiResponse } from '../types/seniorDashboard';
 import type { GuardianDashboardApiResponse } from '../types/guardianDashboard';
-import type { GeofenceExitApiResponse } from '../types/geofenceExit';
+import type {
+  DevicePositionStreamErrorListener,
+  DevicePositionStreamListener,
+} from '../types/devicePosition';
 import { API_BASE_URL } from '../config/api';
+import {
+  canAccessPendantTracking,
+  parseDevicePositionUpdate,
+  parseSseEventBlock,
+} from '../utils/devicePositionStream';
 import type { V8DailyVitalsSyncPayload, V8WebVitalsSyncPayload } from '../v8/models';
 
 const TOKEN_STORAGE_SERVICE = 'healthsoft.auth.tokens';
@@ -93,10 +101,11 @@ interface AuthContextType {
   getAssignedDevicesForSenior: (seniorId: string) => Promise<SeniorAssignedDevice[]>;
   getSeniorDashboard: (seniorId: string) => Promise<SeniorDashboardApiResponse>;
   getGuardianDashboard: (guardianUserId: string) => Promise<GuardianDashboardApiResponse>;
-  getGeofenceExitTicket: (
+  subscribeToDevicePosition: (
     deviceUUID: string,
-    ident: string,
-  ) => Promise<GeofenceExitApiResponse | null>;
+    onPosition: DevicePositionStreamListener,
+    onError?: DevicePositionStreamErrorListener,
+  ) => () => void;
   syncV8DailyVitals: (seniorId: string, payload: V8DailyVitalsSyncPayload) => Promise<void>;
   syncV8VitalsByDevice: (payload: V8WebVitalsSyncPayload) => Promise<void>;
   getV8VitalsSummary: (deviceUUID: string, days: number) => Promise<unknown>;
@@ -212,7 +221,7 @@ const fallbackAuthContext: AuthContextType = {
   getGuardianDashboard: async () => {
     throw missingProviderError();
   },
-  getGeofenceExitTicket: async () => {
+  subscribeToDevicePosition: () => {
     throw missingProviderError();
   },
   syncV8DailyVitals: async () => {
@@ -237,9 +246,6 @@ const apiClient = axios.create({
 const isUnauthorizedError = (error: unknown): boolean =>
   axios.isAxiosError(error) &&
   (error.response?.status === 401 || error.response?.status === 403);
-
-const isNotFoundError = (error: unknown): boolean =>
-  axios.isAxiosError(error) && error.response?.status === 404;
 
 const getErrorMessage = (error: unknown): string => {
   if (axios.isAxiosError(error)) {
@@ -662,48 +668,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       try {
         return await performRequest<T>(path, method, data, refreshedTokens, extraHeaders);
       } catch (retryError) {
-        throw new Error(getErrorMessage(retryError));
-      }
-    }
-  };
-
-  /**
-   * Same authenticated request flow as authorizedRequest, but treats HTTP 404
-   * as an expected "no current resource" result. The geofence-exit endpoint
-   * uses that response when a pendant has no matching alert.
-   */
-  const authorizedOptionalRequest = async <T,>(
-    path: string,
-    method: Method,
-    data?: unknown,
-    extraHeaders?: Record<string, string>,
-  ): Promise<T | null> => {
-    if (!tokensRef.current?.accessToken) {
-      throw new Error('Session expired. Please sign in again.');
-    }
-
-    try {
-      return await performRequest<T>(path, method, data, undefined, extraHeaders);
-    } catch (error) {
-      if (isNotFoundError(error)) {
-        return null;
-      }
-      if (!isUnauthorizedError(error)) {
-        throw new Error(getErrorMessage(error));
-      }
-
-      const refreshedTokens = await refreshTokens();
-      if (!refreshedTokens) {
-        await clearSession();
-        throw new Error('Session expired. Please sign in again.');
-      }
-
-      try {
-        return await performRequest<T>(path, method, data, refreshedTokens, extraHeaders);
-      } catch (retryError) {
-        if (isNotFoundError(retryError)) {
-          return null;
-        }
         throw new Error(getErrorMessage(retryError));
       }
     }
@@ -1338,28 +1302,151 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const getGeofenceExitTicket = useCallback(async (
+  const subscribeToDevicePosition = useCallback((
     deviceUUID: string,
-    ident: string,
-  ): Promise<GeofenceExitApiResponse | null> => {
+    onPosition: DevicePositionStreamListener,
+    onError?: DevicePositionStreamErrorListener,
+  ): (() => void) => {
     const uuid = deviceUUID.trim();
-    const normalizedIdent = ident.trim();
-    if (!uuid) {
-      throw new Error('Device UUID is required for the geofence alert.');
-    }
-    if (!normalizedIdent) {
-      throw new Error('Device identifier is required for the geofence alert.');
+    const roleCanTrack = canAccessPendantTracking(user?.role);
+    if (!roleCanTrack || !uuid) {
+      return () => {};
     }
 
-    return await authorizedOptionalRequest<GeofenceExitApiResponse>(
-      `/api/v1/tickets/geofence-exit/${encodeURIComponent(uuid)}/${encodeURIComponent(normalizedIdent)}`,
-      'GET',
-      undefined,
-      { Accept: 'application/json' },
-    );
-    // authorizedOptionalRequest is stable (reads from refs internally)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const path = `/api/v1/position/by-device/${encodeURIComponent(uuid)}/stream`;
+    let stopped = false;
+    let activeRequest: XMLHttpRequest | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempt = 0;
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+
+    const scheduleReconnect = (
+      connect: () => void,
+      message = 'Live location connection interrupted. Reconnecting…',
+    ) => {
+      if (stopped || reconnectTimer) return;
+      onError?.(message);
+      const delay = Math.min(10_000, 1_000 * 2 ** reconnectAttempt);
+      reconnectAttempt += 1;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    };
+
+    const connect = () => {
+      if (stopped) return;
+      const sessionTokens = tokensRef.current;
+      if (!sessionTokens?.accessToken) {
+        onError?.('Session expired. Please sign in again.');
+        return;
+      }
+
+      const request = new XMLHttpRequest();
+      activeRequest = request;
+      let consumedLength = 0;
+      let pendingText = '';
+      let closeHandled = false;
+
+      const processBlock = (block: string) => {
+        const payload = parseSseEventBlock(block);
+        const position = parseDevicePositionUpdate(payload);
+        if (!position || position.positionValid === false) return;
+        reconnectAttempt = 0;
+        onPosition(position);
+      };
+
+      const consumeAvailableText = (flush = false) => {
+        let responseText = '';
+        try {
+          responseText = request.responseText || '';
+        } catch {
+          return;
+        }
+        if (responseText.length > consumedLength) {
+          pendingText += responseText.slice(consumedLength);
+          consumedLength = responseText.length;
+        }
+        pendingText = pendingText.replace(/\r\n/g, '\n');
+
+        let boundary = pendingText.indexOf('\n\n');
+        while (boundary >= 0) {
+          processBlock(pendingText.slice(0, boundary));
+          pendingText = pendingText.slice(boundary + 2);
+          boundary = pendingText.indexOf('\n\n');
+        }
+        if (flush && pendingText.trim()) {
+          processBlock(pendingText);
+          pendingText = '';
+        }
+      };
+
+      const handleClosedRequest = async () => {
+        if (closeHandled || stopped || activeRequest !== request) return;
+        closeHandled = true;
+        consumeAvailableText(true);
+
+        if (request.status === 401 || request.status === 403) {
+          const refreshed = await refreshTokens();
+          if (stopped) return;
+          if (refreshed) {
+            connect();
+          } else {
+            onError?.('Session expired. Please sign in again.');
+          }
+          return;
+        }
+
+        scheduleReconnect(
+          connect,
+          request.status >= 400
+            ? `Live location request failed (${request.status}). Reconnecting…`
+            : undefined,
+        );
+      };
+
+      request.open('GET', `${API_BASE_URL}${path}`, true);
+      request.setRequestHeader('Accept', 'text/event-stream');
+      request.setRequestHeader('Content-Type', 'application/json');
+      request.setRequestHeader('Cache-Control', 'no-cache');
+      request.setRequestHeader(
+        'Authorization',
+        `${sessionTokens.tokenType} ${sessionTokens.accessToken}`,
+      );
+      request.onreadystatechange = () => {
+        if (
+          request.readyState === XMLHttpRequest.LOADING ||
+          request.readyState === XMLHttpRequest.DONE
+        ) {
+          consumeAvailableText(request.readyState === XMLHttpRequest.DONE);
+        }
+        if (request.readyState === XMLHttpRequest.DONE) {
+          handleClosedRequest().catch(() => {});
+        }
+      };
+      request.onerror = () => {
+        handleClosedRequest().catch(() => {});
+      };
+      request.send();
+    };
+
+    connect();
+
+    return () => {
+      stopped = true;
+      clearReconnectTimer();
+      if (activeRequest) {
+        activeRequest.abort();
+        activeRequest = null;
+      }
+    };
+  }, [user?.role]);
 
   const syncV8DailyVitals = useCallback(async (seniorId: string, payload: V8DailyVitalsSyncPayload): Promise<void> => {
     const trimmed = seniorId.trim();
@@ -1448,7 +1535,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       getAssignedDevicesForSenior,
       getSeniorDashboard,
       getGuardianDashboard,
-      getGeofenceExitTicket,
+      subscribeToDevicePosition,
       syncV8DailyVitals,
       syncV8VitalsByDevice,
       getV8VitalsSummary,
@@ -1457,7 +1544,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     [
       user, isAuthenticated, isInitializing, isCaretaker, authMethod,
       seniors, selectedSenior, selectedSeniorHandBandMacs, refreshUserProfile, getMySeniors, getAssignedDevicesForSenior,
-      getSeniorDashboard, getGuardianDashboard, getGeofenceExitTicket, syncV8DailyVitals, syncV8VitalsByDevice, getV8VitalsSummary,
+      getSeniorDashboard, getGuardianDashboard, subscribeToDevicePosition, syncV8DailyVitals, syncV8VitalsByDevice, getV8VitalsSummary,
     ],
   );
 

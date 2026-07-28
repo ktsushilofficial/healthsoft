@@ -628,6 +628,13 @@ didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic
 #else
   DeviceData_V8 *parsed = [[BleSDK_V8 sharedManager] DataParsingWithData:value];
   if (parsed) {
+    NSLog(
+      @"[V8 Native] RX bytes=%lu dataType=%d dataEnd=%@ dicData=%@",
+      (unsigned long)value.length,
+      (int)parsed.dataType,
+      parsed.dataEnd ? @"YES" : @"NO",
+      parsed.dicData ?: @{}
+    );
     body[@"type"] = @"parsed";
     body[@"payload"] = @{
       @"dataType": @((int)parsed.dataType).stringValue,
@@ -635,6 +642,11 @@ didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic
       @"dicData": parsed.dicData ?: @[]
     };
   } else {
+    NSLog(
+      @"[V8 Native] RX unparsed bytes=%lu hex=%@",
+      (unsigned long)value.length,
+      [self hexStringFromData:value]
+    );
     body[@"type"] = @"raw";
     body[@"payloadHex"] = [self hexStringFromData:value];
   }

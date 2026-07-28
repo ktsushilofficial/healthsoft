@@ -4,16 +4,12 @@ const ECG_SAMPLE_KEYS = new Set([
   'arrayecgrawdata',
   'arrayecgdata',
   'arrayecg',
-  // The V8 Android SDK exposes ECG real-time packets as
-  // dicData.arrayPpgRawData when setECGRealtimeDuringHRVEnabled is active.
-  'arrayppgrawdata',
-  // The bundled V8 iOS SDK uses dicData.arrayPPGData for the same real-time
-  // stream before/alongside its later arrayEcgRawData packets.
-  'arrayppgdata',
   'ecgdata',
   'ecgvalue',
   'kecgdatastring',
 ]);
+
+const PPG_SAMPLE_KEYS = new Set(['arrayppgrawdata', 'arrayppgdata', 'ppgdata']);
 
 const normalizeKey = (value: string) =>
   value.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
@@ -77,16 +73,42 @@ function findValue(
   return undefined;
 }
 
-function collectSamples(records: Record<string, unknown>[]): number[] {
-  const samples: number[] = [];
+function collectWaveform(records: Record<string, unknown>[]): {
+  samples: number[];
+  waveformSource: V8EcgEvent['waveformSource'];
+  waveformField: string | null;
+} {
+  const ecgSamples: number[] = [];
+  const ppgSamples: number[] = [];
+  let ecgField: string | null = null;
+  let ppgField: string | null = null;
   for (const record of records) {
     for (const [key, value] of Object.entries(record)) {
-      if (ECG_SAMPLE_KEYS.has(normalizeKey(key))) {
-        samples.push(...parseNumberSeries(value));
+      const normalizedKey = normalizeKey(key);
+      if (ECG_SAMPLE_KEYS.has(normalizedKey)) {
+        ecgField ??= key;
+        ecgSamples.push(...parseNumberSeries(value));
+      } else if (PPG_SAMPLE_KEYS.has(normalizedKey)) {
+        ppgField ??= key;
+        ppgSamples.push(...parseNumberSeries(value));
       }
     }
   }
-  return samples;
+  if (ecgSamples.length > 0) {
+    return {
+      samples: ecgSamples,
+      waveformSource: 'ecg',
+      waveformField: ecgField,
+    };
+  }
+  if (ppgSamples.length > 0) {
+    return {
+      samples: ppgSamples,
+      waveformSource: 'ppg',
+      waveformField: ppgField,
+    };
+  }
+  return { samples: [], waveformSource: null, waveformField: null };
 }
 
 function payloadText(records: Record<string, unknown>[]): string {
@@ -153,7 +175,8 @@ export function parseV8EcgPayload(
   const records: Record<string, unknown>[] = [];
   collectRecords(payload, records, new Set());
   const dataType = toText(findValue(records, ['dataType', 'DataType', 'type']));
-  const samples = collectSamples(records);
+  const { samples, waveformSource, waveformField } =
+    collectWaveform(records);
   const text = payloadText(records);
   const statusMessage = toText(
     findValue(records, [
@@ -170,6 +193,9 @@ export function parseV8EcgPayload(
   return {
     kind: detectKind(dataType, samples, text, platform),
     samples,
+    waveformSource,
+    waveformField,
+    dataType,
     heartRate: toNumber(
       findValue(records, [
         'ECGHrValue',
@@ -225,6 +251,7 @@ export function createV8EcgSession(
     completedAt: null,
     durationMs: null,
     samples: [],
+    waveformSource: null,
     sampleRateHz: null,
     firstSampleAt: null,
     firstSampleCount: 0,
@@ -264,6 +291,28 @@ export function estimateObservedSampleRateHz(
   return observedRate > 0 ? observedRate : null;
 }
 
+export function shouldAutoFinishEcg(
+  session: Pick<V8EcgSession, 'phase' | 'startedAt'>,
+  now: number,
+  maxRecordingDurationMs = 120_000,
+): boolean {
+  if (session.phase !== 'measuring') return false;
+  return now - session.startedAt >= maxRecordingDurationMs;
+}
+
+export function isEcgStreamStalled(
+  session: Pick<V8EcgSession, 'phase' | 'lastSampleAt' | 'samples'>,
+  now: number,
+  stallTimeoutMs = 4_000,
+): boolean {
+  return (
+    session.phase === 'measuring' &&
+    session.samples.length > 0 &&
+    session.lastSampleAt != null &&
+    now - session.lastSampleAt >= stallTimeoutMs
+  );
+}
+
 export function downsampleEcg(samples: number[], maxPoints: number): number[] {
   if (samples.length <= maxPoints || maxPoints < 2) return samples;
   const bucketSize = samples.length / maxPoints;
@@ -279,5 +328,59 @@ export function downsampleEcg(samples: number[], maxPoints: number): number[] {
     }
     output.push(count > 0 ? total / count : samples[start]);
   }
+  return output;
+}
+
+export type IndexedWaveformPoint = {
+  index: number;
+  value: number;
+};
+
+/**
+ * Reduces a waveform for display without averaging away narrow QRS peaks.
+ * Each bucket contributes its minimum and maximum at their original x
+ * positions, so the resulting path preserves transient morphology.
+ */
+export function downsampleWaveformEnvelope(
+  samples: number[],
+  maxPoints: number,
+): IndexedWaveformPoint[] {
+  if (samples.length === 0) return [];
+  if (samples.length <= maxPoints || maxPoints < 4) {
+    return samples.map((value, index) => ({ index, value }));
+  }
+
+  const output: IndexedWaveformPoint[] = [
+    { index: 0, value: samples[0] },
+  ];
+  const bucketCount = Math.max(1, Math.floor((maxPoints - 2) / 2));
+  const bucketSize = (samples.length - 2) / bucketCount;
+
+  for (let bucket = 0; bucket < bucketCount; bucket += 1) {
+    const start = 1 + Math.floor(bucket * bucketSize);
+    const end = Math.min(
+      samples.length - 1,
+      1 + Math.floor((bucket + 1) * bucketSize),
+    );
+    let minIndex = start;
+    let maxIndex = start;
+    for (let index = start + 1; index < end; index += 1) {
+      if (samples[index] < samples[minIndex]) minIndex = index;
+      if (samples[index] > samples[maxIndex]) maxIndex = index;
+    }
+    if (minIndex === maxIndex) {
+      output.push({ index: minIndex, value: samples[minIndex] });
+    } else {
+      const firstIndex = Math.min(minIndex, maxIndex);
+      const secondIndex = Math.max(minIndex, maxIndex);
+      output.push({ index: firstIndex, value: samples[firstIndex] });
+      output.push({ index: secondIndex, value: samples[secondIndex] });
+    }
+  }
+
+  output.push({
+    index: samples.length - 1,
+    value: samples[samples.length - 1],
+  });
   return output;
 }

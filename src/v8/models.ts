@@ -34,6 +34,8 @@ export type V8EcgPhase =
   | 'completed'
   | 'failed';
 
+export type V8WaveformSource = 'ecg' | 'ppg';
+
 export type V8EcgSession = {
   id: string;
   seniorId: string;
@@ -42,6 +44,7 @@ export type V8EcgSession = {
   completedAt: number | null;
   durationMs: number | null;
   samples: number[];
+  waveformSource: V8WaveformSource | null;
   sampleRateHz: number | null;
   firstSampleAt: number | null;
   firstSampleCount: number;
@@ -58,6 +61,9 @@ export type V8EcgSession = {
 export type V8EcgEvent = {
   kind: 'started' | 'samples' | 'status' | 'completed' | 'stopped' | 'failed' | 'unknown';
   samples: number[];
+  waveformSource: V8WaveformSource | null;
+  waveformField: string | null;
+  dataType: string | null;
   heartRate: number | null;
   sampleRateHz: number | null;
   signalQuality: string | null;

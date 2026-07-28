@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Platform,
   StyleSheet,
@@ -10,23 +10,84 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import { useAuth } from '../context/AuthContext';
+import { canAccessPendantTracking } from '../utils/devicePositionStream';
 
 type LocationMapParams = {
   latitude: number;
   longitude: number;
   title?: string;
+  deviceUuid?: string | null;
 };
 
 const LocationMapScreen = () => {
   const navigation = useNavigation();
   const route = useRoute();
+  const { user, subscribeToDevicePosition } = useAuth();
   const {
     latitude,
     longitude,
     title = 'Last position',
+    deviceUuid,
   } = route.params as LocationMapParams;
-  const coordinate = { latitude, longitude };
+  const mapRef = useRef<MapView>(null);
+  const [coordinate, setCoordinate] = useState({ latitude, longitude });
+  const [streamState, setStreamState] = useState<
+    'static' | 'connecting' | 'live' | 'reconnecting'
+  >('static');
+  const [streamMessage, setStreamMessage] = useState<string | null>(null);
   const providerName = Platform.OS === 'ios' ? 'Apple Maps' : 'Google Maps';
+  const canTrack = canAccessPendantTracking(user?.role);
+
+  useEffect(() => {
+    setCoordinate({ latitude, longitude });
+  }, [latitude, longitude]);
+
+  useEffect(() => {
+    const normalizedUuid =
+      typeof deviceUuid === 'string' ? deviceUuid.trim() : '';
+    if (!canTrack || !normalizedUuid) {
+      setStreamState('static');
+      setStreamMessage(null);
+      return;
+    }
+
+    setStreamState('connecting');
+    setStreamMessage('Connecting to live pendant location…');
+    return subscribeToDevicePosition(
+      normalizedUuid,
+      position => {
+        const nextCoordinate = {
+          latitude: position.latitude,
+          longitude: position.longitude,
+        };
+        setCoordinate(nextCoordinate);
+        setStreamState('live');
+        setStreamMessage('Live pendant position');
+        mapRef.current?.animateToRegion(
+          {
+            ...nextCoordinate,
+            latitudeDelta: 0.012,
+            longitudeDelta: 0.012,
+          },
+          500,
+        );
+      },
+      message => {
+        setStreamState('reconnecting');
+        setStreamMessage(message);
+      },
+    );
+  }, [canTrack, deviceUuid, subscribeToDevicePosition]);
+
+  const headerStatus =
+    streamState === 'live'
+      ? `Live · ${providerName}`
+      : streamState === 'connecting'
+        ? `Connecting · ${providerName}`
+        : streamState === 'reconnecting'
+          ? `Reconnecting · ${providerName}`
+          : providerName;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -43,13 +104,14 @@ const LocationMapScreen = () => {
           <Text numberOfLines={1} style={styles.headerTitle}>
             {title}
           </Text>
-          <Text style={styles.headerSubtitle}>{providerName}</Text>
+          <Text style={styles.headerSubtitle}>{headerStatus}</Text>
         </View>
         <View style={styles.headerSpacer} />
       </View>
 
       <View style={styles.mapWrap}>
         <MapView
+          ref={mapRef}
           style={styles.map}
           provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
           initialRegion={{
@@ -70,10 +132,33 @@ const LocationMapScreen = () => {
             <Icon name="location" size={20} color="#FFFFFF" />
           </View>
           <View style={styles.coordinateCopy}>
-            <Text style={styles.coordinateTitle}>Location coordinates</Text>
+            <View style={styles.coordinateTitleRow}>
+              <View
+                style={[
+                  styles.streamDot,
+                  streamState === 'live'
+                    ? styles.streamDotLive
+                    : streamState === 'connecting' ||
+                        streamState === 'reconnecting'
+                      ? styles.streamDotConnecting
+                      : null,
+                ]}
+              />
+              <Text style={styles.coordinateTitle}>
+                {streamState === 'live'
+                  ? 'Live location coordinates'
+                  : 'Location coordinates'}
+              </Text>
+            </View>
             <Text selectable style={styles.coordinateValue}>
-              {latitude.toFixed(6)}, {longitude.toFixed(6)}
+              {coordinate.latitude.toFixed(6)},{' '}
+              {coordinate.longitude.toFixed(6)}
             </Text>
+            {streamMessage ? (
+              <Text numberOfLines={2} style={styles.streamMessage}>
+                {streamMessage}
+              </Text>
+            ) : null}
           </View>
         </View>
       </View>
@@ -161,10 +246,33 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
+  coordinateTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  streamDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    marginRight: 6,
+    backgroundColor: '#A8A29E',
+  },
+  streamDotLive: {
+    backgroundColor: '#16A34A',
+  },
+  streamDotConnecting: {
+    backgroundColor: '#F59E0B',
+  },
   coordinateValue: {
     marginTop: 3,
     color: '#2F2B27',
     fontSize: 14,
     fontWeight: '700',
+  },
+  streamMessage: {
+    marginTop: 3,
+    color: '#8A8178',
+    fontSize: 10,
+    lineHeight: 13,
   },
 });

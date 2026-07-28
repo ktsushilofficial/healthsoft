@@ -26,10 +26,18 @@ import {
   shareEcgReportPng,
   type EcgReportShareMetadata,
 } from '../utils/ecgReport';
-import { downsampleEcg } from '../v8/ecg';
+import {
+  downsampleEcg,
+  isEcgStreamStalled,
+  shouldAutoFinishEcg,
+} from '../v8/ecg';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 
 const ACTIVE_PHASES = new Set(['starting', 'measuring', 'processing']);
+const MIN_ECG_SAMPLE_RATE_HZ = 250;
+const PREFERRED_ECG_SAMPLE_RATE_HZ = 500;
+const ECG_MAX_RECORDING_DURATION_MS = 120_000;
+const ECG_STALL_NOTICE_MS = 4_000;
 
 function formatDuration(milliseconds: number): string {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
@@ -126,6 +134,7 @@ const ECGMeasurementScreen = () => {
   const [exportBusy, setExportBusy] = useState<'png' | 'pdf' | null>(null);
   const allowLeaveRef = useRef(false);
   const reportRef = useRef<View>(null);
+  const autoFinishSessionRef = useRef<string | null>(null);
   const connected = Object.values(connectionStates).some(
     state => state === 'connected',
   );
@@ -211,8 +220,27 @@ const ECGMeasurementScreen = () => {
 
   const handleStart = () =>
     run(startEcgMeasurement, 'Unable to start ECG measurement.');
-  const handleFinish = () =>
-    run(finishEcgMeasurement, 'Unable to finish ECG measurement.');
+  const handleFinish = useCallback(
+    () => run(finishEcgMeasurement, 'Unable to finish ECG measurement.'),
+    [finishEcgMeasurement, run],
+  );
+
+  useEffect(() => {
+    if (!ecgSession || ecgSession.phase !== 'measuring') return;
+    if (
+      !shouldAutoFinishEcg(
+        ecgSession,
+        now,
+        ECG_MAX_RECORDING_DURATION_MS,
+      )
+    ) {
+      return;
+    }
+    if (autoFinishSessionRef.current === ecgSession.id) return;
+
+    autoFinishSessionRef.current = ecgSession.id;
+    handleFinish().catch(() => {});
+  }, [ecgSession, handleFinish, now]);
 
   const handleCancel = () => {
     Alert.alert('Cancel ECG?', 'The current recording will be discarded.', [
@@ -328,6 +356,32 @@ const ECGMeasurementScreen = () => {
       : active
         ? 'Receiving'
         : 'Not provided';
+  const waveformSource = ecgSession?.waveformSource ?? null;
+  const measuredSampleRateHz = ecgSession?.sampleRateHz ?? null;
+  const streamStalled =
+    ecgSession != null &&
+    isEcgStreamStalled(ecgSession, now, ECG_STALL_NOTICE_MS);
+  const samplingAssessment =
+    waveformSource == null
+      ? 'Verifying the ECG channel and sample frequency…'
+      : waveformSource === 'ppg'
+        ? 'PPG pulse data detected. PPG cannot provide ECG P, QRS, ST, or T morphology.'
+        : measuredSampleRateHz == null
+          ? 'ECG channel detected. Measuring its sample frequency…'
+          : measuredSampleRateHz >= PREFERRED_ECG_SAMPLE_RATE_HZ
+            ? `${measuredSampleRateHz} Hz ECG meets the preferred acquisition target.`
+            : measuredSampleRateHz >= MIN_ECG_SAMPLE_RATE_HZ
+              ? `${measuredSampleRateHz} Hz ECG meets the minimum acquisition target.`
+              : `${measuredSampleRateHz} Hz ECG is below the 250 Hz minimum target.`;
+  const displayStatusMessage =
+    streamStalled
+      ? 'Signal paused — waiting for more samples from the hand band'
+      : reportReady &&
+          waveformSource === 'ecg' &&
+          measuredSampleRateHz != null &&
+          measuredSampleRateHz < MIN_ECG_SAMPLE_RATE_HZ
+        ? 'Recording completed with insufficient ECG sample frequency'
+        : ecgSession?.statusMessage ?? 'Listening for hand band data…';
 
   return (
     <SafeAreaView style={styles.container}>
@@ -368,7 +422,7 @@ const ECGMeasurementScreen = () => {
             </View>
             <Text style={styles.title}>Prepare for your ECG</Text>
             <Text style={styles.subtitle}>
-              A steady recording usually takes at least 30 seconds.
+              Record for up to 2 minutes. You can finish earlier when needed.
             </Text>
             {[
               'Sit comfortably and rest your arm on a table.',
@@ -399,7 +453,15 @@ const ECGMeasurementScreen = () => {
                   <View>
                     <Text style={styles.reportBrand}>HEALTHSOFT</Text>
                     <Text style={styles.reportType}>
-                      Hand band waveform report
+                      {waveformSource === 'ecg' &&
+                      measuredSampleRateHz != null &&
+                      measuredSampleRateHz >= MIN_ECG_SAMPLE_RATE_HZ
+                        ? 'Single-lead ECG waveform report'
+                        : waveformSource === 'ecg'
+                          ? 'Low-rate device waveform report'
+                        : waveformSource === 'ppg'
+                          ? 'Pulse waveform (PPG) report'
+                          : 'Hand band waveform report'}
                     </Text>
                   </View>
                 </View>
@@ -456,11 +518,44 @@ const ECGMeasurementScreen = () => {
 
             <View style={styles.statusCard}>
               <Text style={styles.statusTitle}>
-                {ecgSession.statusMessage ?? 'Listening for hand band data…'}
+                {displayStatusMessage}
               </Text>
               {ecgSession.error ? (
                 <Text style={styles.errorText}>{ecgSession.error}</Text>
               ) : null}
+              <View
+                style={[
+                  styles.samplingNotice,
+                  waveformSource === 'ppg' ||
+                  (waveformSource === 'ecg' &&
+                    ecgSession.sampleRateHz != null &&
+                    ecgSession.sampleRateHz < MIN_ECG_SAMPLE_RATE_HZ)
+                    ? styles.samplingWarning
+                    : null,
+                ]}
+              >
+                <Icon
+                  name={
+                    waveformSource === 'ecg' &&
+                    ecgSession.sampleRateHz != null &&
+                    ecgSession.sampleRateHz >= MIN_ECG_SAMPLE_RATE_HZ
+                      ? 'checkmark-circle-outline'
+                      : 'information-circle-outline'
+                  }
+                  size={17}
+                  color={
+                    waveformSource === 'ppg' ||
+                    (waveformSource === 'ecg' &&
+                      ecgSession.sampleRateHz != null &&
+                      ecgSession.sampleRateHz < MIN_ECG_SAMPLE_RATE_HZ)
+                      ? '#A85B20'
+                      : '#71665E'
+                  }
+                />
+                <Text style={styles.samplingNoticeText}>
+                  {samplingAssessment}
+                </Text>
+              </View>
               <View style={styles.metricsRow}>
                 <View style={styles.metric}>
                   <Text style={styles.metricValue}>
@@ -484,8 +579,9 @@ const ECGMeasurementScreen = () => {
             </View>
             {reportReady ? (
               <Text style={styles.reportDisclaimer}>
-                Device-generated waveform for informational use only. This
-                report is not a medical diagnosis.
+                {waveformSource === 'ppg'
+                  ? 'Optical pulse waveform (PPG), not an electrocardiogram. It must not be interpreted as ECG.'
+                  : 'Device-generated single-lead waveform for informational use only. Time uses the received sample rate; amplitude is auto-scaled raw device data, not calibrated mV. This report is not a medical diagnosis.'}
               </Text>
             ) : null}
           </View>
@@ -803,6 +899,23 @@ const styles = StyleSheet.create({
   },
   statusTitle: { color: '#39332F', fontSize: 15, fontWeight: '700' },
   errorText: { color: '#B33D32', fontSize: 13, marginTop: 6, lineHeight: 18 },
+  samplingNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 7,
+    borderRadius: 12,
+    backgroundColor: '#F5F2EF',
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    marginTop: 11,
+  },
+  samplingWarning: { backgroundColor: '#FFF1E4' },
+  samplingNoticeText: {
+    flex: 1,
+    color: '#655D57',
+    fontSize: 11,
+    lineHeight: 15,
+  },
   metricsRow: { alignItems: 'center', marginTop: 16 },
   metric: { alignItems: 'center' },
   metricValue: { color: '#2E2925', fontSize: 17, fontWeight: '700' },

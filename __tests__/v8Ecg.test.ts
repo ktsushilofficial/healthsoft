@@ -1,8 +1,11 @@
 import {
   createV8EcgSession,
   downsampleEcg,
+  downsampleWaveformEnvelope,
   estimateObservedSampleRateHz,
+  isEcgStreamStalled,
   parseV8EcgPayload,
+  shouldAutoFinishEcg,
 } from '../src/v8/ecg';
 
 describe('V8 ECG helpers', () => {
@@ -22,6 +25,9 @@ describe('V8 ECG helpers', () => {
       expect.objectContaining({
         kind: 'samples',
         samples: [10, 12, 18, 9],
+        waveformSource: 'ecg',
+        waveformField: 'arrayEcgRawData',
+        dataType: '54',
         heartRate: 73,
         sampleRateHz: 500,
         signalQuality: 'good',
@@ -56,6 +62,7 @@ describe('V8 ECG helpers', () => {
 
     expect(event.kind).toBe('samples');
     expect(event.samples).toEqual([8451200, 8451456, 8450944, 8451712]);
+    expect(event.waveformSource).toBe('ppg');
   });
 
   it('parses the iOS real-time stream emitted as arrayPPGData', () => {
@@ -72,6 +79,9 @@ describe('V8 ECG helpers', () => {
 
     expect(event.kind).toBe('samples');
     expect(event.samples).toEqual([1048572, 1048598, 1048611, 1048580]);
+    expect(event.waveformSource).toBe('ppg');
+    expect(event.waveformField).toBe('arrayPPGData');
+    expect(event.dataType).toBe('70');
   });
 
   it('does not confuse Android blood-oxygen type 55 with iOS ECG success', () => {
@@ -91,6 +101,7 @@ describe('V8 ECG helpers', () => {
         phase: 'starting',
         startedAt: 1000,
         samples: [],
+        waveformSource: null,
         firstSampleAt: null,
         firstSampleCount: 0,
         lastSampleAt: null,
@@ -102,6 +113,7 @@ describe('V8 ECG helpers', () => {
 
   it('calculates observed sample frequency after multiple packets arrive', () => {
     expect(estimateObservedSampleRateHz(260, 10, 1000, 2000)).toBe(250);
+    expect(estimateObservedSampleRateHz(522, 10, 1000, 2000)).toBe(512);
     expect(estimateObservedSampleRateHz(10, 10, 1000, 2000)).toBeNull();
     expect(estimateObservedSampleRateHz(260, 10, 1000, 1200)).toBeNull();
   });
@@ -113,5 +125,32 @@ describe('V8 ECG helpers', () => {
         10,
       ),
     ).toHaveLength(10);
+  });
+
+  it('preserves narrow waveform peaks when reducing points for display', () => {
+    const samples = Array.from({ length: 100 }, () => 0);
+    samples[51] = 1_000;
+
+    const points = downsampleWaveformEnvelope(samples, 10);
+
+    expect(points.length).toBeLessThanOrEqual(10);
+    expect(points).toContainEqual({ index: 51, value: 1_000 });
+    expect(points.map(point => point.index)).toEqual(
+      [...points.map(point => point.index)].sort((a, b) => a - b),
+    );
+  });
+
+  it('auto-finishes at 2 minutes but continues waiting through a stream stall', () => {
+    const session = createV8EcgSession('senior-1', null, null, 1_000);
+    session.phase = 'measuring';
+
+    expect(shouldAutoFinishEcg(session, 120_999)).toBe(false);
+    expect(shouldAutoFinishEcg(session, 121_000)).toBe(true);
+
+    session.samples = [1, 2, 3];
+    session.lastSampleAt = 10_000;
+    expect(isEcgStreamStalled(session, 13_999)).toBe(false);
+    expect(isEcgStreamStalled(session, 14_000)).toBe(true);
+    expect(shouldAutoFinishEcg(session, 14_000)).toBe(false);
   });
 });

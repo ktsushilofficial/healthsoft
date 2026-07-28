@@ -1350,12 +1350,23 @@ const HomeScreen = () => {
     const lat = liveSnapshot.latitude;
     const lon = liveSnapshot.longitude;
     if (lat == null || lon == null) return;
+    const deviceUuid = activeDeviceRecord
+      ? readStringField(activeDeviceRecord, 'device.uuid') ??
+        readStringField(activeDeviceRecord, 'deviceUUID') ??
+        readStringField(activeDeviceRecord, 'deviceUuid')
+      : null;
     navigation.navigate('LocationMap', {
       latitude: lat,
       longitude: lon,
       title: 'Last position',
+      deviceUuid,
     });
-  }, [liveSnapshot.latitude, liveSnapshot.longitude, navigation]);
+  }, [
+    activeDeviceRecord,
+    liveSnapshot.latitude,
+    liveSnapshot.longitude,
+    navigation,
+  ]);
 
   return (
     <SafeAreaView style={styles.container}>
