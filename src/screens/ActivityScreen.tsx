@@ -36,6 +36,16 @@ type ActivityRangeOption = {
   queryDays: number;
 };
 
+type MetricRange = {
+  high: number | null;
+  low: number | null;
+};
+
+type BloodPressureRange = {
+  high: VitalsSummaryRow | null;
+  low: VitalsSummaryRow | null;
+};
+
 const RANGE_OPTIONS: ActivityRangeOption[] = [
   { key: 'today', label: 'Today', queryDays: 1 },
   { key: 'yesterday', label: 'Yesterday', queryDays: 2 },
@@ -50,21 +60,52 @@ function sumMetric(
   return rows.reduce((sum, row) => sum + (selector(row) ?? 0), 0);
 }
 
-function averageRowsWithFixedDivisor(
+function averageMetricWithFixedDivisor(
   rows: VitalsSummaryRow[],
+  selector: (row: VitalsSummaryRow) => number | null,
   divisor: 7 | 30,
-): VitalsSummaryRow | null {
-  if (rows.length === 0) return null;
+): number | null {
+  if (!rows.some(row => selector(row) != null)) return null;
+  return sumMetric(rows, selector) / divisor;
+}
+
+function metricRange(
+  rows: VitalsSummaryRow[],
+  selector: (row: VitalsSummaryRow) => number | null,
+): MetricRange {
+  const values = rows
+    .map(selector)
+    .filter((value): value is number => value != null);
 
   return {
-    recordDate: rows[0]?.recordDate ?? '',
-    steps: sumMetric(rows, row => row.steps) / divisor,
-    hrAvg: sumMetric(rows, row => row.hrAvg) / divisor,
-    spo2Avg: sumMetric(rows, row => row.spo2Avg) / divisor,
-    tempAvg: sumMetric(rows, row => row.tempAvg) / divisor,
-    systolicBpAvg: sumMetric(rows, row => row.systolicBpAvg) / divisor,
-    diastolicBpAvg: sumMetric(rows, row => row.diastolicBpAvg) / divisor,
+    high: values.length > 0 ? Math.max(...values) : null,
+    low: values.length > 0 ? Math.min(...values) : null,
   };
+}
+
+function bloodPressureRange(rows: VitalsSummaryRow[]): BloodPressureRange {
+  const values = rows.filter(
+    row => row.systolicBpAvg != null && row.diastolicBpAvg != null,
+  );
+
+  if (values.length === 0) {
+    return { high: null, low: null };
+  }
+
+  const compare = (a: VitalsSummaryRow, b: VitalsSummaryRow): number =>
+    (a.systolicBpAvg ?? 0) - (b.systolicBpAvg ?? 0) ||
+    (a.diastolicBpAvg ?? 0) - (b.diastolicBpAvg ?? 0);
+
+  return {
+    high: values.reduce((highest, row) => compare(row, highest) > 0 ? row : highest),
+    low: values.reduce((lowest, row) => compare(row, lowest) < 0 ? row : lowest),
+  };
+}
+
+function formatBloodPressure(row: VitalsSummaryRow | null): string {
+  return row?.systolicBpAvg != null && row.diastolicBpAvg != null
+    ? `${Math.round(row.systolicBpAvg)}/${Math.round(row.diastolicBpAvg)}`
+    : 'NA';
 }
 
 function ymdDate(value: string): Date | null {
@@ -136,7 +177,7 @@ const ActivityScreen = () => {
     getV8VitalsSummary,
   } = useAuth();
 
-  const [showSevenDayTable, setShowSevenDayTable] = useState(false);
+  const [showSevenDayTable, setShowSevenDayTable] = useState(true);
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -287,24 +328,40 @@ const ActivityScreen = () => {
     });
   }, [rows, selectedRange]);
 
-  const summaryRow = useMemo(() => {
+  const isMultiDayRange =
+    selectedRange === 'this_week' || selectedRange === 'last_one_month';
+
+  const stepSummary = useMemo(() => {
     if (selectedRange === 'this_week') {
-      return averageRowsWithFixedDivisor(visibleRows, 7);
+      return averageMetricWithFixedDivisor(visibleRows, row => row.steps, 7);
     }
     if (selectedRange === 'last_one_month') {
-      return averageRowsWithFixedDivisor(visibleRows, 30);
+      return averageMetricWithFixedDivisor(visibleRows, row => row.steps, 30);
     }
-    return visibleRows[0] ?? null;
+    return visibleRows[0]?.steps ?? null;
   }, [selectedRange, visibleRows]);
+
+  const vitalSummary = useMemo(() => ({
+    bloodPressure: bloodPressureRange(visibleRows),
+    spo2: metricRange(visibleRows, row => row.spo2Avg),
+    heartRate: metricRange(visibleRows, row => row.hrAvg),
+    temperature: metricRange(visibleRows, row => row.tempAvg),
+  }), [visibleRows]);
+
+  const singleDayRow = visibleRows[0] ?? null;
 
   const summaryPeriodLabel =
     selectedRange === 'this_week'
-      ? 'Weekly Average'
+      ? 'This Week'
       : selectedRange === 'last_one_month'
-        ? 'Monthly Average'
+        ? 'Last 1 Month'
         : selectedRange === 'yesterday'
           ? 'Yesterday'
           : 'Today';
+
+  const stepLabel = isMultiDayRange
+    ? `${summaryPeriodLabel} Daily Average Step Count`
+    : `${summaryPeriodLabel} Step Count`;
 
   if (!ready) {
     return (
@@ -380,9 +437,9 @@ const ActivityScreen = () => {
             </View>
             <View style={styles.metricInfo}>
               <Text style={styles.metricValue}>
-                {summaryRow?.steps != null ? `${Math.round(summaryRow.steps)}` : 'NA'}
+                {stepSummary != null ? `${Math.round(stepSummary)}` : 'NA'}
               </Text>
-              <Text style={styles.metricLabel}>{summaryPeriodLabel} Step Count</Text>
+              <Text style={styles.metricLabel}>{stepLabel}</Text>
               <View style={styles.progressTrack}>
                 <View style={styles.progressFill} />
                 <View style={styles.goalChip}>
@@ -397,15 +454,35 @@ const ActivityScreen = () => {
               <Icon name="heart" size={24} color="#F28C28" />
             </View>
             <View style={styles.metricInfo}>
-              <View style={styles.inlineRow}>
-                <Text style={styles.metricValue}>
-                  {summaryRow?.systolicBpAvg != null && summaryRow?.diastolicBpAvg != null
-                    ? `${Math.round(summaryRow.systolicBpAvg)}/${Math.round(summaryRow.diastolicBpAvg)}`
-                    : 'NA'}
-                </Text>
-                <Text style={styles.metricUnit}>mmHg</Text>
-              </View>
               <Text style={styles.metricLabel}>{summaryPeriodLabel} Blood Pressure</Text>
+              {isMultiDayRange ? (
+                <View style={styles.metricRangeRow}>
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>HIGH DAY</Text>
+                    <View style={styles.inlineRow}>
+                      <Text style={styles.metricRangeValue}>
+                        {formatBloodPressure(vitalSummary.bloodPressure.high)}
+                      </Text>
+                      <Text style={styles.metricRangeUnit}>mmHg</Text>
+                    </View>
+                  </View>
+                  <View style={styles.metricRangeDivider} />
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>LOW DAY</Text>
+                    <View style={styles.inlineRow}>
+                      <Text style={styles.metricRangeValue}>
+                        {formatBloodPressure(vitalSummary.bloodPressure.low)}
+                      </Text>
+                      <Text style={styles.metricRangeUnit}>mmHg</Text>
+                    </View>
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.inlineRow}>
+                  <Text style={styles.metricValue}>{formatBloodPressure(singleDayRow)}</Text>
+                  <Text style={styles.metricUnit}>mmHg</Text>
+                </View>
+              )}
             </View>
           </View>
 
@@ -414,10 +491,32 @@ const ActivityScreen = () => {
               <Icon name="water" size={24} color="#F28C28" />
             </View>
             <View style={styles.metricInfo}>
-              <Text style={styles.metricValue}>
-                {summaryRow?.spo2Avg != null ? `${Math.round(summaryRow.spo2Avg)}%` : 'NA'}
-              </Text>
               <Text style={styles.metricLabel}>{summaryPeriodLabel} Blood Oxygen</Text>
+              {isMultiDayRange ? (
+                <View style={styles.metricRangeRow}>
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>HIGH DAY</Text>
+                    <Text style={styles.metricRangeValue}>
+                      {vitalSummary.spo2.high != null
+                        ? `${Math.round(vitalSummary.spo2.high)}%`
+                        : 'NA'}
+                    </Text>
+                  </View>
+                  <View style={styles.metricRangeDivider} />
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>LOW DAY</Text>
+                    <Text style={styles.metricRangeValue}>
+                      {vitalSummary.spo2.low != null
+                        ? `${Math.round(vitalSummary.spo2.low)}%`
+                        : 'NA'}
+                    </Text>
+                  </View>
+                </View>
+              ) : (
+                <Text style={styles.metricValue}>
+                  {singleDayRow?.spo2Avg != null ? `${Math.round(singleDayRow.spo2Avg)}%` : 'NA'}
+                </Text>
+              )}
             </View>
           </View>
 
@@ -426,13 +525,41 @@ const ActivityScreen = () => {
               <Icon name="pulse" size={24} color="#F28C28" />
             </View>
             <View style={styles.metricInfo}>
-              <View style={styles.inlineRow}>
-                <Text style={styles.metricValue}>
-                  {summaryRow?.hrAvg != null ? `${Math.round(summaryRow.hrAvg)}` : 'NA'}
-                </Text>
-                <Text style={styles.metricUnit}>BPM</Text>
-              </View>
               <Text style={styles.metricLabel}>{summaryPeriodLabel} Heart Rate</Text>
+              {isMultiDayRange ? (
+                <View style={styles.metricRangeRow}>
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>HIGH DAY</Text>
+                    <View style={styles.inlineRow}>
+                      <Text style={styles.metricRangeValue}>
+                        {vitalSummary.heartRate.high != null
+                          ? `${Math.round(vitalSummary.heartRate.high)}`
+                          : 'NA'}
+                      </Text>
+                      <Text style={styles.metricRangeUnit}>BPM</Text>
+                    </View>
+                  </View>
+                  <View style={styles.metricRangeDivider} />
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>LOW DAY</Text>
+                    <View style={styles.inlineRow}>
+                      <Text style={styles.metricRangeValue}>
+                        {vitalSummary.heartRate.low != null
+                          ? `${Math.round(vitalSummary.heartRate.low)}`
+                          : 'NA'}
+                      </Text>
+                      <Text style={styles.metricRangeUnit}>BPM</Text>
+                    </View>
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.inlineRow}>
+                  <Text style={styles.metricValue}>
+                    {singleDayRow?.hrAvg != null ? `${Math.round(singleDayRow.hrAvg)}` : 'NA'}
+                  </Text>
+                  <Text style={styles.metricUnit}>BPM</Text>
+                </View>
+              )}
             </View>
           </View>
 
@@ -441,13 +568,41 @@ const ActivityScreen = () => {
               <Icon name="thermometer" size={24} color="#F28C28" />
             </View>
             <View style={styles.metricInfo}>
-              <View style={styles.inlineRow}>
-                <Text style={styles.metricValue}>
-                  {summaryRow?.tempAvg != null ? `${summaryRow.tempAvg.toFixed(1)}` : 'NA'}
-                </Text>
-                <Text style={styles.metricUnit}>°C</Text>
-              </View>
               <Text style={styles.metricLabel}>{summaryPeriodLabel} Body Temperature</Text>
+              {isMultiDayRange ? (
+                <View style={styles.metricRangeRow}>
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>HIGH DAY</Text>
+                    <View style={styles.inlineRow}>
+                      <Text style={styles.metricRangeValue}>
+                        {vitalSummary.temperature.high != null
+                          ? vitalSummary.temperature.high.toFixed(1)
+                          : 'NA'}
+                      </Text>
+                      <Text style={styles.metricRangeUnit}>°C</Text>
+                    </View>
+                  </View>
+                  <View style={styles.metricRangeDivider} />
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>LOW DAY</Text>
+                    <View style={styles.inlineRow}>
+                      <Text style={styles.metricRangeValue}>
+                        {vitalSummary.temperature.low != null
+                          ? vitalSummary.temperature.low.toFixed(1)
+                          : 'NA'}
+                      </Text>
+                      <Text style={styles.metricRangeUnit}>°C</Text>
+                    </View>
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.inlineRow}>
+                  <Text style={styles.metricValue}>
+                    {singleDayRow?.tempAvg != null ? `${singleDayRow.tempAvg.toFixed(1)}` : 'NA'}
+                  </Text>
+                  <Text style={styles.metricUnit}>°C</Text>
+                </View>
+              )}
             </View>
           </View>
 
@@ -645,6 +800,36 @@ const styles = StyleSheet.create({
   inlineRow: {
     flexDirection: 'row',
     alignItems: 'baseline',
+  },
+  metricRangeRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    marginTop: 8,
+  },
+  metricRangeItem: {
+    flex: 1,
+  },
+  metricRangeDivider: {
+    width: 1,
+    backgroundColor: '#E6D9CC',
+    marginHorizontal: 12,
+  },
+  metricRangeLabel: {
+    color: '#9A6A3B',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  metricRangeValue: {
+    color: '#2E2A27',
+    fontSize: 19,
+    fontWeight: '700',
+  },
+  metricRangeUnit: {
+    color: '#7A726A',
+    fontSize: 10,
+    marginLeft: 4,
   },
   progressTrack: {
     marginTop: 10,
