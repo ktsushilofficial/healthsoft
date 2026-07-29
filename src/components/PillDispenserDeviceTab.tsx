@@ -70,8 +70,8 @@ const PillDispenserDeviceTab = () => {
       <Text style={styles.cardTitle}>Pill Dispenser Wi-Fi Setup</Text>
       <Text style={styles.cardSubtitle}>
         Connect to the dispenser over Bluetooth, then securely give it your
-        Wi-Fi details. Select only your pill dispenser; BluFi compatibility is
-        verified before Wi-Fi details can be entered.
+        Wi-Fi details. The scan shows devices advertising the ESP-BluFi setup
+        service, even if their Bluetooth name changes.
       </Text>
 
       <View style={styles.steps}>
@@ -204,9 +204,7 @@ const PillDispenserDeviceTab = () => {
                   <Text style={styles.rowMeta}>
                     {signalLabel(device.rssi)}
                     {device.rssi == null ? '' : ` · ${device.rssi} dBm`}
-                    {device.isLikelyBluFi
-                      ? ' · BluFi advertised'
-                      : ' · Compatibility unknown'}
+                    {' · BluFi setup device'}
                     {device.isConnectable === false ? ' · Not connectable' : ''}
                   </Text>
                 </View>

@@ -131,18 +131,17 @@ class EspBlufiModule(private val reactContext: ReactApplicationContext) :
         "isConnectable",
         Build.VERSION.SDK_INT < Build.VERSION_CODES.O || result.isConnectable,
       )
-      val advertisedName =
-        (result.scanRecord?.deviceName ?: device.name ?: "").lowercase()
-      val advertisesBluFi = result.scanRecord?.serviceUuids?.any {
-        it.uuid.toString().equals("0000ffff-0000-1000-8000-00805f9b34fb", true)
-      } == true
-      payload.putBoolean(
-        "isLikelyBluFi",
-        advertisesBluFi ||
-          advertisedName.contains("blufi") ||
-          advertisedName.contains("pill") ||
-          advertisedName.contains("dispenser"),
-      )
+      val blufiServiceUuid = "0000ffff-0000-1000-8000-00805f9b34fb"
+      val scanRecord = result.scanRecord
+      val advertisesBluFi =
+        scanRecord?.serviceUuids?.any {
+          it.uuid.toString().equals(blufiServiceUuid, ignoreCase = true)
+        } == true ||
+          scanRecord?.serviceData?.keys?.any {
+            it.uuid.toString().equals(blufiServiceUuid, ignoreCase = true)
+          } == true
+      if (!advertisesBluFi) return
+      payload.putBoolean("isLikelyBluFi", true)
       emit(EVENT_DEVICE_FOUND, payload)
     }
 

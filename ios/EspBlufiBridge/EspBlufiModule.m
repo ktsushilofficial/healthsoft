@@ -335,13 +335,22 @@ RCT_REMAP_METHOD(requestWifiStatus,
      advertisementData:(NSDictionary<NSString *, id> *)advertisementData
                   RSSI:(NSNumber *)RSSI {
   NSString *name = advertisementData[CBAdvertisementDataLocalNameKey] ?: peripheral.name ?: @"";
-  NSString *normalizedName = name.lowercaseString;
+  CBUUID *blufiServiceUuid = [CBUUID UUIDWithString:@"FFFF"];
   NSArray<CBUUID *> *serviceUuids = advertisementData[CBAdvertisementDataServiceUUIDsKey] ?: @[];
-  BOOL advertisesBluFi = [serviceUuids containsObject:[CBUUID UUIDWithString:@"FFFF"]];
-  BOOL nameMatches =
-    [normalizedName containsString:@"blufi"] ||
-    [normalizedName containsString:@"pill"] ||
-    [normalizedName containsString:@"dispenser"];
+  NSArray<CBUUID *> *overflowServiceUuids =
+    advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] ?: @[];
+  NSArray<CBUUID *> *solicitedServiceUuids =
+    advertisementData[CBAdvertisementDataSolicitedServiceUUIDsKey] ?: @[];
+  NSDictionary<CBUUID *, NSData *> *serviceData =
+    advertisementData[CBAdvertisementDataServiceDataKey] ?: @{};
+  BOOL advertisesBluFi =
+    [serviceUuids containsObject:blufiServiceUuid] ||
+    [overflowServiceUuids containsObject:blufiServiceUuid] ||
+    [solicitedServiceUuids containsObject:blufiServiceUuid] ||
+    serviceData[blufiServiceUuid] != nil;
+  if (!advertisesBluFi) {
+    return;
+  }
   NSNumber *connectable = advertisementData[CBAdvertisementDataIsConnectable] ?: @YES;
 
   NSString *identifier = peripheral.identifier.UUIDString;
@@ -352,7 +361,7 @@ RCT_REMAP_METHOD(requestWifiStatus,
            @"name": name.length > 0 ? name : @"Nearby BLE device",
            @"rssi": RSSI ?: @(-127),
            @"isConnectable": connectable,
-           @"isLikelyBluFi": @(advertisesBluFi || nameMatches)
+           @"isLikelyBluFi": @YES
          }];
 }
 
