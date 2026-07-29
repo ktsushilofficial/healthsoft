@@ -13,6 +13,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useBle } from '../bluetooth/BleProvider';
 import V8DeviceTab from '../components/V8DeviceTab';
+import PillDispenserDeviceTab from '../components/PillDispenserDeviceTab';
 import type { BleDiscoveredDevice } from '../bluetooth/types';
 import type { DeviceStackParamList } from '../types/navigation';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -97,6 +98,7 @@ const DeviceScreen = () => {
     () => [
       { id: 'current', label: 'Current Devices' },
       { id: 'v8', label: 'Hand Band' },
+      { id: 'pillDispenser', label: 'Pill Dispenser' },
     ],
     [],
   );
@@ -865,6 +867,8 @@ const DeviceScreen = () => {
                 promptToken={route.params?.promptedAt ?? null}
               />
             ) : null}
+
+            {activeTab === 'pillDispenser' ? <PillDispenserDeviceTab /> : null}
           </>
         ) : (
           <View style={styles.card}>

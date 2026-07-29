@@ -23,6 +23,8 @@ target 'HealthsoftApp' do
   pod 'FirebaseMessaging', :modular_headers => true
   pod 'V8SDK', :path => './V8SDK'
   pod 'V8Bridge', :path => './V8Bridge'
+  pod 'EspBlufi', :podspec => './EspBlufi.podspec'
+  pod 'EspBlufiBridge', :path => './EspBlufiBridge'
   config = use_native_modules!
 
   use_react_native!(
@@ -48,9 +50,11 @@ target 'HealthsoftApp' do
       end
     end
 
-    # Vendor V8 static library currently ships as iphoneos-only arm64.
-    # Keep it for device builds, but strip it from simulator link flags so
-    # `run-ios` can build without linker platform mismatch errors.
+    # Vendor V8 and Espressif OpenSSL static libraries currently ship with
+    # iphoneos-only arm64 slices. Keep them for device builds, but strip them
+    # from simulator link flags so Apple Silicon `run-ios` builds do not fail
+    # with linker platform mismatch errors. EspBlufiBridge itself remains
+    # linked on the simulator and reports that physical Bluetooth is required.
     pods_xcconfig_glob = File.join(__dir__, 'Pods', 'Target Support Files', 'Pods-HealthsoftApp', 'Pods-HealthsoftApp*.xcconfig')
     Dir.glob(pods_xcconfig_glob).each do |xcconfig_path|
       next unless File.file?(xcconfig_path)
@@ -72,9 +76,13 @@ target 'HealthsoftApp' do
         end
 
         flags = line.sub('OTHER_LDFLAGS = ', '').strip
-        simulator_flags = flags.gsub(/\s-l\"BleSDK\"/, '')
+        device_only_libraries = %w[BleSDK EspBlufi crypto ssl]
+        simulator_flags = device_only_libraries.reduce(flags) do |value, library|
+          value.gsub(/\s-l\"#{library}\"/, '')
+        end
+        device_flags = device_only_libraries.map { |library| "-l\"#{library}\"" }.join(' ')
         updated_lines << "OTHER_LDFLAGS = #{simulator_flags}\n"
-        updated_lines << "OTHER_LDFLAGS[sdk=iphoneos*] = $(inherited) -l\"BleSDK\"\n"
+        updated_lines << "OTHER_LDFLAGS[sdk=iphoneos*] = $(inherited) #{device_flags}\n"
         injected = true
         changed = true
       end

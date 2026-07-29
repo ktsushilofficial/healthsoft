@@ -134,6 +134,7 @@ android {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    implementation("com.github.EspressifApp:lib-blufi-android:2.5.1")
     implementation(files("libs/v8sdk1.0.jar"))
 
     if (hermesEnabled.toBoolean()) {

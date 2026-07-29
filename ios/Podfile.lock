@@ -13,6 +13,10 @@ PODS:
   - BVLinearGradient (2.8.3):
     - React-Core
   - DoubleConversion (1.1.6)
+  - EspBlufi (1.7.1.dev.20260304)
+  - EspBlufiBridge (1.0.0):
+    - EspBlufi
+    - React-Core
   - fast_float (8.0.0)
   - FBLazyVector (0.83.1)
   - Firebase/CoreOnly (12.8.0):
@@ -3133,6 +3137,8 @@ DEPENDENCIES:
   - boost (from `../node_modules/react-native/third-party-podspecs/boost.podspec`)
   - BVLinearGradient (from `../node_modules/react-native-linear-gradient`)
   - DoubleConversion (from `../node_modules/react-native/third-party-podspecs/DoubleConversion.podspec`)
+  - EspBlufi (from `./EspBlufi.podspec`)
+  - EspBlufiBridge (from `./EspBlufiBridge`)
   - fast_float (from `../node_modules/react-native/third-party-podspecs/fast_float.podspec`)
   - FBLazyVector (from `../node_modules/react-native/Libraries/FBLazyVector`)
   - FirebaseCore
@@ -3259,6 +3265,10 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-linear-gradient"
   DoubleConversion:
     :podspec: "../node_modules/react-native/third-party-podspecs/DoubleConversion.podspec"
+  EspBlufi:
+    :podspec: "./EspBlufi.podspec"
+  EspBlufiBridge:
+    :path: "./EspBlufiBridge"
   fast_float:
     :podspec: "../node_modules/react-native/third-party-podspecs/fast_float.podspec"
   FBLazyVector:
@@ -3451,6 +3461,8 @@ SPEC CHECKSUMS:
   boost: 7e761d76ca2ce687f7cc98e698152abd03a18f90
   BVLinearGradient: cb006ba232a1f3e4f341bb62c42d1098c284da70
   DoubleConversion: cb417026b2400c8f53ae97020b2be961b59470cb
+  EspBlufi: f5b1b1f9f8946f519efdbcf24be6fbe027fb7cb3
+  EspBlufiBridge: 11be7aa9b0451d7455bd780d7de3296dbbfc2e1a
   fast_float: b32c788ed9c6a8c584d114d0047beda9664e7cc6
   FBLazyVector: 309703e71d3f2f1ed7dc7889d58309c9d77a95a4
   Firebase: 9a58fdbc9d8655ed7b79a19cf9690bb007d3d46d
@@ -3559,6 +3571,6 @@ SPEC CHECKSUMS:
   V8SDK: 16004d03a9c5d58d0baa4ce16a9a4833ac776e9a
   Yoga: 5456bb010373068fc92221140921b09d126b116e
 
-PODFILE CHECKSUM: dd8c423c3db14b7eaca263fcccf05c22f8065d61
+PODFILE CHECKSUM: b802e05cd0a8ebf90f3b3e671e793f98eac5ff15
 
-COCOAPODS: 1.15.2
+COCOAPODS: 1.16.2
