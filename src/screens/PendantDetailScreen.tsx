@@ -31,6 +31,10 @@ import {
   getSeniorDashboardDeviceLabel,
   mapSeniorDashboardDeviceToSnapshot,
 } from '../utils/mapSeniorDashboardDeviceToSnapshot';
+import {
+  formatDashboardGeofenceValue,
+  getDashboardGeofenceStatus,
+} from '../utils/dashboardGeofenceStatus';
 
 const SENIOR_ROLE = 'SENIOR';
 const CARETAKER_ROLE = 'CARE_TAKER';
@@ -600,6 +604,11 @@ const PendantDetailScreen = () => {
     return { label: 'Normal', active: false };
   }, [matchedDeviceRecord]);
 
+  const geofenceStatus = useMemo(
+    () => getDashboardGeofenceStatus(matchedDeviceRecord),
+    [matchedDeviceRecord],
+  );
+
   const openLastPositionMap = useCallback(() => {
     const lat = liveSnapshot.latitude;
     const lon = liveSnapshot.longitude;
@@ -699,6 +708,127 @@ const PendantDetailScreen = () => {
                 </TouchableOpacity>
               </View>
               <Image source={locationThumb} style={styles.weatherImage} />
+            </View>
+
+            {/* Geofence status from the dashboard device DTO */}
+            <View
+              style={[
+                styles.dashboardGeofenceCard,
+                geofenceStatus.hasActiveAlarm
+                  ? styles.dashboardGeofenceCardAlarm
+                  : null,
+              ]}
+            >
+              <View style={styles.dashboardGeofenceHeader}>
+                <View
+                  style={[
+                    styles.dashboardGeofenceIcon,
+                    geofenceStatus.hasActiveAlarm
+                      ? styles.dashboardGeofenceIconAlarm
+                      : null,
+                  ]}
+                >
+                  <Icon
+                    name={
+                      geofenceStatus.hasActiveAlarm
+                        ? 'warning'
+                        : 'location-outline'
+                    }
+                    size={21}
+                    color={
+                      geofenceStatus.hasActiveAlarm ? '#FFFFFF' : '#B45309'
+                    }
+                  />
+                </View>
+                <View style={styles.dashboardGeofenceTitleCol}>
+                  <Text style={styles.dashboardGeofenceTitle}>
+                    Geofence alarm status
+                  </Text>
+                  <Text style={styles.dashboardGeofenceSubtitle}>
+                    Latest pendant dashboard event
+                  </Text>
+                </View>
+                <View
+                  style={[
+                    styles.dashboardGeofenceBadge,
+                    geofenceStatus.hasActiveAlarm
+                      ? styles.dashboardGeofenceBadgeAlarm
+                      : null,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.dashboardGeofenceBadgeText,
+                      geofenceStatus.hasActiveAlarm
+                        ? styles.dashboardGeofenceBadgeTextAlarm
+                        : null,
+                    ]}
+                  >
+                    {geofenceStatus.summary}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.dashboardGeofenceAlarmRow}>
+                {[geofenceStatus.alarm1, geofenceStatus.alarm2].map(
+                  (value, index) => (
+                    <View
+                      key={`geofence-alarm-${index + 1}`}
+                      style={styles.dashboardGeofenceAlarmItem}
+                    >
+                      <Text style={styles.dashboardGeofenceItemLabel}>
+                        Alarm {index + 1}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.dashboardGeofenceItemValue,
+                          value === true
+                            ? styles.dashboardGeofenceItemValueAlarm
+                            : null,
+                        ]}
+                      >
+                        {formatDashboardGeofenceValue(
+                          value,
+                          'Triggered',
+                          'Clear',
+                        )}
+                      </Text>
+                    </View>
+                  ),
+                )}
+              </View>
+
+              <View style={styles.dashboardGeofenceZones}>
+                {geofenceStatus.statuses.map((value, index) => (
+                  <View
+                    key={`geofence-status-${index + 1}`}
+                    style={[
+                      styles.dashboardGeofenceZone,
+                      value === true
+                        ? styles.dashboardGeofenceZoneActive
+                        : null,
+                    ]}
+                  >
+                    <Text style={styles.dashboardGeofenceZoneLabel}>
+                      Status {index + 1}
+                    </Text>
+                    <Text style={styles.dashboardGeofenceZoneValue}>
+                      {formatDashboardGeofenceValue(
+                        value,
+                        'Active',
+                        'Inactive',
+                      )}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+
+              {!geofenceStatus.hasData ? (
+                <Text style={styles.dashboardGeofenceUnavailable}>
+                  Geofence fields were not included in the latest dashboard
+                  response.
+                </Text>
+              ) : null}
             </View>
 
             {/* Active Emergency Banner */}
@@ -984,6 +1114,129 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#8A7565',
     marginTop: 2,
+  },
+  dashboardGeofenceCard: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    padding: 15,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#F3D4A5',
+    backgroundColor: '#FFFBEB',
+  },
+  dashboardGeofenceCardAlarm: {
+    borderColor: '#FCA5A5',
+    backgroundColor: '#FEF2F2',
+  },
+  dashboardGeofenceHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  dashboardGeofenceIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FEF3C7',
+  },
+  dashboardGeofenceIconAlarm: {
+    backgroundColor: '#DC2626',
+  },
+  dashboardGeofenceTitleCol: {
+    flex: 1,
+    minWidth: 0,
+    marginLeft: 11,
+  },
+  dashboardGeofenceTitle: {
+    color: '#493A2D',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  dashboardGeofenceSubtitle: {
+    marginTop: 2,
+    color: '#8A7565',
+    fontSize: 10,
+  },
+  dashboardGeofenceBadge: {
+    maxWidth: 106,
+    marginLeft: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    backgroundColor: '#FEF3C7',
+  },
+  dashboardGeofenceBadgeAlarm: {
+    backgroundColor: '#FEE2E2',
+  },
+  dashboardGeofenceBadgeText: {
+    color: '#92400E',
+    fontSize: 9,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  dashboardGeofenceBadgeTextAlarm: {
+    color: '#991B1B',
+  },
+  dashboardGeofenceAlarmRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 14,
+  },
+  dashboardGeofenceAlarmItem: {
+    flex: 1,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.8)',
+  },
+  dashboardGeofenceItemLabel: {
+    color: '#8A7565',
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  dashboardGeofenceItemValue: {
+    marginTop: 4,
+    color: '#4B5563',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  dashboardGeofenceItemValueAlarm: {
+    color: '#DC2626',
+  },
+  dashboardGeofenceZones: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 7,
+    marginTop: 10,
+  },
+  dashboardGeofenceZone: {
+    width: '48%',
+    paddingHorizontal: 9,
+    paddingVertical: 8,
+    borderRadius: 9,
+    backgroundColor: '#F5F0E9',
+  },
+  dashboardGeofenceZoneActive: {
+    backgroundColor: '#DCFCE7',
+  },
+  dashboardGeofenceZoneLabel: {
+    color: '#8A7565',
+    fontSize: 9,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  dashboardGeofenceZoneValue: {
+    marginTop: 2,
+    color: '#4B5563',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  dashboardGeofenceUnavailable: {
+    marginTop: 10,
+    color: '#8A7565',
+    fontSize: 11,
+    lineHeight: 15,
   },
   emergencyBanner: {
     flexDirection: 'row',
