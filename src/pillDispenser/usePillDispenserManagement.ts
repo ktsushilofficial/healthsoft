@@ -181,34 +181,101 @@ export function usePillDispenserManagement(
       setMessage(null);
       try {
         const parsed = parsePillDispenserCode(codeOrUrl);
+        const registerVendorUser = async (): Promise<PillDispenserLocalRecord> => {
+          try {
+            const registered =
+              await pillDispenserVendorApi.registerUser(profile);
+            const registeredUserId = String(
+              registered?.user_id || '',
+            ).trim();
+            if (!registeredUserId) {
+              throw new Error(
+                'Zoomcare registered the vendor user without returning a user ID.',
+              );
+            }
+            const registeredRecord: PillDispenserLocalRecord = {
+              ownerKey: profile.ownerKey,
+              vendorUserId: registeredUserId,
+              deviceSn: null,
+              model: null,
+              updatedAt: Date.now(),
+            };
+            await savePillDispenserRecord(registeredRecord);
+            if (mountedRef.current) {
+              applyRecord(registeredRecord);
+            }
+            return registeredRecord;
+          } catch (registrationError) {
+            if (
+              registrationError instanceof PillDispenserVendorError &&
+              registrationError.code === 706
+            ) {
+              throw new Error(
+                'The Zoomcare user already exists, but the API did not return its user ID. ' +
+                  'Ask Zoomcare to provide the user ID for this senior before connecting the dispenser.',
+              );
+            }
+            throw registrationError;
+          }
+        };
+
         let current =
           recordRef.current ??
           (await loadPillDispenserRecord(profile.ownerKey));
 
         if (!current?.vendorUserId) {
-          const registered = await pillDispenserVendorApi.registerUser(profile);
-          current = {
-            ownerKey: profile.ownerKey,
-            vendorUserId: String(registered.user_id),
-            deviceSn: null,
-            model: null,
-            updatedAt: Date.now(),
-          };
-          await savePillDispenserRecord(current);
+          current = await registerVendorUser();
         }
 
+        let existingBinding = false;
+        let knownOffline = false;
+
         try {
-          await pillDispenserVendorApi.bindDevice(
+          const isOnline = await pillDispenserVendorApi.getStatus(
             current.vendorUserId,
             parsed.deviceSn,
-            profile,
           );
-        } catch (bindError) {
-          if (
-            !(bindError instanceof PillDispenserVendorError) ||
-            bindError.code !== 610
-          ) {
-            throw bindError;
+          existingBinding = true;
+          knownOffline = !isOnline;
+        } catch (statusError) {
+          if (statusError instanceof PillDispenserVendorError) {
+            if (statusError.code === 608) {
+              // The user and dispenser exist, but they are not related yet.
+              existingBinding = false;
+            } else if (statusError.code === 611) {
+              // An offline response still confirms the existing relationship.
+              existingBinding = true;
+              knownOffline = true;
+            } else if (statusError.code === 708) {
+              // The locally cached vendor user was deleted or reset remotely.
+              // Register again to obtain a valid ID before attempting to bind.
+              current = await registerVendorUser();
+              existingBinding = false;
+              knownOffline = false;
+            } else {
+              throw statusError;
+            }
+          } else {
+            throw statusError;
+          }
+        }
+
+        if (!existingBinding) {
+          try {
+            await pillDispenserVendorApi.bindDevice(
+              current.vendorUserId,
+              parsed.deviceSn,
+              profile,
+            );
+          } catch (bindError) {
+            if (
+              !(bindError instanceof PillDispenserVendorError) ||
+              bindError.code !== 610
+            ) {
+              throw bindError;
+            }
+            // The vendor confirms this user already owns the dispenser.
+            existingBinding = true;
           }
         }
 
@@ -221,7 +288,14 @@ export function usePillDispenserManagement(
         await savePillDispenserRecord(boundRecord);
         if (!mountedRef.current) return;
         applyRecord(boundRecord);
-        setMessage('The pill dispenser is bound to this senior.');
+        setOnline(knownOffline ? false : null);
+        setMessage(
+          existingBinding
+            ? knownOffline
+              ? 'The existing dispenser binding was restored. The device is currently offline.'
+              : 'The existing dispenser binding was restored.'
+            : 'The pill dispenser was bound to this senior.',
+        );
         await refreshForRecord(boundRecord, false);
       } catch (bindError) {
         if (mountedRef.current) setError(readableError(bindError));

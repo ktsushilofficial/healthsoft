@@ -461,10 +461,11 @@ const PillDispenserManagementSection = () => {
 
           {!bound ? (
             <View>
-              <Text style={styles.sectionTitle}>Bind a dispenser</Text>
+              <Text style={styles.sectionTitle}>Connect a dispenser</Text>
               <Text style={styles.helperText}>
-                Enter the DN printed beside the QR code. You can also paste the
-                complete QR link; the app will extract its DN automatically.
+                Enter the DN printed beside the QR code. The app checks for an
+                existing binding first and only binds the dispenser when
+                needed. You can also paste the complete QR link.
               </Text>
               <Text style={styles.inputLabel}>DN code or QR content</Text>
               <TextInput
@@ -491,7 +492,9 @@ const PillDispenserManagementSection = () => {
                   <Icon name="link-outline" size={18} color="#FFFFFF" />
                 )}
                 <Text style={styles.primaryButtonText}>
-                  {working === 'bind' ? 'Binding…' : 'Bind Pill Dispenser'}
+                  {working === 'bind'
+                    ? 'Checking dispenser…'
+                    : 'Check & Connect Dispenser'}
                 </Text>
               </TouchableOpacity>
             </View>

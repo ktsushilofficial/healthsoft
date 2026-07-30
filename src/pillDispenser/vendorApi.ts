@@ -21,6 +21,77 @@ const apiClient = axios.create({
   },
 });
 
+const SECRET_FINGERPRINT_LOG_FIELDS = new Set([
+  'token',
+  'company_secret',
+]);
+
+const COMPLETELY_REDACTED_LOG_FIELDS = new Set([
+  'patient_name',
+  'patient_birthday',
+  'birthday',
+  'drug_name',
+]);
+
+const MASKED_LOG_FIELDS = new Set([
+  'company_code',
+  'device_sn',
+  'mobile',
+  'patient_mobile',
+  'username',
+]);
+
+let requestSequence = 0;
+
+function maskLogValue(value: unknown): string {
+  const text = String(value ?? '');
+  return text.length <= 4 ? '[REDACTED]' : `***${text.slice(-4)}`;
+}
+
+function fingerprintSecretForLog(value: unknown): string {
+  const text = String(value ?? '');
+  const ending = text.slice(-4) || 'empty';
+  return `[REDACTED length=${text.length} ending=${ending}]`;
+}
+
+function sanitizeForLog(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeForLog);
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, entry]) => {
+      const normalizedKey = key.toLowerCase();
+      if (SECRET_FINGERPRINT_LOG_FIELDS.has(normalizedKey)) {
+        return [key, fingerprintSecretForLog(entry)];
+      }
+      if (COMPLETELY_REDACTED_LOG_FIELDS.has(normalizedKey)) {
+        return [key, '[REDACTED]'];
+      }
+      if (MASKED_LOG_FIELDS.has(normalizedKey)) {
+        return [key, maskLogValue(entry)];
+      }
+      return [key, sanitizeForLog(entry)];
+    }),
+  );
+}
+
+function logVendorApi(
+  label: 'request' | 'response' | 'error',
+  details: Record<string, unknown>,
+) {
+  if (typeof __DEV__ === 'undefined' || !__DEV__) return;
+  const prefix = `[Pill Dispenser API] ${label.toUpperCase()}`;
+  if (label === 'error') {
+    console.warn(prefix, sanitizeForLog(details));
+    return;
+  }
+  console.log(prefix, sanitizeForLog(details));
+}
+
 const ERROR_MESSAGES: Record<number, string> = {
   602: 'Do-not-disturb start and end times cannot be the same.',
   604: 'The dispenser does not exist.',
@@ -72,14 +143,39 @@ async function rawPost<T>(
   endpoint: string,
   payload: Record<string, unknown>,
 ): Promise<VendorApiEnvelope<T>> {
+  const requestId = ++requestSequence;
+  const url = endpointUrl(endpoint);
+  const startedAt = Date.now();
+  logVendorApi('request', {
+    requestId,
+    endpoint,
+    url,
+    payload,
+  });
+
   try {
     const response = await apiClient.post<VendorApiEnvelope<T>>(
-      endpointUrl(endpoint),
+      url,
       payload,
     );
+    logVendorApi('response', {
+      requestId,
+      endpoint,
+      httpStatus: response.status,
+      durationMs: Date.now() - startedAt,
+      body: response.data,
+    });
     return response.data;
   } catch (error) {
     if (axios.isAxiosError(error)) {
+      logVendorApi('error', {
+        requestId,
+        endpoint,
+        httpStatus: error.response?.status ?? null,
+        durationMs: Date.now() - startedAt,
+        message: error.message,
+        body: error.response?.data ?? null,
+      });
       const message =
         typeof error.response?.data === 'object' &&
         error.response?.data &&
@@ -88,6 +184,12 @@ async function rawPost<T>(
           : error.message;
       throw new Error(message || 'Unable to reach the pill dispenser service.');
     }
+    logVendorApi('error', {
+      requestId,
+      endpoint,
+      durationMs: Date.now() - startedAt,
+      message: error instanceof Error ? error.message : String(error),
+    });
     throw error;
   }
 }
@@ -127,9 +229,10 @@ async function getVendorToken(forceRefresh = false): Promise<string> {
   }
 }
 
-async function authorizedPost<T>(
+async function authorizedPostWithCodes<T>(
   endpoint: string,
   payload: Record<string, unknown>,
+  acceptedCodes: readonly number[],
   retryExpiredToken = true,
 ): Promise<T> {
   const token = await getVendorToken();
@@ -138,12 +241,20 @@ async function authorizedPost<T>(
   if (code === 701 && retryExpiredToken) {
     cachedToken = null;
     await getVendorToken(true);
-    return authorizedPost(endpoint, payload, false);
+    return authorizedPostWithCodes(endpoint, payload, acceptedCodes, false);
   }
-  if (code !== 200) {
+  if (!acceptedCodes.includes(code)) {
     throw new PillDispenserVendorError(code, response.message);
   }
   return response.data;
+}
+
+async function authorizedPost<T>(
+  endpoint: string,
+  payload: Record<string, unknown>,
+  retryExpiredToken = true,
+): Promise<T> {
+  return authorizedPostWithCodes(endpoint, payload, [200], retryExpiredToken);
 }
 
 function numberValue(value: unknown, fallback = 0): number {
@@ -195,10 +306,14 @@ export const pillDispenserVendorApi = {
   async registerUser(
     profile: PillDispenserOwnerProfile,
   ): Promise<VendorRegisteredUser> {
-    return authorizedPost<VendorRegisteredUser>('user_register', {
-      username: profile.username,
-      mobile: profile.mobile,
-    });
+    return authorizedPostWithCodes<VendorRegisteredUser>(
+      'user_register',
+      {
+        username: profile.username,
+        mobile: profile.mobile,
+      },
+      [200, 706],
+    );
   },
 
   async bindDevice(
