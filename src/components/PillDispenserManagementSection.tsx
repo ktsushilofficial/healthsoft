@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
+  Platform,
   StyleSheet,
   Switch,
   Text,
@@ -9,6 +11,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import DateTimePicker, {
+  type DateTimePickerEvent,
+} from '@react-native-community/datetimepicker';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -28,6 +33,137 @@ type Option = {
   label: string;
   value: number;
 };
+
+function parseClockTime(value: string): Date {
+  const match = value.trim().match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  const date = new Date();
+  date.setSeconds(0, 0);
+  if (match) {
+    date.setHours(Number(match[1]), Number(match[2]), 0, 0);
+  }
+  return date;
+}
+
+function formatClockTime(value: Date): string {
+  return `${String(value.getHours()).padStart(2, '0')}:${String(
+    value.getMinutes(),
+  ).padStart(2, '0')}`;
+}
+
+function ClockTimePicker({
+  value,
+  onChange,
+  disabled,
+  is24Hour,
+  accessibilityLabel,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  is24Hour: boolean;
+  accessibilityLabel: string;
+}) {
+  const [visible, setVisible] = useState(false);
+  const [pickerValue, setPickerValue] = useState(() =>
+    parseClockTime(value),
+  );
+
+  const openPicker = () => {
+    setPickerValue(parseClockTime(value));
+    setVisible(true);
+  };
+
+  const handleChange = (event: DateTimePickerEvent, nextValue?: Date) => {
+    if (Platform.OS === 'ios') {
+      if (nextValue) setPickerValue(nextValue);
+      return;
+    }
+
+    setVisible(false);
+    if (event.type !== 'dismissed' && nextValue) {
+      onChange(formatClockTime(nextValue));
+    }
+  };
+
+  return (
+    <>
+      <TouchableOpacity
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel}
+        disabled={disabled}
+        activeOpacity={0.7}
+        style={[
+          styles.timePickerButton,
+          disabled ? styles.disabled : null,
+        ]}
+        onPress={openPicker}
+      >
+        <Text style={styles.timePickerValue}>{value}</Text>
+        <Icon name="time-outline" size={20} color="#F28C28" />
+      </TouchableOpacity>
+
+      {Platform.OS === 'android' && visible ? (
+        <DateTimePicker
+          value={pickerValue}
+          mode="time"
+          display="clock"
+          is24Hour={is24Hour}
+          onChange={handleChange}
+        />
+      ) : null}
+
+      {Platform.OS === 'ios' ? (
+        <Modal
+          visible={visible}
+          animationType="slide"
+          transparent
+          onRequestClose={() => setVisible(false)}
+        >
+          <View style={styles.timePickerOverlay}>
+            <View style={styles.timePickerModal}>
+              <View style={styles.timePickerHeader}>
+                <TouchableOpacity
+                  style={styles.timePickerAction}
+                  onPress={() => setVisible(false)}
+                >
+                  <Text style={styles.timePickerActionText}>Cancel</Text>
+                </TouchableOpacity>
+                <Text style={styles.timePickerTitle}>Select time</Text>
+                <TouchableOpacity
+                  style={styles.timePickerAction}
+                  onPress={() => {
+                    onChange(formatClockTime(pickerValue));
+                    setVisible(false);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.timePickerActionText,
+                      styles.timePickerDoneText,
+                    ]}
+                  >
+                    Done
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <DateTimePicker
+                value={pickerValue}
+                mode="time"
+                display="spinner"
+                is24Hour={is24Hour}
+                minuteInterval={1}
+                themeVariant="light"
+                accentColor="#F28C28"
+                onChange={handleChange}
+                style={styles.iosTimePicker}
+              />
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+    </>
+  );
+}
 
 function normalizePhone(countryCode?: string, phone?: string): string {
   return `${countryCode || ''}${phone || ''}`.replace(/[^\d]/g, '');
@@ -587,36 +723,34 @@ const PillDispenserManagementSection = () => {
                     <View style={styles.twoColumns}>
                       <View style={styles.column}>
                         <Text style={styles.inputLabel}>DND starts</Text>
-                        <TextInput
+                        <ClockTimePicker
                           value={settingsDraft.unfazedStart}
-                          onChangeText={value =>
+                          onChange={value =>
                             setSettingsDraft(current =>
                               current
                                 ? { ...current, unfazedStart: value }
                                 : current,
                             )
                           }
-                          editable={!controlsDisabled}
-                          placeholder="23:00"
-                          placeholderTextColor="#A69B91"
-                          style={styles.input}
+                          disabled={controlsDisabled}
+                          is24Hour={settingsDraft.timeFormat === 0}
+                          accessibilityLabel="Select do-not-disturb start time"
                         />
                       </View>
                       <View style={styles.column}>
                         <Text style={styles.inputLabel}>DND ends</Text>
-                        <TextInput
+                        <ClockTimePicker
                           value={settingsDraft.unfazedEnd}
-                          onChangeText={value =>
+                          onChange={value =>
                             setSettingsDraft(current =>
                               current
                                 ? { ...current, unfazedEnd: value }
                                 : current,
                             )
                           }
-                          editable={!controlsDisabled}
-                          placeholder="06:30"
-                          placeholderTextColor="#A69B91"
-                          style={styles.input}
+                          disabled={controlsDisabled}
+                          is24Hour={settingsDraft.timeFormat === 0}
+                          accessibilityLabel="Select do-not-disturb end time"
                         />
                       </View>
                     </View>
@@ -862,17 +996,16 @@ const PillDispenserManagementSection = () => {
                     </View>
 
                     <Text style={styles.inputLabel}>Alarm time</Text>
-                    <TextInput
+                    <ClockTimePicker
                       value={alarmDraft.alarmTime}
-                      onChangeText={value =>
+                      onChange={value =>
                         setAlarmDraft(current =>
                           current ? { ...current, alarmTime: value } : current,
                         )
                       }
-                      editable={!controlsDisabled}
-                      placeholder="08:05"
-                      placeholderTextColor="#A69B91"
-                      style={styles.input}
+                      disabled={controlsDisabled}
+                      is24Hour={settingsDraft?.timeFormat !== 1}
+                      accessibilityLabel="Select medication alarm time"
                     />
 
                     <Text style={styles.inputLabel}>Medicines</Text>
@@ -1202,6 +1335,65 @@ const styles = StyleSheet.create({
     minHeight: 43,
     fontSize: 14,
     color: '#2E2A27',
+  },
+  timePickerButton: {
+    minHeight: 43,
+    borderWidth: 1,
+    borderColor: '#DDD4CC',
+    backgroundColor: '#FFFEFC',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  timePickerValue: {
+    color: '#2E2A27',
+    fontSize: 15,
+    fontVariant: ['tabular-nums'],
+  },
+  timePickerOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+  },
+  timePickerModal: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: 24,
+  },
+  timePickerHeader: {
+    minHeight: 54,
+    paddingHorizontal: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E5DDD5',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  timePickerAction: {
+    minWidth: 64,
+    paddingHorizontal: 4,
+    paddingVertical: 10,
+  },
+  timePickerActionText: {
+    color: '#73573C',
+    fontSize: 15,
+  },
+  timePickerDoneText: {
+    color: '#C2650B',
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+  timePickerTitle: {
+    color: '#3E3732',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  iosTimePicker: {
+    alignSelf: 'stretch',
   },
   primaryButton: {
     minHeight: 46,
