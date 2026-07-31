@@ -20,6 +20,7 @@ import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.jstyle.blesdkv8.Util.BleSDK
 import com.jstyle.blesdkv8.callback.DataListener2301
+import com.jstyle.blesdkv8.model.AutoTestMode
 import com.jstyle.blesdkv8.model.MyDeviceTime
 import com.jstyle.blesdkv8.model.MyPersonalInfo
 import java.text.SimpleDateFormat
@@ -286,17 +287,26 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun startEcgMeasurement(promise: Promise) {
-    enqueueVendorCommand(BleSDK.ppgWithMode(1, 0), promise)
+    // The Android V8 SDK streams PPG during an AutoHRV measurement. Its
+    // ppgWithMode command belongs to the separate blood-glucose workflow.
+    enqueueVendorCommand(
+      BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, 50_000L, true),
+      promise,
+    )
   }
 
   @ReactMethod
   fun stopEcgMeasurement(promise: Promise) {
-    enqueueVendorCommand(BleSDK.ppgWithMode(3, 0), promise)
+    enqueueVendorCommand(
+      BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, 50_000L, false),
+      promise,
+    )
   }
 
   @ReactMethod
   fun exitEcgMeasurement(promise: Promise) {
-    enqueueVendorCommand(BleSDK.ppgWithMode(5, 0), promise)
+    // Android has no additional exit command for the AutoHRV PPG workflow.
+    promise.resolve(true)
   }
 
   @ReactMethod

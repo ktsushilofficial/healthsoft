@@ -829,9 +829,16 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     });
     setEcgSession(session);
     try {
-      await native.setEcgRealtimeEnabled(true);
+      if (Platform.OS === 'android') {
+        // The Android vendor SDK requires AutoHRV measurement to be started
+        // before its real-time PPG stream is enabled.
+        await native.startEcgMeasurement();
+        await native.setEcgRealtimeEnabled(true);
+      } else {
+        await native.setEcgRealtimeEnabled(true);
+        await native.startEcgMeasurement();
+      }
       logV8Debug('ECG real-time streaming enabled');
-      await native.startEcgMeasurement();
       logV8Debug('ECG start command sent');
       setEcgSession(prev => prev?.id === session.id
         ? { ...prev, phase: 'measuring', statusMessage: 'ECG measurement is running…' }
