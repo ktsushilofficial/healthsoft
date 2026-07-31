@@ -24,6 +24,7 @@ export type PillDispenserOwnerProfile = {
 
 export type PillDispenserLocalRecord = {
   ownerKey: string;
+  vendorHost: string;
   vendorUserId: string;
   deviceSn: string | null;
   model: string | null;

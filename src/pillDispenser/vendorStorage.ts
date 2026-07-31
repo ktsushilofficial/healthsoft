@@ -1,19 +1,41 @@
 import * as Keychain from 'react-native-keychain';
+import {
+  PILL_DISPENSER_VENDOR_CONFIG,
+  PILL_DISPENSER_VENDOR_HOSTS,
+} from './vendorConfig';
 import type { PillDispenserLocalRecord } from './vendorTypes';
 
 const STORAGE_SERVICE = 'healthsoft.pill-dispenser.vendor-records';
 const STORAGE_USERNAME = 'pill-dispenser-records';
 
-function isRecord(value: unknown): value is PillDispenserLocalRecord {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+function normalizeHost(value: string): string {
+  return value.trim().replace(/\/+$/, '').toLowerCase();
+}
+
+function parseRecord(value: unknown): PillDispenserLocalRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Partial<PillDispenserLocalRecord>;
-  return (
+  const valid =
     typeof record.ownerKey === 'string' &&
     typeof record.vendorUserId === 'string' &&
     (typeof record.deviceSn === 'string' || record.deviceSn === null) &&
     (typeof record.model === 'string' || record.model === null) &&
-    typeof record.updatedAt === 'number'
-  );
+    typeof record.updatedAt === 'number';
+  if (!valid) return null;
+
+  return {
+    ownerKey: record.ownerKey!,
+    // Records created before environment scoping were production records.
+    vendorHost: normalizeHost(
+      typeof record.vendorHost === 'string'
+        ? record.vendorHost
+        : PILL_DISPENSER_VENDOR_HOSTS.production,
+    ),
+    vendorUserId: record.vendorUserId!,
+    deviceSn: record.deviceSn!,
+    model: record.model!,
+    updatedAt: record.updatedAt!,
+  };
 }
 
 async function loadAll(): Promise<PillDispenserLocalRecord[]> {
@@ -24,7 +46,11 @@ async function loadAll(): Promise<PillDispenserLocalRecord[]> {
 
   try {
     const parsed = JSON.parse(credentials.password) as unknown;
-    return Array.isArray(parsed) ? parsed.filter(isRecord) : [];
+    return Array.isArray(parsed)
+      ? parsed
+          .map(parseRecord)
+          .filter((record): record is PillDispenserLocalRecord => !!record)
+      : [];
   } catch {
     return [];
   }
@@ -44,17 +70,32 @@ async function saveAll(records: PillDispenserLocalRecord[]): Promise<void> {
 
 export async function loadPillDispenserRecord(
   ownerKey: string,
+  vendorHost: string = PILL_DISPENSER_VENDOR_CONFIG.host,
 ): Promise<PillDispenserLocalRecord | null> {
   const records = await loadAll();
-  return records.find(record => record.ownerKey === ownerKey) ?? null;
+  const currentHost = normalizeHost(vendorHost);
+  return (
+    records.find(
+      record =>
+        record.ownerKey === ownerKey && record.vendorHost === currentHost,
+    ) ?? null
+  );
 }
 
 export async function savePillDispenserRecord(
   record: PillDispenserLocalRecord,
 ): Promise<void> {
   const records = await loadAll();
-  const next = records.filter(item => item.ownerKey !== record.ownerKey);
-  next.push(record);
+  const scopedRecord = {
+    ...record,
+    vendorHost: normalizeHost(record.vendorHost),
+  };
+  const next = records.filter(
+    item =>
+      item.ownerKey !== scopedRecord.ownerKey ||
+      item.vendorHost !== scopedRecord.vendorHost,
+  );
+  next.push(scopedRecord);
   await saveAll(next);
 }
 

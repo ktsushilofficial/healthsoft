@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { parsePillDispenserCode } from './deviceSn';
+import { PILL_DISPENSER_VENDOR_CONFIG } from './vendorConfig';
 import { PillDispenserVendorError, pillDispenserVendorApi } from './vendorApi';
 import {
   clearPillDispenserBinding,
@@ -195,6 +196,7 @@ export function usePillDispenserManagement(
             }
             const registeredRecord: PillDispenserLocalRecord = {
               ownerKey: profile.ownerKey,
+              vendorHost: PILL_DISPENSER_VENDOR_CONFIG.host,
               vendorUserId: registeredUserId,
               deviceSn: null,
               model: null,
@@ -239,8 +241,10 @@ export function usePillDispenserManagement(
           knownOffline = !isOnline;
         } catch (statusError) {
           if (statusError instanceof PillDispenserVendorError) {
-            if (statusError.code === 608) {
-              // The user and dispenser exist, but they are not related yet.
+            if (statusError.code === 604 || statusError.code === 608) {
+              // Some vendor environments report an unbound DN as either
+              // "device does not exist" or "unbound relationship". Let the
+              // bind endpoint make the authoritative decision.
               existingBinding = false;
             } else if (statusError.code === 611) {
               // An offline response still confirms the existing relationship.

@@ -127,8 +127,15 @@ export class PillDispenserVendorError extends Error {
   }
 }
 
-let cachedToken: { value: string; expiresAt: number } | null = null;
-let tokenRequest: Promise<string> | null = null;
+let cachedToken: {
+  host: string;
+  value: string;
+  expiresAt: number;
+} | null = null;
+let tokenRequest: {
+  host: string;
+  value: Promise<string>;
+} | null = null;
 
 function endpointUrl(endpoint: string): string {
   return `${PILL_DISPENSER_VENDOR_CONFIG.host}/index.php?s=/Company/CommonApi/${endpoint}`;
@@ -195,16 +202,24 @@ async function rawPost<T>(
 }
 
 async function getVendorToken(forceRefresh = false): Promise<string> {
+  const currentHost = PILL_DISPENSER_VENDOR_CONFIG.host;
   if (
     !forceRefresh &&
     cachedToken &&
+    cachedToken.host === currentHost &&
     cachedToken.expiresAt > Date.now() + 60_000
   ) {
     return cachedToken.value;
   }
-  if (!forceRefresh && tokenRequest) return tokenRequest;
+  if (
+    !forceRefresh &&
+    tokenRequest &&
+    tokenRequest.host === currentHost
+  ) {
+    return tokenRequest.value;
+  }
 
-  tokenRequest = (async () => {
+  const request = (async () => {
     const response = await rawPost<VendorTokenData>('get_token', {
       company_code: PILL_DISPENSER_VENDOR_CONFIG.companyCode,
       company_secret: PILL_DISPENSER_VENDOR_CONFIG.companySecret,
@@ -216,16 +231,21 @@ async function getVendorToken(forceRefresh = false): Promise<string> {
 
     const lifetimeSeconds = Number(response.data.expire) || 7200;
     cachedToken = {
+      host: currentHost,
       value: response.data.token,
       expiresAt: Date.now() + lifetimeSeconds * 1000,
     };
     return response.data.token;
   })();
+  const requestEntry = { host: currentHost, value: request };
+  tokenRequest = requestEntry;
 
   try {
-    return await tokenRequest;
+    return await request;
   } finally {
-    tokenRequest = null;
+    if (tokenRequest === requestEntry) {
+      tokenRequest = null;
+    }
   }
 }
 
