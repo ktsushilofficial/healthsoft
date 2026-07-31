@@ -14,6 +14,7 @@ import {
 import {
   getAssignedHandBandMacAddress,
   normalizeMacAddress,
+  resolveConnectedHandBandMac,
 } from '../utils/deviceAssignments';
 import {
   V8_HAND_BAND_AUTO_SYNC_INTERVAL_MS,
@@ -731,7 +732,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
 
   useEffect(() => {
     if (!activeDeviceId || connectionStates[activeDeviceId] !== 'connected') return;
-    const connectedMac = normalizeMacAddress(deviceInfo.mac);
+    const connectedMac = resolveConnectedHandBandMac(deviceInfo.mac, activeDeviceId);
     if (!connectedMac) return;
 
     const assignedMacs = new Set(
@@ -805,7 +806,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     if (!Object.values(connectionStates).some(state => state === 'connected')) {
       throw new Error('Connect the assigned hand band before starting ECG.');
     }
-    const connectedMac = normalizeMacAddress(deviceInfo.mac);
+    const connectedMac = resolveConnectedHandBandMac(deviceInfo.mac, activeDeviceId);
     const assignedMacs = selectedSeniorHandBandMacs
       .map(value => normalizeMacAddress(value))
       .filter((value): value is string => !!value);
@@ -819,7 +820,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       ecgCompletionTimerRef.current = null;
     }
 
-    const session = createV8EcgSession(ecgSeniorId, deviceInfo.mac, deviceInfo.firmwareVersion);
+    const session = createV8EcgSession(ecgSeniorId, connectedMac, deviceInfo.firmwareVersion);
     logV8Debug('Starting ECG measurement', {
       session,
       connectedMac,
@@ -854,6 +855,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     }
   }, [
     connectionStates,
+    activeDeviceId,
     deviceInfo.firmwareVersion,
     deviceInfo.mac,
     ecgSeniorId,
@@ -1374,7 +1376,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       if (!seniorId) {
         throw new Error('Senior ID is required before syncing vitals.');
       }
-      const connectedMac = normalizeMacAddress(deviceInfo.mac);
+      const connectedMac = resolveConnectedHandBandMac(deviceInfo.mac, activeDeviceId);
       if (!connectedMac) {
         throw new Error('Connected Hand Band MAC is unavailable. Open Manage and refresh device info.');
       }
@@ -1528,7 +1530,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       }
       return { days: days.length };
     },
-    [deviceInfo.mac, getAssignedDevicesForSenior, selectedSeniorHandBandMacs, syncV8VitalsByDevice, user?.role, user?.user_id],
+    [activeDeviceId, deviceInfo.mac, getAssignedDevicesForSenior, selectedSeniorHandBandMacs, syncV8VitalsByDevice, user?.role, user?.user_id],
   );
 
   const syncVitalsRangeToBackend = useCallback(
@@ -1594,7 +1596,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     if (Date.now() < suppressAutoConnectUntil) return;
     if (!v8Native || !lastConnectedDeviceId) return;
     if (isScanning) return;
-    const rememberedMac = normalizeMacAddress(deviceInfo.mac);
+    const rememberedMac = resolveConnectedHandBandMac(deviceInfo.mac, lastConnectedDeviceId);
     const assignedMacs = selectedSeniorHandBandMacs
       .map(value => normalizeMacAddress(value))
       .filter((value): value is string => !!value);
@@ -1646,7 +1648,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       return;
     }
 
-    const connectedMac = normalizeMacAddress(deviceInfo.mac);
+    const connectedMac = resolveConnectedHandBandMac(deviceInfo.mac, activeDeviceId);
     if (!connectedMac) {
       setAutoSyncStatus(prev => ({
         ...prev,
@@ -1714,7 +1716,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     } finally {
       automaticSyncInFlightRef.current = false;
     }
-  }, [buildDailyVitalsRange, connectionStates, deviceInfo.mac, ensureAutoConnect, requestDeviceMac, selectedSeniorHandBandMacs.length, syncDailyVitalsToBackend, user?.role, user?.user_id]);
+  }, [activeDeviceId, buildDailyVitalsRange, connectionStates, deviceInfo.mac, ensureAutoConnect, requestDeviceMac, selectedSeniorHandBandMacs.length, syncDailyVitalsToBackend, user?.role, user?.user_id]);
 
   useEffect(() => {
     let active = true;

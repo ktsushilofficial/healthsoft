@@ -67,6 +67,13 @@ export function normalizeMacAddress(value?: string | null): string | null {
   return normalizeMac(value);
 }
 
+export function resolveConnectedHandBandMac(
+  reportedMac?: string | null,
+  bleDeviceId?: string | null,
+): string | null {
+  return normalizeMac(reportedMac) ?? normalizeMac(bleDeviceId);
+}
+
 export function isMacAddressLike(value?: string | null): boolean {
   return normalizeMac(value) !== null;
 }

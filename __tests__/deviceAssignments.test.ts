@@ -3,6 +3,7 @@ import {
   findAssignedDeviceForBleDevice,
   getAssignedHandBandMacAddress,
   normalizeMacAddress,
+  resolveConnectedHandBandMac,
   resolveDisplayedImei,
 } from '../src/utils/deviceAssignments';
 
@@ -84,5 +85,17 @@ describe('deviceAssignments', () => {
     expect(getAssignedHandBandMacAddress(fromDedicatedField)).toBe('AABBCCDDEEFF');
     expect(getAssignedHandBandMacAddress(fromIdentifier)).toBe('112233445566');
     expect(normalizeMacAddress('ios-core-bluetooth-uuid')).toBeNull();
+  });
+
+  it('uses the Android BLE device ID when the band has not reported its MAC yet', () => {
+    expect(
+      resolveConnectedHandBandMac(null, 'aa:bb:cc:dd:ee:ff'),
+    ).toBe('AABBCCDDEEFF');
+    expect(
+      resolveConnectedHandBandMac('11:22:33:44:55:66', 'aa:bb:cc:dd:ee:ff'),
+    ).toBe('112233445566');
+    expect(
+      resolveConnectedHandBandMac(null, 'ios-core-bluetooth-uuid'),
+    ).toBeNull();
   });
 });

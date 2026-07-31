@@ -6,7 +6,10 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { DeviceStackParamList } from '../types/navigation';
 import { useAuth } from '../context/AuthContext';
-import { normalizeMacAddress } from '../utils/deviceAssignments';
+import {
+  normalizeMacAddress,
+  resolveConnectedHandBandMac,
+} from '../utils/deviceAssignments';
 
 type V8DeviceTabProps = {
   showSyncLatestPrompt?: boolean;
@@ -57,13 +60,23 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
 
   const matchedDeviceIds = useMemo(() => {
     const matched = new Set<string>();
-    const connectedDeviceMac = compactMac(deviceInfo.mac);
+    devices.forEach(device => {
+      const scannedMac = compactMac(device.id);
+      if (scannedMac && selectedSeniorMacSet.has(scannedMac)) {
+        matched.add(device.id);
+      }
+    });
+
+    const connectedDevice = devices.find(
+      device => connectionStates[normalizeId(device.id)] === 'connected',
+    );
+    const connectedDeviceMac = resolveConnectedHandBandMac(
+      deviceInfo.mac,
+      connectedDevice?.id,
+    );
     if (connectedDeviceMac && selectedSeniorMacSet.has(connectedDeviceMac)) {
-      const connectedDevices = devices.filter(
-        device => connectionStates[normalizeId(device.id)] === 'connected',
-      );
-      if (connectedDevices.length === 1) {
-        matched.add(connectedDevices[0].id);
+      if (connectedDevice) {
+        matched.add(connectedDevice.id);
       }
     }
 
