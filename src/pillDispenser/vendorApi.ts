@@ -110,6 +110,7 @@ const ERROR_MESSAGES: Record<number, string> = {
   708: 'The vendor user does not exist.',
   710: 'The dispenser could not be unbound.',
   711: 'One or more values are invalid.',
+  713: 'The vendor session needs a new token.',
   804: 'The dispenser does not have a medication plan yet.',
   901: 'The alarm does not exist.',
   902: 'Two alarms cannot use the same time.',
@@ -203,6 +204,9 @@ async function rawPost<T>(
 
 async function getVendorToken(forceRefresh = false): Promise<string> {
   const currentHost = PILL_DISPENSER_VENDOR_CONFIG.host;
+  if (tokenRequest && tokenRequest.host === currentHost) {
+    return tokenRequest.value;
+  }
   if (
     !forceRefresh &&
     cachedToken &&
@@ -211,14 +215,6 @@ async function getVendorToken(forceRefresh = false): Promise<string> {
   ) {
     return cachedToken.value;
   }
-  if (
-    !forceRefresh &&
-    tokenRequest &&
-    tokenRequest.host === currentHost
-  ) {
-    return tokenRequest.value;
-  }
-
   const request = (async () => {
     const response = await rawPost<VendorTokenData>('get_token', {
       company_code: PILL_DISPENSER_VENDOR_CONFIG.companyCode,
@@ -258,7 +254,7 @@ async function authorizedPostWithCodes<T>(
   const token = await getVendorToken();
   const response = await rawPost<T>(endpoint, { token, ...payload });
   const code = responseCode(response);
-  if (code === 701 && retryExpiredToken) {
+  if ((code === 701 || code === 713) && retryExpiredToken) {
     cachedToken = null;
     await getVendorToken(true);
     return authorizedPostWithCodes(endpoint, payload, acceptedCodes, false);

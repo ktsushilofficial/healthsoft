@@ -14,6 +14,7 @@ import {
   mapSeniorDashboardDeviceToSnapshot,
 } from '../utils/mapSeniorDashboardDeviceToSnapshot';
 import type { SeniorDashboardDeviceRecord } from '../types/seniorDashboard';
+import type { SeniorAssignedDevice } from '../utils/deviceAssignments';
 
 const NA = 'NA';
 
@@ -21,6 +22,7 @@ type HomeDevicesRouteParams = {
   dashboardDevices?: SeniorDashboardDeviceRecord[];
   activeSeniorId?: string | null;
   showV8HandBand?: boolean;
+  pillDispenserAssignments?: SeniorAssignedDevice[];
 };
 
 function capitalizeWord(value: string) {
@@ -104,8 +106,15 @@ const HomeDevicesScreen = () => {
     [params.dashboardDevices],
   );
   const showV8HandBand = params.showV8HandBand === true;
+  const pillDispenserAssignments = useMemo(
+    () => Array.isArray(params.pillDispenserAssignments) ? params.pillDispenserAssignments : [],
+    [params.pillDispenserAssignments],
+  );
 
-  const hasAnyDevice = dashboardDevices.length > 0 || showV8HandBand;
+  const hasAnyDevice =
+    dashboardDevices.length > 0 ||
+    pillDispenserAssignments.length > 0 ||
+    showV8HandBand;
 
   const pendantRows = useMemo(
     () =>
@@ -174,6 +183,36 @@ const HomeDevicesScreen = () => {
                 <Icon name={item.batteryIcon} size={14} color="#8A827A" />
                 <Text style={styles.deviceRowBatteryText}>{item.batteryValue}</Text>
               </View>
+            </View>
+          </TouchableOpacity>
+        ))}
+
+        {pillDispenserAssignments.map(device => (
+          <TouchableOpacity
+            key={`pill-dispenser-${device.id}`}
+            style={styles.deviceRowCard}
+            activeOpacity={0.8}
+            onPress={() => navigation.navigate('PillDispenser')}
+          >
+            <View style={[styles.deviceRowIconWrap, styles.deviceIconPillDispenserBg]}>
+              <Icon name="medical" size={22} color="#2563EB" />
+            </View>
+            <View style={styles.deviceRowTextCol}>
+              <Text style={styles.deviceRowName}>Pill Dispenser</Text>
+              <Text style={styles.deviceRowSub} numberOfLines={1}>
+                {device.serialNumber
+                  ? `S/N ${device.serialNumber}`
+                  : device.barcode
+                    ? `Barcode ${device.barcode}`
+                    : 'Medication reminders'}
+              </Text>
+            </View>
+            <View style={styles.deviceRowStatusCol}>
+              <Text style={[styles.deviceRowStatusText, styles.deviceRowStatusActive]}>
+                {device.status
+                  ? device.status.charAt(0).toUpperCase() + device.status.slice(1).toLowerCase()
+                  : 'Assigned'}
+              </Text>
             </View>
           </TouchableOpacity>
         ))}
@@ -272,6 +311,9 @@ const styles = StyleSheet.create({
   },
   deviceIconPendantBg: {
     backgroundColor: '#FFF7E6',
+  },
+  deviceIconPillDispenserBg: {
+    backgroundColor: '#EFF6FF',
   },
   vitalIconHeartBg: {
     backgroundColor: '#FEF2F2',

@@ -1,7 +1,9 @@
 import {
   extractSeniorAssignedDevices,
   findAssignedDeviceForBleDevice,
+  getAssignedPillDispenserDeviceSn,
   getAssignedHandBandMacAddress,
+  isPillDispenserAssignedDevice,
   normalizeMacAddress,
   resolveConnectedHandBandMac,
   resolveDisplayedImei,
@@ -29,6 +31,38 @@ describe('deviceAssignments', () => {
         status: 'ASSIGNED',
       }),
     ]);
+  });
+
+  it('extracts pill dispenser assignment fields from the API payload', () => {
+    const [device] = extractSeniorAssignedDevices([
+      {
+        assignmentId: 'assignment-pill',
+        deviceId: 'device-pill',
+        deviceType: 'PILL_DISPENSER',
+        deviceSn: '39-00002442e347aa5e',
+        barcode: 'M126AFBJ261900245',
+        status: 'ASSIGNED',
+      },
+    ]);
+
+    expect(device).toEqual(expect.objectContaining({
+      deviceType: 'PILL_DISPENSER',
+      serialNumber: '39-00002442e347aa5e',
+      barcode: 'M126AFBJ261900245',
+    }));
+    expect(isPillDispenserAssignedDevice(device)).toBe(true);
+    expect(getAssignedPillDispenserDeviceSn(device)).toBe('39-00002442e347aa5e');
+  });
+
+  it('falls back to the assignment identifier for a pill dispenser DN', () => {
+    const [device] = extractSeniorAssignedDevices([
+      {
+        deviceType: 'PILL_DISPENSER',
+        deviceIdentifier: '39-assigned-dn',
+      },
+    ]);
+
+    expect(getAssignedPillDispenserDeviceSn(device)).toBe('39-assigned-dn');
   });
 
   it('matches BLE devices to assigned devices by IMEI', () => {

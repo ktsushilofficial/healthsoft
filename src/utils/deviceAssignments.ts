@@ -6,9 +6,11 @@ export interface SeniorAssignedDevice {
   id: string;
   assignmentId: string | null;
   deviceId: string | null;
+  deviceType: string | null;
   deviceIdentifier: string | null;
   imei: string | null;
   serialNumber: string | null;
+  barcode: string | null;
   bluetoothMacAddress: string | null;
   name: string | null;
   status: string | null;
@@ -148,6 +150,13 @@ export function extractSeniorAssignedDevices(payload: unknown): SeniorAssignedDe
         'device.id',
       ]);
 
+      const deviceType = firstString(record, [
+        'deviceType',
+        'type',
+        'device.deviceType',
+        'device.type',
+      ]);
+
       const deviceIdentifier = firstString(record, [
         'deviceIdentifier',
         'identifier',
@@ -157,13 +166,22 @@ export function extractSeniorAssignedDevices(payload: unknown): SeniorAssignedDe
       ]);
 
       const serialNumber = firstString(record, [
+        'deviceSn',
         'serialNumber',
         'serial',
         'deviceSerialNumber',
         'device.serialNumber',
+        'device.deviceSn',
+      ]);
+
+      const barcode = firstString(record, [
+        'barcode',
+        'deviceBarcode',
+        'device.barcode',
       ]);
 
       const bluetoothMacAddress = firstString(record, [
+        'mac',
         'bluetoothMacAddress',
         'bluetoothMac',
         'bleMacAddress',
@@ -192,9 +210,11 @@ export function extractSeniorAssignedDevices(payload: unknown): SeniorAssignedDe
         id: assignmentId ?? deviceId ?? imei ?? deviceIdentifier ?? serialNumber ?? `assigned-device-${index}`,
         assignmentId,
         deviceId,
+        deviceType,
         deviceIdentifier,
         imei,
         serialNumber,
+        barcode,
         bluetoothMacAddress,
         name,
         status,
@@ -202,6 +222,21 @@ export function extractSeniorAssignedDevices(payload: unknown): SeniorAssignedDe
       };
     })
     .filter((item): item is SeniorAssignedDevice => item !== null);
+}
+
+export function isPillDispenserAssignedDevice(
+  device: Pick<SeniorAssignedDevice, 'deviceType'>,
+): boolean {
+  return device.deviceType?.trim().toUpperCase() === 'PILL_DISPENSER';
+}
+
+export function getAssignedPillDispenserDeviceSn(
+  device: Pick<SeniorAssignedDevice, 'deviceType' | 'serialNumber' | 'deviceIdentifier'>,
+): string | null {
+  if (!isPillDispenserAssignedDevice(device)) return null;
+  const value = device.serialNumber ?? device.deviceIdentifier;
+  const trimmed = value?.trim() ?? '';
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 export function findAssignedDeviceForBleDevice(

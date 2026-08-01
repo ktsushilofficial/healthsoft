@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -15,7 +15,12 @@ import DateTimePicker, {
   type DateTimePickerEvent,
 } from '@react-native-community/datetimepicker';
 import Icon from 'react-native-vector-icons/Ionicons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
+import {
+  getAssignedPillDispenserDeviceSn,
+  isPillDispenserAssignedDevice,
+} from '../utils/deviceAssignments';
 import {
   type PillDispenserAction,
   usePillDispenserManagement,
@@ -32,6 +37,12 @@ type Section = 'settings' | 'plan' | 'alarms' | 'actions';
 type Option = {
   label: string;
   value: number;
+};
+
+type AssignedDnOption = {
+  id: string;
+  deviceSn: string;
+  barcode: string | null;
 };
 
 function parseClockTime(value: string): Date {
@@ -261,8 +272,17 @@ function SectionButton({
 }
 
 const PillDispenserManagementSection = () => {
-  const { user, isCaretaker, selectedSenior } = useAuth();
+  const {
+    user,
+    isCaretaker,
+    selectedSenior,
+    getAssignedDevicesForSenior,
+  } = useAuth();
   const [deviceCode, setDeviceCode] = useState('');
+  const [assignedDnOptions, setAssignedDnOptions] = useState<AssignedDnOption[]>([]);
+  const [assignedDnsLoading, setAssignedDnsLoading] = useState(false);
+  const [assignedDnsError, setAssignedDnsError] = useState(false);
+  const [assignedDnDropdownVisible, setAssignedDnDropdownVisible] = useState(false);
   const [activeSection, setActiveSection] = useState<Section>('settings');
   const [settingsDraft, setSettingsDraft] =
     useState<PillDispenserSettingsInput | null>(null);
@@ -318,6 +338,77 @@ const PillDispenserManagementSection = () => {
     saveAlarm,
     runAction,
   } = usePillDispenserManagement(ownerProfile);
+
+  useEffect(() => {
+    setDeviceCode('');
+    setAssignedDnDropdownVisible(false);
+  }, [ownerProfile?.ownerKey]);
+
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      const seniorId = ownerProfile?.ownerKey?.trim() ?? '';
+
+      setAssignedDnDropdownVisible(false);
+      if (!seniorId) {
+        setAssignedDnOptions([]);
+        setAssignedDnsError(false);
+        setAssignedDnsLoading(false);
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      setAssignedDnsLoading(true);
+      setAssignedDnsError(false);
+
+      getAssignedDevicesForSenior(seniorId)
+        .then(devices => {
+          if (cancelled) return;
+          const seen = new Set<string>();
+          const options = devices
+            .filter(device =>
+              isPillDispenserAssignedDevice(device) &&
+              device.status?.trim().toUpperCase() !== 'UNASSIGNED',
+            )
+            .map(device => {
+              const deviceSn = getAssignedPillDispenserDeviceSn(device);
+              if (!deviceSn || seen.has(deviceSn)) return null;
+              seen.add(deviceSn);
+              return {
+                id: device.id,
+                deviceSn,
+                barcode: device.barcode,
+              };
+            })
+            .filter((option): option is AssignedDnOption => option !== null);
+
+          setAssignedDnOptions(options);
+          setDeviceCode(current =>
+            current.trim().length === 0 && options.length === 1
+              ? options[0].deviceSn
+              : current,
+          );
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setAssignedDnOptions([]);
+          setAssignedDnsError(true);
+        })
+        .finally(() => {
+          if (!cancelled) setAssignedDnsLoading(false);
+        });
+
+      return () => {
+        cancelled = true;
+      };
+    }, [getAssignedDevicesForSenior, ownerProfile?.ownerKey]),
+  );
+
+  const selectedAssignedDn = useMemo(
+    () => assignedDnOptions.find(option => option.deviceSn === deviceCode.trim()) ?? null,
+    [assignedDnOptions, deviceCode],
+  );
 
   useEffect(() => {
     if (!information) {
@@ -467,6 +558,93 @@ const PillDispenserManagementSection = () => {
                 existing binding first and only binds the dispenser when
                 needed. You can also paste the complete QR link.
               </Text>
+
+              <Text style={styles.inputLabel}>Assigned dispenser DN</Text>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Select an assigned pill dispenser DN"
+                style={[
+                  styles.assignedDnSelect,
+                  assignedDnDropdownVisible ? styles.assignedDnSelectOpen : null,
+                  busy || assignedDnsLoading || assignedDnOptions.length === 0
+                    ? styles.disabled
+                    : null,
+                ]}
+                disabled={busy || assignedDnsLoading || assignedDnOptions.length === 0}
+                onPress={() => setAssignedDnDropdownVisible(visible => !visible)}
+              >
+                <View style={styles.assignedDnSelectText}>
+                  <Text
+                    style={[
+                      styles.assignedDnValue,
+                      !selectedAssignedDn ? styles.assignedDnPlaceholder : null,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {assignedDnsLoading
+                      ? 'Loading assigned DN numbers…'
+                      : selectedAssignedDn?.deviceSn ??
+                        (assignedDnOptions.length > 0
+                          ? 'Select an assigned DN'
+                          : 'No assigned DN available')}
+                  </Text>
+                  {selectedAssignedDn?.barcode ? (
+                    <Text style={styles.assignedDnBarcode} numberOfLines={1}>
+                      Barcode {selectedAssignedDn.barcode}
+                    </Text>
+                  ) : null}
+                </View>
+                {assignedDnsLoading ? (
+                  <ActivityIndicator size="small" color="#F28C28" />
+                ) : (
+                  <Icon
+                    name={assignedDnDropdownVisible ? 'chevron-up' : 'chevron-down'}
+                    size={18}
+                    color="#73573C"
+                  />
+                )}
+              </TouchableOpacity>
+
+              {assignedDnDropdownVisible ? (
+                <View style={styles.assignedDnMenu}>
+                  {assignedDnOptions.map(option => {
+                    const selected = option.deviceSn === deviceCode.trim();
+                    return (
+                      <TouchableOpacity
+                        key={`${option.id}-${option.deviceSn}`}
+                        style={[
+                          styles.assignedDnOption,
+                          selected ? styles.assignedDnOptionSelected : null,
+                        ]}
+                        disabled={busy}
+                        onPress={() => {
+                          setDeviceCode(option.deviceSn);
+                          setAssignedDnDropdownVisible(false);
+                        }}
+                      >
+                        <View style={styles.assignedDnSelectText}>
+                          <Text style={styles.assignedDnOptionValue}>{option.deviceSn}</Text>
+                          {option.barcode ? (
+                            <Text style={styles.assignedDnBarcode} numberOfLines={1}>
+                              Barcode {option.barcode}
+                            </Text>
+                          ) : null}
+                        </View>
+                        {selected ? (
+                          <Icon name="checkmark-circle" size={19} color="#F28C28" />
+                        ) : null}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ) : null}
+
+              {assignedDnsError ? (
+                <Text style={styles.assignedDnError}>
+                  Assigned DN numbers could not be loaded. You can still enter one manually.
+                </Text>
+              ) : null}
+
               <Text style={styles.inputLabel}>DN code or QR content</Text>
               <TextInput
                 value={deviceCode}
@@ -1338,6 +1516,72 @@ const styles = StyleSheet.create({
     minHeight: 43,
     fontSize: 14,
     color: '#2E2A27',
+  },
+  assignedDnSelect: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderColor: '#DDD4CC',
+    backgroundColor: '#FFFEFC',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  assignedDnSelectOpen: {
+    borderColor: '#F28C28',
+  },
+  assignedDnSelectText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  assignedDnValue: {
+    color: '#2E2A27',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  assignedDnPlaceholder: {
+    color: '#8F8276',
+    fontWeight: '400',
+  },
+  assignedDnBarcode: {
+    color: '#8F8276',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  assignedDnMenu: {
+    borderWidth: 1,
+    borderTopWidth: 0,
+    borderColor: '#E4D8CD',
+    borderBottomLeftRadius: 10,
+    borderBottomRightRadius: 10,
+    overflow: 'hidden',
+    backgroundColor: '#FFFFFF',
+  },
+  assignedDnOption: {
+    minHeight: 48,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E8DED5',
+  },
+  assignedDnOptionSelected: {
+    backgroundColor: '#FFF7ED',
+  },
+  assignedDnOptionValue: {
+    color: '#2E2A27',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  assignedDnError: {
+    color: '#B42318',
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 6,
   },
   timePickerButton: {
     minHeight: 43,

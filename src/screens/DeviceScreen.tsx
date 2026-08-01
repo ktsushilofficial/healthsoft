@@ -103,7 +103,9 @@ const DeviceScreen = () => {
     [],
   );
   const [activeTab, setActiveTab] = useState(() =>
-    route.params?.activeTab === 'v8' ? 'v8' : tabs[0].id,
+    route.params?.activeTab === 'v8' || route.params?.activeTab === 'pillDispenser'
+      ? route.params.activeTab
+      : tabs[0].id,
   );
   const hasPurchased = true;
   const [assignedDevices, setAssignedDevices] = useState<SeniorAssignedDevice[]>([]);
@@ -198,10 +200,10 @@ const DeviceScreen = () => {
   }, [loadAssignedDevices]);
 
   useEffect(() => {
-    if (route.params?.activeTab === 'v8') {
-      setActiveTab('v8');
+    if (route.params?.activeTab === 'v8' || route.params?.activeTab === 'pillDispenser') {
+      setActiveTab(route.params.activeTab);
     }
-  }, [route.params?.activeTab]);
+  }, [route.params?.activeTab, route.params?.tabRequestKey]);
 
   useEffect(() => {
     if (!route.params?.showScanHandBandPrompt || activeTab !== 'v8') {
@@ -396,9 +398,11 @@ const DeviceScreen = () => {
         id: cachedMatch.assignmentId ?? cachedMatch.assignedDeviceId ?? cachedMatch.bleDeviceId,
         assignmentId: cachedMatch.assignmentId,
         deviceId: cachedMatch.assignedDeviceId,
+        deviceType: null,
         deviceIdentifier: cachedMatch.deviceIdentifier,
         imei: cachedMatch.imei,
         serialNumber: null,
+        barcode: null,
         bluetoothMacAddress: null,
         name: cachedMatch.deviceName,
         status: 'CACHED',

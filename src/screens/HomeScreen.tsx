@@ -29,7 +29,11 @@ import {
   getSeniorDashboardDeviceLabel,
   mapSeniorDashboardDeviceToSnapshot,
 } from '../utils/mapSeniorDashboardDeviceToSnapshot';
-import { isMacAddressLike } from '../utils/deviceAssignments';
+import {
+  isMacAddressLike,
+  isPillDispenserAssignedDevice,
+  type SeniorAssignedDevice,
+} from '../utils/deviceAssignments';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import type { SeniorHomeSnapshot } from '../types/seniorHomeSnapshot';
 
@@ -539,6 +543,8 @@ const HomeScreen = () => {
   const [heroIndex, setHeroIndex] = useState(0);
   const [nowTick, setNowTick] = useState(() => new Date());
   const [dashboardDevices, setDashboardDevices] = useState<SeniorDashboardDeviceRecord[]>([]);
+  const [pillDispenserAssignments, setPillDispenserAssignments] = useState<SeniorAssignedDevice[]>([]);
+  const [assignedDevicesLoading, setAssignedDevicesLoading] = useState(false);
   const [selectedDeviceIndex, setSelectedDeviceIndex] = useState(0);
   const [devicePickerVisible, setDevicePickerVisible] = useState(false);
   const [todayVitals, setTodayVitals] = useState<VitalsSummaryRow | null>(null);
@@ -560,6 +566,8 @@ const HomeScreen = () => {
   const manualDashboardRefreshCountRef = useRef(0);
   const backgroundDashboardRefreshCountRef = useRef(0);
   const vitalsRequestIdRef = useRef(0);
+  const assignedDevicesRequestIdRef = useRef(0);
+  const lastAssignedDevicesSeniorIdRef = useRef('');
   const lastRefreshedVitalsSyncRef = useRef<number | null>(null);
 
   /** Senior id for `/api/v1/senior-dashboard/{id}` — logged-in senior, caretaker's or guardian's selected senior. */
@@ -644,6 +652,43 @@ const HomeScreen = () => {
       setTodayVitals(null);
     }
   }, [activeDashboardSeniorId, user, getAssignedDevicesForSenior, getV8VitalsSummary]);
+
+  const loadHomeAssignedDevices = useCallback(async () => {
+    const requestId = ++assignedDevicesRequestIdRef.current;
+    const targetSeniorId = activeDashboardSeniorId?.trim() ?? '';
+
+    if (!targetSeniorId) {
+      lastAssignedDevicesSeniorIdRef.current = '';
+      setPillDispenserAssignments([]);
+      setAssignedDevicesLoading(false);
+      return;
+    }
+
+    if (lastAssignedDevicesSeniorIdRef.current !== targetSeniorId) {
+      lastAssignedDevicesSeniorIdRef.current = targetSeniorId;
+      setPillDispenserAssignments([]);
+    }
+    setAssignedDevicesLoading(true);
+    try {
+      const assigned = await getAssignedDevicesForSenior(targetSeniorId);
+      if (!isMountedRef.current || assignedDevicesRequestIdRef.current !== requestId) return;
+      setPillDispenserAssignments(assigned.filter(isPillDispenserAssignedDevice));
+    } catch (error) {
+      if (!isMountedRef.current || assignedDevicesRequestIdRef.current !== requestId) return;
+      console.log('[HomeScreen] Failed to fetch assigned pill dispensers:', error);
+      setPillDispenserAssignments([]);
+    } finally {
+      if (isMountedRef.current && assignedDevicesRequestIdRef.current === requestId) {
+        setAssignedDevicesLoading(false);
+      }
+    }
+  }, [activeDashboardSeniorId, getAssignedDevicesForSenior]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadHomeAssignedDevices();
+    }, [loadHomeAssignedDevices]),
+  );
 
   useEffect(() => {
     loadV8VitalsForToday();
@@ -1385,6 +1430,7 @@ const HomeScreen = () => {
             onRefresh={() => {
               void fetchDashboardData('manual');
               void loadV8VitalsForToday();
+              void loadHomeAssignedDevices();
             }}
             colors={['#FF9500']}
             tintColor="#FF9500"
@@ -1584,6 +1630,7 @@ const HomeScreen = () => {
                 dashboardDevices,
                 activeSeniorId: activeDashboardSeniorId || user?.user_id || null,
                 showV8HandBand: selectedSeniorHandBandMacs.length > 0,
+                pillDispenserAssignments,
               })
             }
           >
@@ -1642,11 +1689,45 @@ const HomeScreen = () => {
                 </TouchableOpacity>
               );
             })
-          ) : !dashboardLoading && (
+          ) : !dashboardLoading &&
+              !assignedDevicesLoading &&
+              pillDispenserAssignments.length === 0 &&
+              selectedSeniorHandBandMacs.length === 0 ? (
             <View style={styles.noDevicesBox}>
-              <Text style={styles.noDevicesText}>No active pendant devices assigned.</Text>
+              <Text style={styles.noDevicesText}>No active devices assigned.</Text>
             </View>
-          )}
+          ) : null}
+
+          {/* PILL DISPENSERS FROM THE SENIOR ASSIGNMENTS API */}
+          {pillDispenserAssignments.map(device => (
+            <TouchableOpacity
+              key={`pill-dispenser-${device.id}`}
+              style={styles.deviceRowCard}
+              activeOpacity={0.8}
+              onPress={() => navigation.navigate('PillDispenser')}
+            >
+              <View style={[styles.deviceRowIconWrap, styles.deviceIconPillDispenserBg]}>
+                <Icon name="medical" size={22} color="#2563EB" />
+              </View>
+              <View style={styles.deviceRowTextCol}>
+                <Text style={styles.deviceRowName}>Pill Dispenser</Text>
+                <Text style={styles.deviceRowSub} numberOfLines={1}>
+                  {device.serialNumber
+                    ? `S/N ${device.serialNumber}`
+                    : device.barcode
+                      ? `Barcode ${device.barcode}`
+                      : 'Medication reminders'}
+                </Text>
+              </View>
+              <View style={styles.deviceRowStatusCol}>
+                <Text style={[styles.deviceRowStatusText, styles.deviceRowStatusActive]}>
+                  {device.status
+                    ? device.status.charAt(0).toUpperCase() + device.status.slice(1).toLowerCase()
+                    : 'Assigned'}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          ))}
 
           {/* V8 SMART BAND DEVICE */}
           {selectedSeniorHandBandMacs && selectedSeniorHandBandMacs.length > 0 && (
@@ -2015,6 +2096,9 @@ const styles = StyleSheet.create({
   },
   deviceIconPendantBg: {
     backgroundColor: '#FFF8F0',
+  },
+  deviceIconPillDispenserBg: {
+    backgroundColor: '#EFF6FF',
   },
   deviceRowTextCol: {
     flex: 1,
