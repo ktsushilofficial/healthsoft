@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { parsePillDispenserCode } from './deviceSn';
 import { PILL_DISPENSER_VENDOR_CONFIG } from './vendorConfig';
 import { PillDispenserVendorError, pillDispenserVendorApi } from './vendorApi';
+import { findPillDispenserSettingsMismatches } from './settingsVerification';
 import {
   clearPillDispenserBinding,
   loadPillDispenserRecord,
@@ -375,7 +376,6 @@ export function usePillDispenserManagement(
         }
 
         const args = [current.vendorUserId, current.deviceSn] as const;
-        await pillDispenserVendorApi.setLanguage(...args, settings.language);
         await pillDispenserVendorApi.setTimezone(
           ...args,
           settings.timeZoneDistrict,
@@ -403,16 +403,41 @@ export function usePillDispenserManagement(
           ...args,
           settings.timeOut,
         );
+        // Apply language last because some devices restart their local UI when
+        // changing language and can discard commands that immediately follow.
+        await pillDispenserVendorApi.setLanguage(...args, 2);
+
+        let verifiedInformation = await pillDispenserVendorApi.getInformation(...args);
+        if (verifiedInformation.language !== 2) {
+          // Zoomcare can acknowledge set_language before the device applies it.
+          // Retry once, then report the actual device state to the user.
+          await pillDispenserVendorApi.setLanguage(...args, 2);
+          verifiedInformation = await pillDispenserVendorApi.getInformation(...args);
+        }
         if (!mountedRef.current) return;
-        setMessage('Device settings were saved.');
-        await refreshForRecord(current, false);
+        setInformation(verifiedInformation);
+        const expectedSettings: PillDispenserSettingsInput = {
+          ...settings,
+          language: 2,
+        };
+        const mismatches = findPillDispenserSettingsMismatches(
+          expectedSettings,
+          verifiedInformation,
+        );
+        if (mismatches.length > 0) {
+          setError(
+            `Zoomcare accepted the save, but the dispenser did not confirm: ${mismatches.join(', ')}.`,
+          );
+        } else {
+          setMessage('All device settings were saved and verified.');
+        }
       } catch (settingsError) {
         if (mountedRef.current) setError(readableError(settingsError));
       } finally {
         if (mountedRef.current) setWorking(null);
       }
     },
-    [refreshForRecord],
+    [],
   );
 
   const savePlan = useCallback(

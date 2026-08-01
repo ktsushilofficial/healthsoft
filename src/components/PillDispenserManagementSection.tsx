@@ -4,6 +4,7 @@ import {
   Alert,
   Modal,
   Platform,
+  ScrollView,
   StyleSheet,
   Switch,
   Text,
@@ -44,6 +45,19 @@ type AssignedDnOption = {
   deviceSn: string;
   barcode: string | null;
 };
+
+const TIMEZONE_VALUES = [
+  '-1200', '-1100', '-1000', '-0930', '-0900', '-0800', '-0700', '-0600',
+  '-0500', '-0400', '-0330', '-0300', '-0200', '-0100', '+0000', '+0100',
+  '+0200', '+0300', '+0330', '+0400', '+0430', '+0500', '+0530', '+0545',
+  '+0600', '+0630', '+0700', '+0800', '+0845', '+0900', '+0930', '+1000',
+  '+1030', '+1100', '+1200', '+1245', '+1300', '+1345', '+1400',
+] as const;
+
+function formatTimezoneOffset(value: string): string {
+  if (!/^[+-]\d{4}$/.test(value)) return value;
+  return `UTC${value.slice(0, 3)}:${value.slice(3)}`;
+}
 
 function parseClockTime(value: string): Date {
   const match = value.trim().match(/^([01]\d|2[0-3]):([0-5]\d)$/);
@@ -172,6 +186,93 @@ function ClockTimePicker({
           </View>
         </Modal>
       ) : null}
+    </>
+  );
+}
+
+function TimezonePicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  const [visible, setVisible] = useState(false);
+  const values = useMemo(
+    () =>
+      TIMEZONE_VALUES.includes(value as (typeof TIMEZONE_VALUES)[number])
+        ? TIMEZONE_VALUES
+        : [value, ...TIMEZONE_VALUES],
+    [value],
+  );
+
+  return (
+    <>
+      <TouchableOpacity
+        accessibilityRole="button"
+        accessibilityLabel="Select device timezone"
+        disabled={disabled}
+        style={[styles.timezonePickerButton, disabled ? styles.disabled : null]}
+        onPress={() => setVisible(true)}
+      >
+        <Text style={styles.timezonePickerValue}>{formatTimezoneOffset(value)}</Text>
+        <Icon name="chevron-down" size={18} color="#F28C28" />
+      </TouchableOpacity>
+
+      <Modal
+        visible={visible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setVisible(false)}
+      >
+        <View style={styles.timePickerOverlay}>
+          <View style={styles.timezonePickerModal}>
+            <View style={styles.timePickerHeader}>
+              <TouchableOpacity
+                style={styles.timePickerAction}
+                onPress={() => setVisible(false)}
+              >
+                <Text style={styles.timePickerActionText}>Cancel</Text>
+              </TouchableOpacity>
+              <Text style={styles.timePickerTitle}>Select timezone</Text>
+              <View style={styles.timePickerAction} />
+            </View>
+            <ScrollView contentContainerStyle={styles.timezoneOptionList}>
+              {values.map(option => {
+                const selected = option === value;
+                return (
+                  <TouchableOpacity
+                    key={option}
+                    style={[
+                      styles.timezoneOption,
+                      selected ? styles.timezoneOptionSelected : null,
+                    ]}
+                    onPress={() => {
+                      onChange(option);
+                      setVisible(false);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.timezoneOptionText,
+                        selected ? styles.timezoneOptionTextSelected : null,
+                      ]}
+                    >
+                      {formatTimezoneOffset(option)}
+                    </Text>
+                    <Text style={styles.timezoneOptionCode}>{option}</Text>
+                    {selected ? (
+                      <Icon name="checkmark-circle" size={20} color="#F28C28" />
+                    ) : null}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -416,7 +517,7 @@ const PillDispenserManagementSection = () => {
       return;
     }
     setSettingsDraft({
-      language: information.language,
+      language: 2,
       timeZoneDistrict: information.timeZoneDistrict,
       dateFormat: information.dateFormat,
       timeFormat: information.timeFormat,
@@ -781,15 +882,12 @@ const PillDispenserManagementSection = () => {
                     <ChoiceRow
                       label="Language"
                       value={settingsDraft.language}
-                      options={[
-                        { label: 'Chinese', value: 1 },
-                        { label: 'English', value: 2 },
-                      ]}
+                      options={[{ label: 'English', value: 2 }]}
                       disabled={controlsDisabled}
-                      onChange={value =>
+                      onChange={() =>
                         setSettingsDraft(current =>
                           current
-                            ? { ...current, language: value === 1 ? 1 : 2 }
+                            ? { ...current, language: 2 }
                             : current,
                         )
                       }
@@ -857,19 +955,16 @@ const PillDispenserManagementSection = () => {
                     />
 
                     <Text style={styles.inputLabel}>Timezone</Text>
-                    <TextInput
+                    <TimezonePicker
                       value={settingsDraft.timeZoneDistrict}
-                      onChangeText={value =>
+                      onChange={value =>
                         setSettingsDraft(current =>
                           current
                             ? { ...current, timeZoneDistrict: value }
                             : current,
                         )
                       }
-                      editable={!controlsDisabled}
-                      placeholder="+0530"
-                      placeholderTextColor="#A69B91"
-                      style={styles.input}
+                      disabled={controlsDisabled}
                     />
 
                     <View style={styles.switchRow}>
@@ -1595,6 +1690,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  timezonePickerButton: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderColor: '#DDD4CC',
+    backgroundColor: '#FFFEFC',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  timezonePickerValue: {
+    color: '#2E2A27',
+    fontSize: 15,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
   timePickerValue: {
     color: '#2E2A27',
     fontSize: 15,
@@ -1610,6 +1723,13 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     paddingBottom: 24,
+  },
+  timezonePickerModal: {
+    maxHeight: '78%',
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    overflow: 'hidden',
   },
   timePickerHeader: {
     minHeight: 54,
@@ -1641,6 +1761,39 @@ const styles = StyleSheet.create({
   },
   iosTimePicker: {
     alignSelf: 'stretch',
+  },
+  timezoneOptionList: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 28,
+  },
+  timezoneOption: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E8DED5',
+  },
+  timezoneOptionSelected: {
+    backgroundColor: '#FFF7ED',
+    borderRadius: 10,
+  },
+  timezoneOptionText: {
+    flex: 1,
+    color: '#3E3732',
+    fontSize: 15,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  timezoneOptionTextSelected: {
+    color: '#B85C00',
+  },
+  timezoneOptionCode: {
+    color: '#8F8276',
+    fontSize: 12,
+    marginRight: 10,
+    fontVariant: ['tabular-nums'],
   },
   primaryButton: {
     minHeight: 46,
