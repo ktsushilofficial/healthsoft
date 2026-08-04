@@ -34,6 +34,9 @@ type NativeV8Module = {
   startEcgMeasurement(): Promise<boolean>;
   stopEcgMeasurement(): Promise<boolean>;
   exitEcgMeasurement(): Promise<boolean>;
+  startPpgMeasurement(): Promise<boolean>;
+  stopPpgMeasurement(): Promise<boolean>;
+  exitPpgMeasurement(): Promise<boolean>;
 };
 
 const nativeModule = NativeModules.V8BleModule as NativeV8Module | undefined;

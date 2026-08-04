@@ -39,12 +39,15 @@ export type V8WaveformSource = 'ecg' | 'ppg';
 export type V8EcgSession = {
   id: string;
   seniorId: string;
+  requestedMode: V8WaveformSource;
   phase: V8EcgPhase;
   startedAt: number;
   completedAt: number | null;
   durationMs: number | null;
   samples: number[];
   waveformSource: V8WaveformSource | null;
+  waveformField: string | null;
+  waveformDataType: string | null;
   sampleRateHz: number | null;
   firstSampleAt: number | null;
   firstSampleCount: number;

@@ -171,12 +171,27 @@ function detectKind(
 export function parseV8EcgPayload(
   payload: Record<string, unknown>,
   platform?: 'ios' | 'android',
+  requestedMode?: 'ecg' | 'ppg',
 ): V8EcgEvent {
   const records: Record<string, unknown>[] = [];
   collectRecords(payload, records, new Set());
   const dataType = toText(findValue(records, ['dataType', 'DataType', 'type']));
-  const { samples, waveformSource, waveformField } =
+  const collectedWaveform =
     collectWaveform(records);
+  const androidContactEcg =
+    platform === 'android' &&
+    requestedMode === 'ecg' &&
+    dataType === '64' &&
+    collectedWaveform.waveformSource === 'ppg' &&
+    normalizeKey(collectedWaveform.waveformField ?? '') === 'arrayppgrawdata';
+  const samples = collectedWaveform.samples;
+  const waveformSource = androidContactEcg
+    ? 'ecg'
+    : collectedWaveform.waveformSource;
+  const waveformField = collectedWaveform.waveformField;
+  const contactEcgPacket =
+    waveformSource === 'ecg' &&
+    ((platform === 'ios' && dataType === '54') || androidContactEcg);
   const text = payloadText(records);
   const statusMessage = toText(
     findValue(records, [
@@ -209,14 +224,15 @@ export function parseV8EcgPayload(
         'PPGHrValue',
       ]),
     ),
-    sampleRateHz: toNumber(
-      findValue(records, [
-        'sampleRate',
-        'sampleRateHz',
-        'frequency',
-        'samplingFrequency',
-      ]),
-    ),
+    sampleRateHz:
+      toNumber(
+        findValue(records, [
+          'sampleRate',
+          'sampleRateHz',
+          'frequency',
+          'samplingFrequency',
+        ]),
+      ) ?? (contactEcgPacket ? 250 : null),
     signalQuality: toText(
       findValue(records, [
         'ECGQualityValue',
@@ -242,16 +258,21 @@ export function createV8EcgSession(
   deviceMac: string | null,
   firmwareVersion: string | null,
   now = Date.now(),
+  requestedMode: 'ecg' | 'ppg' = 'ecg',
 ): V8EcgSession {
+  const modeLabel = requestedMode === 'ecg' ? 'ECG' : 'PPG';
   return {
     id: `ecg-${now}`,
     seniorId,
+    requestedMode,
     phase: 'starting',
     startedAt: now,
     completedAt: null,
     durationMs: null,
     samples: [],
     waveformSource: null,
+    waveformField: null,
+    waveformDataType: null,
     sampleRateHz: null,
     firstSampleAt: null,
     firstSampleCount: 0,
@@ -259,7 +280,7 @@ export function createV8EcgSession(
     heartRate: null,
     signalQuality: null,
     classification: null,
-    statusMessage: 'Starting ECG measurement…',
+    statusMessage: `Starting ${modeLabel} measurement…`,
     error: null,
     deviceMac,
     firmwareVersion,
@@ -329,6 +350,24 @@ export function downsampleEcg(samples: number[], maxPoints: number): number[] {
     output.push(count > 0 ? total / count : samples[start]);
   }
   return output;
+}
+
+export function splitWaveformIntoStrips(
+  samples: number[],
+  stripCount: number,
+): number[][] {
+  if (stripCount <= 0 || !Number.isFinite(stripCount)) return [];
+  const count = Math.max(1, Math.floor(stripCount));
+  const baseSize = Math.floor(samples.length / count);
+  const remainder = samples.length % count;
+  let start = 0;
+
+  return Array.from({ length: count }, (_, index) => {
+    const size = baseSize + (index < remainder ? 1 : 0);
+    const strip = samples.slice(start, start + size);
+    start += size;
+    return strip;
+  });
 }
 
 export type IndexedWaveformPoint = {

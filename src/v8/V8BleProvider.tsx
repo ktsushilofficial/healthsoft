@@ -4,7 +4,7 @@ import * as Keychain from 'react-native-keychain';
 import { useAuth } from '../context/AuthContext';
 import type { V8ConnectionState, V8Device } from './types';
 import { isV8NativeAvailable, v8Emitter, v8Native } from './nativeV8';
-import type { V8DailyVitalSummary, V8DeviceInfo, V8EcgSession, V8HistoryBucket, V8VitalSample, V8WebVitalSummary, V8WebVitalsSyncPayload } from './models';
+import type { V8DailyVitalSummary, V8DeviceInfo, V8EcgSession, V8HistoryBucket, V8VitalSample, V8WaveformSource, V8WebVitalSummary, V8WebVitalsSyncPayload } from './models';
 import { parseV8Payload } from './parser';
 import {
   createV8EcgSession,
@@ -61,7 +61,7 @@ type V8BleContextValue = {
   syncDeviceTime: () => Promise<void>;
   requestPersonalInfo: () => Promise<void>;
   setRealtimeStepEnabled: (enabled: boolean, includeTemperature: boolean) => Promise<void>;
-  startEcgMeasurement: () => Promise<void>;
+  startEcgMeasurement: (mode?: V8WaveformSource) => Promise<void>;
   finishEcgMeasurement: () => Promise<void>;
   cancelEcgMeasurement: () => Promise<void>;
   resetEcgMeasurement: () => void;
@@ -255,7 +255,12 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
             parsed.phase === 'completed' &&
             Array.isArray(parsed.samples)
           ) {
-            setEcgSession(parsed);
+            setEcgSession({
+              ...parsed,
+              requestedMode: parsed.requestedMode ?? 'ecg',
+              waveformField: parsed.waveformField ?? null,
+              waveformDataType: parsed.waveformDataType ?? null,
+            });
           }
         } catch {
           // Ignore an unreadable previous preview.
@@ -289,8 +294,13 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       return;
     }
     ecgCleanupSessionIdRef.current = ecgSession.id;
-    v8Native?.setEcgRealtimeEnabled(false).catch(() => {});
-    v8Native?.exitEcgMeasurement().catch(() => {});
+    if (ecgSession.requestedMode === 'ppg') {
+      v8Native?.stopPpgMeasurement().catch(() => {});
+      v8Native?.exitPpgMeasurement().catch(() => {});
+    } else {
+      v8Native?.stopEcgMeasurement().catch(() => {});
+      v8Native?.exitEcgMeasurement().catch(() => {});
+    }
   }, [ecgSession]);
 
   useEffect(() => {
@@ -385,12 +395,13 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         setEcgSession(prev => {
           if (!prev || !['starting', 'measuring', 'processing'].includes(prev.phase)) return prev;
           const now = Date.now();
+          const modeLabel = prev.requestedMode === 'ppg' ? 'PPG' : 'ECG';
           return {
             ...prev,
             phase: 'failed',
             completedAt: now,
             durationMs: now - prev.startedAt,
-            error: 'The hand band disconnected during the ECG measurement.',
+            error: `The hand band disconnected during the ${modeLabel} measurement.`,
             statusMessage: 'Hand band disconnected',
           };
         });
@@ -422,42 +433,34 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       setEcgSession(prev => {
         if (!prev || !['starting', 'measuring', 'processing'].includes(prev.phase)) return prev;
         const ecgPlatform = Platform.OS === 'ios' ? 'ios' : Platform.OS === 'android' ? 'android' : undefined;
-        const ecgEvent = parseV8EcgPayload(event.payload!, ecgPlatform);
+        const requestedMode = prev.requestedMode ?? 'ecg';
+        const requestedLabel = requestedMode === 'ecg' ? 'ECG' : 'PPG';
+        const otherLabel = requestedMode === 'ecg' ? 'PPG' : 'ECG';
+        const ecgEvent = parseV8EcgPayload(
+          event.payload!,
+          ecgPlatform,
+          requestedMode,
+        );
         if (ecgEvent.kind === 'unknown') return prev;
         const now = Date.now();
-        // Firmware 0032 emits two short dataType=54 control/ack payloads before
-        // its continuous dataType=70 stream. Once that real stream arrives,
-        // discard the control values and do not let later type=54 close acks
-        // replace the recorded waveform.
-        const sourceSwitchedToPpg =
-          ecgEvent.waveformSource === 'ppg' &&
-          prev.waveformSource !== 'ppg';
-        const ignoreEcgAfterPpg =
-          ecgEvent.waveformSource === 'ecg' &&
-          prev.waveformSource === 'ppg';
-        const incomingSamples = ignoreEcgAfterPpg ? [] : ecgEvent.samples;
-        const previousSamples = sourceSwitchedToPpg ? [] : prev.samples;
+        const sourceMismatch =
+          ecgEvent.waveformSource != null &&
+          ecgEvent.waveformSource !== requestedMode;
+        const incomingSamples = sourceMismatch ? [] : ecgEvent.samples;
         const combinedSamples = incomingSamples.length > 0
-          ? [...previousSamples, ...incomingSamples].slice(-MAX_ECG_SAMPLES)
+          ? [...prev.samples, ...incomingSamples].slice(-MAX_ECG_SAMPLES)
           : prev.samples;
-        const previousFirstSampleAt = sourceSwitchedToPpg
-          ? null
-          : prev.firstSampleAt;
         const firstSampleAt = incomingSamples.length > 0
-          ? previousFirstSampleAt ?? now
-          : previousFirstSampleAt;
+          ? prev.firstSampleAt ?? now
+          : prev.firstSampleAt;
         const firstSampleCount =
-          incomingSamples.length > 0 && previousFirstSampleAt == null
+          incomingSamples.length > 0 && prev.firstSampleAt == null
             ? combinedSamples.length
-            : sourceSwitchedToPpg
-              ? 0
-              : prev.firstSampleCount;
+            : prev.firstSampleCount;
         const lastSampleAt =
           incomingSamples.length > 0
             ? now
-            : sourceSwitchedToPpg
-              ? null
-              : prev.lastSampleAt;
+            : prev.lastSampleAt;
         const observedSampleRate = estimateObservedSampleRateHz(
           combinedSamples.length,
           firstSampleCount,
@@ -466,7 +469,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         );
         logV8Debug('ECG packet parsed', {
           sessionId: prev.id,
+          requestedMode,
           packet: ecgEvent,
+          sourceMismatch,
           packetSampleCount: incomingSamples.length,
           totalSampleCount: combinedSamples.length,
           observedSampleRateHz: observedSampleRate,
@@ -475,15 +480,14 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         });
         const completed = ecgEvent.kind === 'completed';
         const failed = ecgEvent.kind === 'failed';
-        const waveformSource = sourceSwitchedToPpg
-          ? 'ppg'
-          : prev.waveformSource === 'ppg'
-            ? 'ppg'
-            : ecgEvent.waveformSource ?? prev.waveformSource;
+        const acceptedWaveform = incomingSamples.length > 0;
+        const waveformSource = acceptedWaveform
+          ? ecgEvent.waveformSource
+          : prev.waveformSource;
         const nextSampleRateHz =
-          ecgEvent.sampleRateHz ??
+          (sourceMismatch ? null : ecgEvent.sampleRateHz) ??
           observedSampleRate ??
-          (sourceSwitchedToPpg ? null : prev.sampleRateHz);
+          prev.sampleRateHz;
         const nextPhase = completed
           ? 'completed'
           : failed
@@ -496,19 +500,19 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
                   ? 'measuring'
                   : prev.phase;
         const defaultStatus = completed
-          ? waveformSource === 'ppg'
-            ? 'The hand band returned a pulse (PPG) waveform, not ECG.'
+          ? combinedSamples.length === 0
+            ? `No ${requestedLabel} waveform was received.`
             : waveformSource === 'ecg' &&
                 nextSampleRateHz != null &&
                 nextSampleRateHz < MIN_ECG_SAMPLE_RATE_HZ
               ? 'Recording completed with insufficient ECG sample frequency.'
-              : 'ECG recording completed'
+              : `${requestedLabel} recording completed`
           : failed
-            ? 'ECG measurement failed'
+            ? `${requestedLabel} measurement failed`
             : ecgEvent.kind === 'samples'
-              ? waveformSource === 'ecg'
-                ? 'Receiving ECG waveform…'
-                : 'Receiving hand band waveform…'
+              ? sourceMismatch
+                ? `Ignoring ${otherLabel} data — waiting for ${requestedLabel} waveform…`
+                : `Receiving ${requestedLabel} waveform…`
               : prev.statusMessage;
         return {
           ...prev,
@@ -517,6 +521,12 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           durationMs: completed || failed ? now - prev.startedAt : prev.durationMs,
           samples: combinedSamples,
           waveformSource,
+          waveformField: acceptedWaveform
+            ? ecgEvent.waveformField
+            : prev.waveformField,
+          waveformDataType: acceptedWaveform
+            ? ecgEvent.dataType
+            : prev.waveformDataType,
           sampleRateHz: nextSampleRateHz,
           firstSampleAt,
           firstSampleCount,
@@ -525,7 +535,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           signalQuality: ecgEvent.signalQuality ?? prev.signalQuality,
           classification: ecgEvent.classification ?? prev.classification,
           statusMessage: ecgEvent.statusMessage ?? defaultStatus,
-          error: failed ? (ecgEvent.statusMessage ?? 'The hand band could not complete this ECG.') : prev.error,
+          error: failed ? (ecgEvent.statusMessage ?? `The hand band could not complete this ${requestedLabel}.`) : prev.error,
         };
       });
       const { history, infoPatch } = parseV8Payload(event.payload);
@@ -792,19 +802,20 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     setLiveModeEnabled(enabled);
   }, []);
 
-  const startEcgMeasurement = useCallback(async () => {
+  const startEcgMeasurement = useCallback(async (mode: V8WaveformSource = 'ecg') => {
     const native = v8Native;
+    const modeLabel = mode === 'ecg' ? 'ECG' : 'PPG';
     if (!ecgSeniorId) {
-      throw new Error('Select a senior before starting an ECG measurement.');
+      throw new Error(`Select a senior before starting a ${modeLabel} measurement.`);
     }
     if (selectedSeniorHandBandMacs.length === 0) {
       throw new Error('No hand band is assigned to the selected senior.');
     }
     if (!native) {
-      throw new Error('The hand band ECG module is unavailable on this device.');
+      throw new Error('The hand band waveform module is unavailable on this device.');
     }
     if (!Object.values(connectionStates).some(state => state === 'connected')) {
-      throw new Error('Connect the assigned hand band before starting ECG.');
+      throw new Error(`Connect the assigned hand band before starting ${modeLabel}.`);
     }
     const connectedMac = resolveConnectedHandBandMac(deviceInfo.mac, activeDeviceId);
     const assignedMacs = selectedSeniorHandBandMacs
@@ -820,8 +831,14 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       ecgCompletionTimerRef.current = null;
     }
 
-    const session = createV8EcgSession(ecgSeniorId, connectedMac, deviceInfo.firmwareVersion);
-    logV8Debug('Starting ECG measurement', {
+    const session = createV8EcgSession(
+      ecgSeniorId,
+      connectedMac,
+      deviceInfo.firmwareVersion,
+      Date.now(),
+      mode,
+    );
+    logV8Debug(`Starting ${modeLabel} measurement`, {
       session,
       connectedMac,
       assignedMacs,
@@ -829,24 +846,25 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     });
     setEcgSession(session);
     try {
-      if (Platform.OS === 'android') {
-        // The Android vendor SDK requires AutoHRV measurement to be started
-        // before its real-time PPG stream is enabled.
+      if (mode === 'ecg') {
         await native.startEcgMeasurement();
-        await native.setEcgRealtimeEnabled(true);
       } else {
-        await native.setEcgRealtimeEnabled(true);
-        await native.startEcgMeasurement();
+        await native.startPpgMeasurement();
       }
-      logV8Debug('ECG real-time streaming enabled');
-      logV8Debug('ECG start command sent');
+      logV8Debug(`${modeLabel} native start flow sent`);
       setEcgSession(prev => prev?.id === session.id
-        ? { ...prev, phase: 'measuring', statusMessage: 'ECG measurement is running…' }
+        ? { ...prev, phase: 'measuring', statusMessage: `${modeLabel} measurement is running…` }
         : prev);
     } catch (error) {
-      logV8Debug('ECG start failed', error);
-      await native.setEcgRealtimeEnabled(false).catch(() => {});
-      const message = error instanceof Error ? error.message : 'Unable to start ECG measurement.';
+      logV8Debug(`${modeLabel} start failed`, error);
+      if (mode === 'ecg') {
+        await native.stopEcgMeasurement().catch(() => {});
+      } else {
+        await native.stopPpgMeasurement().catch(() => {});
+        await native.exitPpgMeasurement().catch(() => {});
+      }
+      ecgCleanupSessionIdRef.current = session.id;
+      const message = error instanceof Error ? error.message : `Unable to start ${modeLabel} measurement.`;
       const now = Date.now();
       setEcgSession(prev => prev?.id === session.id
         ? {
@@ -854,7 +872,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
             phase: 'failed',
             completedAt: now,
             durationMs: now - prev.startedAt,
-            statusMessage: 'ECG could not start',
+            statusMessage: `${modeLabel} could not start`,
             error: message,
           }
         : prev);
@@ -871,40 +889,48 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
 
   const finishEcgMeasurement = useCallback(async () => {
     const native = v8Native;
-    if (!native) throw new Error('The hand band ECG module is unavailable on this device.');
-    logV8Debug('Finishing ECG measurement');
-    const finishingSessionId = ecgSessionRef.current?.id ?? null;
+    if (!native) throw new Error('The hand band waveform module is unavailable on this device.');
+    const finishingSession = ecgSessionRef.current;
+    const finishingSessionId = finishingSession?.id ?? null;
+    const mode = finishingSession?.requestedMode ?? 'ecg';
+    const modeLabel = mode === 'ecg' ? 'ECG' : 'PPG';
+    logV8Debug(`Finishing ${modeLabel} measurement`);
     setEcgSession(prev =>
       prev &&
       prev.id === finishingSessionId &&
       ['starting', 'measuring'].includes(prev.phase)
-      ? { ...prev, phase: 'processing', statusMessage: 'Finishing ECG recording…' }
+      ? { ...prev, phase: 'processing', statusMessage: `Finishing ${modeLabel} recording…` }
       : prev);
     let stopError: unknown = null;
     try {
-      await native.stopEcgMeasurement();
-      logV8Debug('ECG stop command sent');
+      if (mode === 'ecg') {
+        await native.stopEcgMeasurement();
+      } else {
+        await native.stopPpgMeasurement();
+      }
+      logV8Debug(`${modeLabel} stop flow sent`);
     } catch (error) {
       logV8Debug('ECG stop command failed', error);
       stopError = error;
     }
     try {
-      await native.setEcgRealtimeEnabled(false);
-      logV8Debug('ECG real-time streaming disabled');
-    } catch (error) {
-      logV8Debug('Disabling ECG real-time streaming failed', error);
-    }
-    try {
-      await native.exitEcgMeasurement();
-      logV8Debug('ECG exit command sent');
+      if (mode === 'ecg') {
+        await native.exitEcgMeasurement();
+      } else {
+        await native.exitPpgMeasurement();
+      }
+      logV8Debug(`${modeLabel} exit flow sent`);
     } catch (error) {
       logV8Debug('ECG exit command failed', error);
     }
 
     if (stopError) {
-      const message = stopError instanceof Error ? stopError.message : 'Unable to finish ECG measurement.';
+      const message = stopError instanceof Error ? stopError.message : `Unable to finish ${modeLabel} measurement.`;
       setEcgSession(prev => prev ? { ...prev, phase: 'failed', error: message, statusMessage: message } : prev);
       throw stopError;
+    }
+    if (finishingSessionId) {
+      ecgCleanupSessionIdRef.current = finishingSessionId;
     }
 
     if (ecgCompletionTimerRef.current) clearTimeout(ecgCompletionTimerRef.current);
@@ -923,15 +949,13 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           phase: 'completed',
           completedAt: now,
           durationMs: now - prev.startedAt,
-          statusMessage: prev.waveformSource === 'ppg'
-            ? 'The hand band returned a pulse (PPG) waveform, not ECG.'
+          statusMessage: prev.samples.length === 0
+            ? `Recording completed; no ${modeLabel} waveform was returned by this firmware.`
             : prev.waveformSource === 'ecg' &&
                 prev.sampleRateHz != null &&
                 prev.sampleRateHz < MIN_ECG_SAMPLE_RATE_HZ
               ? 'Recording completed with insufficient ECG sample frequency.'
-              : prev.samples.length > 0
-              ? 'ECG recording completed'
-              : 'Recording completed; no waveform was returned by this firmware.',
+              : `${modeLabel} recording completed`,
         };
         logV8Debug('ECG session completed locally', completedSession);
         return completedSession;
@@ -947,9 +971,14 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     }
     const native = v8Native;
     if (native) {
-      await native.stopEcgMeasurement().catch(() => {});
-      await native.setEcgRealtimeEnabled(false).catch(() => {});
-      await native.exitEcgMeasurement().catch(() => {});
+      const mode = ecgSessionRef.current?.requestedMode ?? 'ecg';
+      if (mode === 'ecg') {
+        await native.stopEcgMeasurement().catch(() => {});
+        await native.exitEcgMeasurement().catch(() => {});
+      } else {
+        await native.stopPpgMeasurement().catch(() => {});
+        await native.exitPpgMeasurement().catch(() => {});
+      }
     }
     setEcgSession(null);
   }, []);

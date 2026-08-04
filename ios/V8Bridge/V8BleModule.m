@@ -22,6 +22,10 @@ static NSString * const kV8DataEvent = @"V8Data";
 @property(nonatomic, strong) NSData *lastWrite;
 @property(nonatomic, assign) BOOL writeInFlight;
 @property(nonatomic, assign) NSInteger lastRetryCount;
+@property(nonatomic, assign) BOOL awaitingContactEcgStartAck;
+- (void)enqueueCommands:(NSArray<NSData *> *)commands
+              resolver:(RCTPromiseResolveBlock)resolve
+              rejecter:(RCTPromiseRejectBlock)reject;
 @end
 
 @implementation V8BleModule
@@ -312,7 +316,19 @@ RCT_REMAP_METHOD(startEcgMeasurement,
 #if TARGET_OS_SIMULATOR
   [self rejectSimulatorUnsupported:reject method:@"startEcgMeasurement"];
 #else
-  NSData *cmd = [[BleSDK_V8 sharedManager] ppgWithMode:1 ppgStatus:0];
+  if (!self.activePeripheral || !self.writeCharacteristic) {
+    reject(@"NOT_CONNECTED", @"V8 device is not connected.", nil);
+    return;
+  }
+  NSData *cmd = [[BleSDK_V8 sharedManager]
+      manualMeasurementWithDataType:hrvData_v8
+      measurementTime:30
+      open:YES];
+  if (cmd.length == 0) {
+    reject(@"CMD_EMPTY", @"Vendor command is empty.", nil);
+    return;
+  }
+  self.awaitingContactEcgStartAck = YES;
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
 #endif
 }
@@ -323,8 +339,14 @@ RCT_REMAP_METHOD(stopEcgMeasurement,
 #if TARGET_OS_SIMULATOR
   [self rejectSimulatorUnsupported:reject method:@"stopEcgMeasurement"];
 #else
-  NSData *cmd = [[BleSDK_V8 sharedManager] ppgWithMode:3 ppgStatus:0];
-  [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+  self.awaitingContactEcgStartAck = NO;
+  NSData *stop = [[BleSDK_V8 sharedManager]
+      manualMeasurementWithDataType:hrvData_v8
+      measurementTime:30
+      open:NO];
+  NSData *disableRaw = [[BleSDK_V8 sharedManager]
+      setECGRealtimeDuringHRVEnabled:NO];
+  [self enqueueCommands:@[stop, disableRaw] resolver:resolve rejecter:reject];
 #endif
 }
 
@@ -333,6 +355,43 @@ RCT_REMAP_METHOD(exitEcgMeasurement,
                  rejecter:(RCTPromiseRejectBlock)reject) {
 #if TARGET_OS_SIMULATOR
   [self rejectSimulatorUnsupported:reject method:@"exitEcgMeasurement"];
+#else
+  self.awaitingContactEcgStartAck = NO;
+  resolve(@YES);
+#endif
+}
+
+RCT_REMAP_METHOD(startPpgMeasurement,
+                 startPpgMeasurementWithResolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"startPpgMeasurement"];
+#else
+  NSData *enableRealtime = [[BleSDK_V8 sharedManager]
+      setECGRealtimeDuringHRVEnabled:YES];
+  NSData *start = [[BleSDK_V8 sharedManager] ppgWithMode:1 ppgStatus:0];
+  [self enqueueCommands:@[enableRealtime, start] resolver:resolve rejecter:reject];
+#endif
+}
+
+RCT_REMAP_METHOD(stopPpgMeasurement,
+                 stopPpgMeasurementWithResolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"stopPpgMeasurement"];
+#else
+  NSData *stop = [[BleSDK_V8 sharedManager] ppgWithMode:3 ppgStatus:0];
+  NSData *disableRealtime = [[BleSDK_V8 sharedManager]
+      setECGRealtimeDuringHRVEnabled:NO];
+  [self enqueueCommands:@[stop, disableRealtime] resolver:resolve rejecter:reject];
+#endif
+}
+
+RCT_REMAP_METHOD(exitPpgMeasurement,
+                 exitPpgMeasurementWithResolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"exitPpgMeasurement"];
 #else
   NSData *cmd = [[BleSDK_V8 sharedManager] ppgWithMode:5 ppgStatus:0];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
@@ -458,11 +517,23 @@ RCT_REMAP_METHOD(requestTemperature,
     reject(@"CMD_EMPTY", @"Vendor command is empty.", nil);
     return;
   }
+  [self enqueueCommands:@[cmd] resolver:resolve rejecter:reject];
+}
+
+- (void)enqueueCommands:(NSArray<NSData *> *)commands
+              resolver:(RCTPromiseResolveBlock)resolve
+              rejecter:(RCTPromiseRejectBlock)reject {
   if (!self.activePeripheral || !self.writeCharacteristic) {
     reject(@"NOT_CONNECTED", @"V8 device is not connected.", nil);
     return;
   }
-  [self.writeQueue addObject:cmd];
+  for (NSData *command in commands) {
+    if (command.length == 0) {
+      reject(@"CMD_EMPTY", @"Vendor command is empty.", nil);
+      return;
+    }
+  }
+  [self.writeQueue addObjectsFromArray:commands];
   [self processWriteQueue];
   resolve(@YES);
 }
@@ -546,6 +617,7 @@ didDisconnectPeripheral:(CBPeripheral *)peripheral
                  error:(NSError *)error {
   [self emitConnection:@"disconnected" deviceId:peripheral.identifier.UUIDString];
   if (self.activePeripheral == peripheral) {
+    self.awaitingContactEcgStartAck = NO;
     self.activePeripheral = nil;
     self.writeCharacteristic = nil;
     self.notifyCharacteristic = nil;
@@ -635,6 +707,15 @@ didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic
       parsed.dataEnd ? @"YES" : @"NO",
       parsed.dicData ?: @{}
     );
+    if (parsed.dataType == DeviceMeasurement_V8 && self.awaitingContactEcgStartAck) {
+      self.awaitingContactEcgStartAck = NO;
+      NSData *enableRaw = [[BleSDK_V8 sharedManager]
+          setECGRealtimeDuringHRVEnabled:YES];
+      if (enableRaw.length > 0) {
+        [self.writeQueue addObject:enableRaw];
+        [self processWriteQueue];
+      }
+    }
     body[@"type"] = @"parsed";
     body[@"payload"] = @{
       @"dataType": @((int)parsed.dataType).stringValue,

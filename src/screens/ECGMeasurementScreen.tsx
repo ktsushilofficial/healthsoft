@@ -8,6 +8,7 @@ import React, {
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -18,7 +19,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
-import Svg, { Line, Path } from 'react-native-svg';
+import Svg, { Line, Path, Rect } from 'react-native-svg';
 import { captureRef } from 'react-native-view-shot';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -28,16 +29,23 @@ import {
 } from '../utils/ecgReport';
 import {
   downsampleEcg,
+  downsampleWaveformEnvelope,
   isEcgStreamStalled,
   shouldAutoFinishEcg,
+  splitWaveformIntoStrips,
 } from '../v8/ecg';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 
 const ACTIVE_PHASES = new Set(['starting', 'measuring', 'processing']);
 const MIN_ECG_SAMPLE_RATE_HZ = 250;
 const PREFERRED_ECG_SAMPLE_RATE_HZ = 500;
-const ECG_MAX_RECORDING_DURATION_MS = 120_000;
+const ECG_MAX_RECORDING_DURATION_MS = 30_000;
+const PPG_MAX_RECORDING_DURATION_MS = 120_000;
 const ECG_STALL_NOTICE_MS = 4_000;
+const ECG_REPORT_STRIP_COUNT = 3;
+const ECG_REPORT_STRIP_SECONDS = 10;
+
+type MeasurementMode = 'ecg' | 'ppg';
 
 function formatDuration(milliseconds: number): string {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
@@ -52,9 +60,11 @@ function formatDuration(milliseconds: number): string {
 const EcgWaveform = ({
   samples,
   width,
+  mode,
 }: {
   samples: number[];
   width: number;
+  mode: MeasurementMode;
 }) => {
   const height = 180;
   const chartWidth = Math.max(240, width);
@@ -99,19 +109,182 @@ const EcgWaveform = ({
               strokeWidth="1"
             />
           ))}
-          <Path d={path} stroke="#D64545" strokeWidth="2" fill="none" />
+          <Path
+            d={path}
+            stroke={mode === 'ecg' ? '#D64545' : '#E67E22'}
+            strokeWidth="2"
+            fill="none"
+          />
         </Svg>
       ) : (
         <View style={styles.waveformEmpty}>
-          <Icon name="pulse-outline" size={34} color="#CC8A8A" />
+          <Icon
+            name={mode === 'ecg' ? 'pulse-outline' : 'heart-outline'}
+            size={34}
+            color={mode === 'ecg' ? '#CC8A8A' : '#D89A62'}
+          />
           <Text style={styles.waveformEmptyTitle}>
-            Waiting for ECG waveform
+            Waiting for {mode === 'ecg' ? 'ECG' : 'PPG'} waveform
           </Text>
           <Text style={styles.waveformEmptyText}>
-            Keep still and maintain contact with the hand band.
+            {mode === 'ecg'
+              ? 'Keep still and maintain light contact with the metal electrode.'
+              : 'Keep still and maintain sensor contact with your wrist.'}
           </Text>
         </View>
       )}
+    </View>
+  );
+};
+
+const EcgReportStrip = ({
+  samples,
+  width,
+  range,
+  stripIndex,
+}: {
+  samples: number[];
+  width: number;
+  range: { min: number; max: number };
+  stripIndex: number;
+}) => {
+  const chartWidth = Math.max(240, width);
+  const chartHeight = 112;
+  const path = useMemo(() => {
+    const points = downsampleWaveformEnvelope(
+      samples,
+      Math.max(240, Math.floor(chartWidth * 2)),
+    );
+    if (points.length < 2 || samples.length < 2) return '';
+    const amplitude = Math.max(1, range.max - range.min);
+    const verticalPadding = 9;
+    return points
+      .map((point, index) => {
+        const x = (point.index / (samples.length - 1)) * chartWidth;
+        const clippedValue = Math.min(range.max, Math.max(range.min, point.value));
+        const y =
+          chartHeight -
+          verticalPadding -
+          ((clippedValue - range.min) / amplitude) *
+            (chartHeight - verticalPadding * 2);
+        return `${index === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(' ');
+  }, [chartWidth, range.max, range.min, samples]);
+
+  const startSecond = stripIndex * ECG_REPORT_STRIP_SECONDS;
+  const endSecond = startSecond + ECG_REPORT_STRIP_SECONDS;
+
+  return (
+    <View style={styles.reportStrip}>
+      <View style={styles.reportStripLabelRow}>
+        <Text style={styles.reportStripLabel}>
+          Lead I-like · Strip {stripIndex + 1}
+        </Text>
+        <Text style={styles.reportStripTime}>
+          {startSecond}–{endSecond} sec
+        </Text>
+      </View>
+      <View style={styles.reportStripChart}>
+        <Svg width={chartWidth} height={chartHeight}>
+          <Rect width={chartWidth} height={chartHeight} fill="#FFFCFC" />
+          {Array.from({ length: 49 }, (_, index) => index + 1).map(index => {
+            const major = index % 5 === 0;
+            return (
+              <Line
+                key={`report-v-${index}`}
+                x1={(chartWidth / 50) * index}
+                x2={(chartWidth / 50) * index}
+                y1="0"
+                y2={chartHeight}
+                stroke={major ? '#E7AAAA' : '#F5DEDE'}
+                strokeWidth={major ? 0.8 : 0.45}
+              />
+            );
+          })}
+          {Array.from({ length: 15 }, (_, index) => index + 1).map(index => {
+            const major = index % 5 === 0;
+            return (
+              <Line
+                key={`report-h-${index}`}
+                x1="0"
+                x2={chartWidth}
+                y1={(chartHeight / 16) * index}
+                y2={(chartHeight / 16) * index}
+                stroke={major ? '#E7AAAA' : '#F5DEDE'}
+                strokeWidth={major ? 0.8 : 0.45}
+              />
+            );
+          })}
+          {path ? (
+            <Path
+              d={path}
+              stroke="#E54848"
+              strokeWidth="1.35"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              fill="none"
+            />
+          ) : null}
+        </Svg>
+      </View>
+    </View>
+  );
+};
+
+const EcgReportWaveform = ({
+  samples,
+  width,
+  sampleRateHz,
+}: {
+  samples: number[];
+  width: number;
+  sampleRateHz: number | null;
+}) => {
+  const strips = useMemo(
+    () => splitWaveformIntoStrips(samples, ECG_REPORT_STRIP_COUNT),
+    [samples],
+  );
+  const range = useMemo(() => {
+    if (samples.length === 0) return { min: -1, max: 1 };
+    const sorted = [...samples].sort((a, b) => a - b);
+    const lowerIndex = Math.floor((sorted.length - 1) * 0.01);
+    const upperIndex = Math.ceil((sorted.length - 1) * 0.99);
+    let min = sorted[lowerIndex];
+    let max = sorted[upperIndex];
+    if (max <= min) {
+      min -= 1;
+      max += 1;
+    }
+    const padding = (max - min) * 0.08;
+    return { min: min - padding, max: max + padding };
+  }, [samples]);
+
+  return (
+    <View style={styles.reportWaveformSection}>
+      <View style={styles.reportWaveformHeadingRow}>
+        <View>
+          <Text style={styles.reportWaveformTitle}>30-second ECG recording</Text>
+          <Text style={styles.reportWaveformSubtitle}>
+            Three consecutive 10-second strips
+          </Text>
+        </View>
+        <Text style={styles.reportWaveformRate}>
+          {sampleRateHz ? `${sampleRateHz} Hz` : 'Raw ECG'}
+        </Text>
+      </View>
+      {strips.map((strip, index) => (
+        <EcgReportStrip
+          key={`ecg-report-strip-${index}`}
+          samples={strip}
+          width={width}
+          range={range}
+          stripIndex={index}
+        />
+      ))}
+      <Text style={styles.reportWaveformFootnote}>
+        Time grid: 0.2 sec small divisions · amplitude auto-scaled from raw device data
+      </Text>
     </View>
   );
 };
@@ -129,6 +302,8 @@ const ECGMeasurementScreen = () => {
     cancelEcgMeasurement,
     resetEcgMeasurement,
   } = useV8DeviceManager();
+  const [measurementMode, setMeasurementMode] =
+    useState<MeasurementMode>('ecg');
   const [now, setNow] = useState(Date.now());
   const [actionBusy, setActionBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState<'png' | 'pdf' | null>(null);
@@ -148,6 +323,8 @@ const ECGMeasurementScreen = () => {
     !!ecgSeniorId && selectedSeniorHandBandMacs.length > 0;
   const active = !!ecgSession && ACTIVE_PHASES.has(ecgSession.phase);
   const reportReady = ecgSession?.phase === 'completed';
+  const sessionMode = ecgSession?.requestedMode ?? measurementMode;
+  const modeLabel = sessionMode === 'ecg' ? 'ECG' : 'PPG';
   const reportSeniorName = useMemo(() => {
     if (user?.role === 'SENIOR') {
       return [user.first_name, user.last_name].filter(Boolean).join(' ') ||
@@ -176,7 +353,7 @@ const ECGMeasurementScreen = () => {
       if (!active || allowLeaveRef.current) return;
       event.preventDefault();
       Alert.alert(
-        'Stop ECG measurement?',
+        `Stop ${modeLabel} measurement?`,
         'Leaving this screen will cancel the current recording.',
         [
           { text: 'Continue measuring', style: 'cancel' },
@@ -193,7 +370,7 @@ const ECGMeasurementScreen = () => {
         ],
       );
     });
-  }, [active, cancelEcgMeasurement, navigation]);
+  }, [active, cancelEcgMeasurement, modeLabel, navigation]);
 
   const run = useCallback(
     async (action: () => Promise<void>, fallback: string) => {
@@ -201,12 +378,12 @@ const ECGMeasurementScreen = () => {
       try {
         await action();
       } catch (error) {
-        Alert.alert('ECG', error instanceof Error ? error.message : fallback);
+        Alert.alert(modeLabel, error instanceof Error ? error.message : fallback);
       } finally {
         setActionBusy(false);
       }
     },
-    [],
+    [modeLabel],
   );
 
   const handleConnect = () =>
@@ -214,15 +391,18 @@ const ECGMeasurementScreen = () => {
       await ensureAutoConnect();
       Alert.alert(
         'Connecting hand band',
-        'Wait until the hand band shows as connected, then start ECG.',
+        `Wait until the hand band shows as connected, then start ${modeLabel}.`,
       );
     }, 'Unable to connect the assigned hand band.');
 
   const handleStart = () =>
-    run(startEcgMeasurement, 'Unable to start ECG measurement.');
+    run(
+      () => startEcgMeasurement(measurementMode),
+      `Unable to start ${measurementMode === 'ecg' ? 'ECG' : 'PPG'} measurement.`,
+    );
   const handleFinish = useCallback(
-    () => run(finishEcgMeasurement, 'Unable to finish ECG measurement.'),
-    [finishEcgMeasurement, run],
+    () => run(finishEcgMeasurement, `Unable to finish ${modeLabel} measurement.`),
+    [finishEcgMeasurement, modeLabel, run],
   );
 
   useEffect(() => {
@@ -231,7 +411,9 @@ const ECGMeasurementScreen = () => {
       !shouldAutoFinishEcg(
         ecgSession,
         now,
-        ECG_MAX_RECORDING_DURATION_MS,
+        ecgSession.requestedMode === 'ecg'
+          ? ECG_MAX_RECORDING_DURATION_MS
+          : PPG_MAX_RECORDING_DURATION_MS,
       )
     ) {
       return;
@@ -243,13 +425,13 @@ const ECGMeasurementScreen = () => {
   }, [ecgSession, handleFinish, now]);
 
   const handleCancel = () => {
-    Alert.alert('Cancel ECG?', 'The current recording will be discarded.', [
+    Alert.alert(`Cancel ${modeLabel}?`, 'The current recording will be discarded.', [
       { text: 'Keep measuring', style: 'cancel' },
       {
         text: 'Cancel recording',
         style: 'destructive',
         onPress: () => {
-          run(cancelEcgMeasurement, 'Unable to cancel ECG measurement.').catch(
+          run(cancelEcgMeasurement, `Unable to cancel ${modeLabel} measurement.`).catch(
             () => {},
           );
         },
@@ -278,11 +460,17 @@ const ECGMeasurementScreen = () => {
       .replace(/^-+|-+$/g, '')
       .toLowerCase();
     return {
-      fileStem: `healthsoft-waveform-${safeSeniorName || 'senior'}-${datePart}`,
-      title: 'Healthsoft hand band waveform report',
-      subject: `Healthsoft waveform report - ${reportSeniorName} - ${datePart}`,
+      fileStem: `healthsoft-${sessionMode}-${safeSeniorName || 'senior'}-${datePart}`,
+      title: `Healthsoft ${modeLabel} report`,
+      subject: `Healthsoft ${modeLabel} report - ${reportSeniorName} - ${datePart}`,
     };
-  }, [ecgSession?.completedAt, ecgSession?.startedAt, reportSeniorName]);
+  }, [
+    ecgSession?.completedAt,
+    ecgSession?.startedAt,
+    modeLabel,
+    reportSeniorName,
+    sessionMode,
+  ]);
 
   const handleShareReport = useCallback(
     async (format: 'png' | 'pdf') => {
@@ -315,15 +503,15 @@ const ECGMeasurementScreen = () => {
       (user?.role === 'CARE_TAKER' || user?.role === 'GUARDIAN') &&
       !selectedSenior?.userId;
     const restrictionMessage = needsSeniorSelection
-      ? 'Select a senior before starting an ECG measurement.'
+      ? 'Select a senior before starting a waveform measurement.'
       : ecgSeniorId
         ? 'The selected senior does not have an assigned hand band.'
-        : 'ECG measurements are available to seniors, caretakers, and guardians.';
+        : 'ECG and PPG measurements are available to seniors, caretakers, and guardians.';
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.restricted}>
           <Icon name="lock-closed-outline" size={42} color="#8A817A" />
-          <Text style={styles.restrictedTitle}>ECG unavailable</Text>
+          <Text style={styles.restrictedTitle}>Measurement unavailable</Text>
           <Text style={styles.restrictedText}>
             {restrictionMessage}
           </Text>
@@ -363,9 +551,9 @@ const ECGMeasurementScreen = () => {
     isEcgStreamStalled(ecgSession, now, ECG_STALL_NOTICE_MS);
   const samplingAssessment =
     waveformSource == null
-      ? 'Verifying the ECG channel and sample frequency…'
+      ? `Waiting for the ${modeLabel} signal channel…`
       : waveformSource === 'ppg'
-        ? 'PPG pulse data detected. PPG cannot provide ECG P, QRS, ST, or T morphology.'
+        ? 'Optical PPG pulse waveform detected.'
         : measuredSampleRateHz == null
           ? 'ECG channel detected. Measuring its sample frequency…'
           : measuredSampleRateHz >= PREFERRED_ECG_SAMPLE_RATE_HZ
@@ -373,6 +561,25 @@ const ECGMeasurementScreen = () => {
             : measuredSampleRateHz >= MIN_ECG_SAMPLE_RATE_HZ
               ? `${measuredSampleRateHz} Hz ECG meets the minimum acquisition target.`
               : `${measuredSampleRateHz} Hz ECG is below the 250 Hz minimum target.`;
+  const signalSourceLabel = waveformSource == null
+    ? `Signal: waiting for ${modeLabel}`
+    : waveformSource === 'ecg'
+      ? 'Signal: ECG contact electrode'
+      : 'Signal: optical PPG sensor';
+  const signalProtocolLabel = waveformSource == null
+    ? null
+    : Platform.OS === 'android' &&
+        waveformSource === 'ecg' &&
+        ecgSession?.waveformField?.toLowerCase() === 'arrayppgrawdata'
+      ? 'Android protocol 0x07 · SDK field arrayPpgRawData (ECG)'
+      : [
+          ecgSession?.waveformDataType
+            ? `dataType ${ecgSession.waveformDataType}`
+            : null,
+          ecgSession?.waveformField ?? null,
+        ]
+          .filter(Boolean)
+          .join(' · ');
   const displayStatusMessage =
     streamStalled
       ? 'Signal paused — waiting for more samples from the hand band'
@@ -393,7 +600,7 @@ const ECGMeasurementScreen = () => {
         >
           <Icon name="chevron-back" size={24} color="#2E2925" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Take ECG</Text>
+        <Text style={styles.headerTitle}>Take {modeLabel}</Text>
         <View style={styles.headerButton} />
       </View>
 
@@ -416,28 +623,101 @@ const ECGMeasurementScreen = () => {
         </View>
 
         {!ecgSession ? (
-          <View style={styles.card}>
-            <View style={styles.heroIcon}>
-              <Icon name="pulse" size={38} color="#D64545" />
+          <>
+            <View style={styles.modeSelectorRow}>
+              {(['ecg', 'ppg'] as const).map(mode => {
+                const selected = measurementMode === mode;
+                const isEcg = mode === 'ecg';
+                return (
+                  <TouchableOpacity
+                    key={mode}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    style={[
+                      styles.modeCard,
+                      selected &&
+                        (isEcg
+                          ? styles.modeCardActiveEcg
+                          : styles.modeCardActivePpg),
+                    ]}
+                    onPress={() => setMeasurementMode(mode)}
+                  >
+                    <Icon
+                      name={isEcg ? 'pulse' : 'heart'}
+                      size={23}
+                      color={
+                        selected
+                          ? isEcg
+                            ? '#D64545'
+                            : '#E67E22'
+                          : '#8A817A'
+                      }
+                    />
+                    <Text style={styles.modeCardTitle}>
+                      {isEcg ? 'ECG' : 'PPG'}
+                    </Text>
+                    <Text style={styles.modeCardSubtitle}>
+                      {isEcg ? 'Contact electrode' : 'Optical pulse'}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
-            <Text style={styles.title}>Prepare for your ECG</Text>
-            <Text style={styles.subtitle}>
-              Record for up to 2 minutes. You can finish earlier when needed.
-            </Text>
-            {[
-              'Sit comfortably and rest your arm on a table.',
-              'Wear the hand band snugly against clean, dry skin.',
-              'Touch the ECG contact as instructed by your band.',
-              'Stay still and do not speak during the recording.',
-            ].map((instruction, index) => (
-              <View key={instruction} style={styles.instructionRow}>
-                <View style={styles.stepCircle}>
-                  <Text style={styles.stepText}>{index + 1}</Text>
-                </View>
-                <Text style={styles.instructionText}>{instruction}</Text>
+
+            <View style={styles.card}>
+              <View
+                style={[
+                  styles.heroIcon,
+                  measurementMode === 'ppg' && styles.heroIconPpg,
+                ]}
+              >
+                <Icon
+                  name={measurementMode === 'ecg' ? 'pulse' : 'heart'}
+                  size={38}
+                  color={measurementMode === 'ecg' ? '#D64545' : '#E67E22'}
+                />
               </View>
-            ))}
-          </View>
+              <Text style={styles.title}>Prepare for your {modeLabel}</Text>
+              <Text style={styles.subtitle}>
+                {measurementMode === 'ecg'
+                  ? 'The contact-electrode ECG records automatically for 30 seconds.'
+                  : 'Record the optical pulse waveform for up to 2 minutes.'}
+              </Text>
+              {(measurementMode === 'ecg'
+                ? [
+                    'Wear the band snugly on your wrist, about one finger above the wrist bone.',
+                    'Sit with both feet flat and rest your band-wearing arm naturally on a table.',
+                    'With your other hand, gently place your index finger on the metal contact at the center of the band.',
+                    'Maintain light contact and remain still and quiet for the full 30 seconds.',
+                  ]
+                : [
+                    'Sit comfortably and keep your arm relaxed.',
+                    'Wear the band snugly against clean, dry skin.',
+                    'Keep the optical sensor in steady contact with your wrist.',
+                    'Stay still and do not speak during the recording.',
+                  ]
+              ).map((instruction, index) => (
+                <View key={instruction} style={styles.instructionRow}>
+                  <View
+                    style={[
+                      styles.stepCircle,
+                      measurementMode === 'ecg' && styles.stepCircleEcg,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.stepText,
+                        measurementMode === 'ecg' && styles.stepTextEcg,
+                      ]}
+                    >
+                      {index + 1}
+                    </Text>
+                  </View>
+                  <Text style={styles.instructionText}>{instruction}</Text>
+                </View>
+              ))}
+            </View>
+          </>
         ) : (
           <View
             ref={reportRef}
@@ -483,38 +763,66 @@ const ECGMeasurementScreen = () => {
                 </View>
               </View>
             ) : null}
-            <View style={styles.measurementHeader}>
-              <View>
-                <Text style={styles.phaseLabel}>{phaseLabel}</Text>
-                <Text style={styles.timer}>{formatDuration(elapsedMs)}</Text>
+            {reportReady ? (
+              <View style={styles.reportSummaryRow}>
+                <View style={styles.reportSummaryMetric}>
+                  <Text style={styles.reportSummaryValue}>
+                    {ecgSession.heartRate ?? '—'}
+                  </Text>
+                  <Text style={styles.reportSummaryLabel}>Heart rate bpm</Text>
+                </View>
+                <View style={styles.reportSummaryDivider} />
+                <View style={styles.reportSummaryMetric}>
+                  <Text style={styles.reportSummaryValue}>
+                    {formatDuration(elapsedMs)}
+                  </Text>
+                  <Text style={styles.reportSummaryLabel}>Duration</Text>
+                </View>
+                <View style={styles.reportSummaryDivider} />
+                <View style={styles.reportSummaryMetric}>
+                  <Text style={styles.reportSummaryValue}>
+                    {ecgSession.samples.length.toLocaleString()}
+                  </Text>
+                  <Text style={styles.reportSummaryLabel}>Samples</Text>
+                </View>
               </View>
-              <View
-                style={[
-                  styles.phaseBadge,
-                  ecgSession.phase === 'failed' && styles.failureBadge,
-                ]}
-              >
-                {active ? (
-                  <ActivityIndicator size="small" color="#D64545" />
-                ) : (
-                  <Icon
-                    name={
-                      ecgSession.phase === 'completed' ? 'checkmark' : 'alert'
-                    }
-                    size={16}
-                    color="#D64545"
-                  />
-                )}
-                <Text style={styles.phaseBadgeText}>
-                  {ecgSession.samples.length.toLocaleString()} samples
-                </Text>
+            ) : (
+              <View style={styles.measurementHeader}>
+                <View>
+                  <Text style={styles.phaseLabel}>{phaseLabel}</Text>
+                  <Text style={styles.timer}>{formatDuration(elapsedMs)}</Text>
+                </View>
+                <View
+                  style={[
+                    styles.phaseBadge,
+                    ecgSession.phase === 'failed' && styles.failureBadge,
+                  ]}
+                >
+                  {active ? (
+                    <ActivityIndicator size="small" color="#D64545" />
+                  ) : (
+                    <Icon name="alert" size={16} color="#D64545" />
+                  )}
+                  <Text style={styles.phaseBadgeText}>
+                    {ecgSession.samples.length.toLocaleString()} samples
+                  </Text>
+                </View>
               </View>
-            </View>
+            )}
 
-            <EcgWaveform
-              samples={ecgSession.samples}
-              width={reportReady ? width - 80 : width - 48}
-            />
+            {reportReady && waveformSource === 'ecg' ? (
+              <EcgReportWaveform
+                samples={ecgSession.samples}
+                width={width - 80}
+                sampleRateHz={measuredSampleRateHz}
+              />
+            ) : (
+              <EcgWaveform
+                samples={ecgSession.samples}
+                width={reportReady ? width - 80 : width - 48}
+                mode={sessionMode}
+              />
+            )}
 
             <View style={styles.statusCard}>
               <Text style={styles.statusTitle}>
@@ -523,13 +831,20 @@ const ECGMeasurementScreen = () => {
               {ecgSession.error ? (
                 <Text style={styles.errorText}>{ecgSession.error}</Text>
               ) : null}
+              <View style={styles.signalSourceCard}>
+                <Text style={styles.signalSourceTitle}>{signalSourceLabel}</Text>
+                {signalProtocolLabel ? (
+                  <Text style={styles.signalSourceDetail}>
+                    {signalProtocolLabel}
+                  </Text>
+                ) : null}
+              </View>
               <View
                 style={[
                   styles.samplingNotice,
-                  waveformSource === 'ppg' ||
-                  (waveformSource === 'ecg' &&
+                  waveformSource === 'ecg' &&
                     ecgSession.sampleRateHz != null &&
-                    ecgSession.sampleRateHz < MIN_ECG_SAMPLE_RATE_HZ)
+                    ecgSession.sampleRateHz < MIN_ECG_SAMPLE_RATE_HZ
                     ? styles.samplingWarning
                     : null,
                 ]}
@@ -544,10 +859,9 @@ const ECGMeasurementScreen = () => {
                   }
                   size={17}
                   color={
-                    waveformSource === 'ppg' ||
-                    (waveformSource === 'ecg' &&
+                    waveformSource === 'ecg' &&
                       ecgSession.sampleRateHz != null &&
-                      ecgSession.sampleRateHz < MIN_ECG_SAMPLE_RATE_HZ)
+                      ecgSession.sampleRateHz < MIN_ECG_SAMPLE_RATE_HZ
                       ? '#A85B20'
                       : '#71665E'
                   }
@@ -593,6 +907,7 @@ const ECGMeasurementScreen = () => {
             disabled={!connected || actionBusy}
             style={[
               styles.primaryButton,
+              measurementMode === 'ppg' && styles.primaryButtonPpg,
               (!connected || actionBusy) && styles.disabledButton,
             ]}
             onPress={handleStart}
@@ -600,9 +915,13 @@ const ECGMeasurementScreen = () => {
             {actionBusy ? (
               <ActivityIndicator color="#FFFFFF" />
             ) : (
-              <Icon name="pulse" size={20} color="#FFFFFF" />
+              <Icon
+                name={measurementMode === 'ecg' ? 'pulse' : 'heart'}
+                size={20}
+                color="#FFFFFF"
+              />
             )}
-            <Text style={styles.primaryButtonText}>Start ECG</Text>
+            <Text style={styles.primaryButtonText}>Start {modeLabel}</Text>
           </TouchableOpacity>
         ) : active ? (
           <View style={styles.actionRow}>
@@ -618,6 +937,7 @@ const ECGMeasurementScreen = () => {
               style={[
                 styles.primaryButton,
                 styles.finishButton,
+                sessionMode === 'ppg' && styles.primaryButtonPpg,
                 (actionBusy || ecgSession.phase === 'processing') &&
                   styles.disabledButton,
               ]}
@@ -628,7 +948,7 @@ const ECGMeasurementScreen = () => {
               ) : (
                 <Icon name="stop" size={18} color="#FFFFFF" />
               )}
-              <Text style={styles.primaryButtonText}>Finish ECG</Text>
+              <Text style={styles.primaryButtonText}>Finish {modeLabel}</Text>
             </TouchableOpacity>
           </View>
         ) : (
@@ -674,11 +994,14 @@ const ECGMeasurementScreen = () => {
               </View>
             ) : null}
             <TouchableOpacity
-              style={styles.primaryButton}
+              style={[
+                styles.primaryButton,
+                sessionMode === 'ppg' && styles.primaryButtonPpg,
+              ]}
               onPress={resetEcgMeasurement}
             >
               <Icon name="refresh" size={19} color="#FFFFFF" />
-              <Text style={styles.primaryButtonText}>Take another ECG</Text>
+              <Text style={styles.primaryButtonText}>Take another {modeLabel}</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -711,6 +1034,37 @@ const styles = StyleSheet.create({
   },
   headerTitle: { color: '#2E2925', fontSize: 19, fontWeight: '700' },
   content: { paddingHorizontal: 16, paddingBottom: 36 },
+  modeSelectorRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 14,
+  },
+  modeCard: {
+    flex: 1,
+    minHeight: 96,
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: 'transparent',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 12,
+  },
+  modeCardActiveEcg: {
+    borderColor: '#D64545',
+    backgroundColor: '#FFF5F5',
+  },
+  modeCardActivePpg: {
+    borderColor: '#E67E22',
+    backgroundColor: '#FFF8F0',
+  },
+  modeCardTitle: {
+    color: '#3E3833',
+    fontSize: 16,
+    fontWeight: '800',
+    marginTop: 5,
+  },
+  modeCardSubtitle: { color: '#8A817A', fontSize: 11, marginTop: 2 },
   connectionRow: {
     backgroundColor: '#FFFFFF',
     borderRadius: 14,
@@ -746,6 +1100,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FDECEC',
     marginBottom: 14,
   },
+  heroIconPpg: { backgroundColor: '#FFF1E1' },
   title: {
     textAlign: 'center',
     fontSize: 22,
@@ -775,6 +1130,8 @@ const styles = StyleSheet.create({
     marginRight: 11,
   },
   stepText: { color: '#B85D17', fontWeight: '800', fontSize: 13 },
+  stepCircleEcg: { backgroundColor: '#FDECEC' },
+  stepTextEcg: { color: '#D64545' },
   instructionText: { flex: 1, color: '#4D4641', fontSize: 14, lineHeight: 20 },
   measurementHeader: {
     flexDirection: 'row',
@@ -833,6 +1190,57 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 3,
   },
+  reportWaveformSection: {
+    marginTop: 12,
+    marginBottom: 14,
+  },
+  reportWaveformHeadingRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  reportWaveformTitle: {
+    color: '#39332F',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  reportWaveformSubtitle: {
+    color: '#8A817A',
+    fontSize: 9,
+    marginTop: 2,
+  },
+  reportWaveformRate: {
+    color: '#8B4848',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  reportStrip: { marginBottom: 9 },
+  reportStripLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 3,
+  },
+  reportStripLabel: {
+    color: '#554D47',
+    fontSize: 8,
+    fontWeight: '700',
+  },
+  reportStripTime: { color: '#8A817A', fontSize: 8 },
+  reportStripChart: {
+    height: 112,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#E9CACA',
+    backgroundColor: '#FFFCFC',
+  },
+  reportWaveformFootnote: {
+    color: '#9A8F88',
+    fontSize: 7.5,
+    textAlign: 'center',
+    marginTop: -1,
+  },
   statusCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 18,
@@ -889,6 +1297,33 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 3,
   },
+  reportSummaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FAF7F5',
+    borderRadius: 12,
+    paddingVertical: 10,
+    marginTop: 10,
+  },
+  reportSummaryMetric: { flex: 1, alignItems: 'center' },
+  reportSummaryValue: {
+    color: '#342E2A',
+    fontSize: 14,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  reportSummaryLabel: {
+    color: '#8A817A',
+    fontSize: 7.5,
+    marginTop: 2,
+    textTransform: 'uppercase',
+    letterSpacing: 0.35,
+  },
+  reportSummaryDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 28,
+    backgroundColor: '#DDD4CE',
+  },
   reportDisclaimer: {
     color: '#8A817A',
     fontSize: 9,
@@ -899,6 +1334,15 @@ const styles = StyleSheet.create({
   },
   statusTitle: { color: '#39332F', fontSize: 15, fontWeight: '700' },
   errorText: { color: '#B33D32', fontSize: 13, marginTop: 6, lineHeight: 18 },
+  signalSourceCard: {
+    borderRadius: 12,
+    backgroundColor: '#F7F4F1',
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+    marginTop: 11,
+  },
+  signalSourceTitle: { color: '#403A35', fontSize: 12, fontWeight: '800' },
+  signalSourceDetail: { color: '#756D67', fontSize: 10, marginTop: 3 },
   samplingNotice: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -941,6 +1385,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   primaryButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
+  primaryButtonPpg: { backgroundColor: '#E67E22' },
   disabledButton: { opacity: 0.45 },
   actionRow: { flexDirection: 'row', gap: 10 },
   cancelButton: {

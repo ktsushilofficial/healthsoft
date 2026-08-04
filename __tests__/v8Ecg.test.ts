@@ -6,6 +6,7 @@ import {
   isEcgStreamStalled,
   parseV8EcgPayload,
   shouldAutoFinishEcg,
+  splitWaveformIntoStrips,
 } from '../src/v8/ecg';
 
 describe('V8 ECG helpers', () => {
@@ -47,7 +48,7 @@ describe('V8 ECG helpers', () => {
     expect(event.heartRate).toBe(68);
   });
 
-  it('parses Android real-time ECG packets emitted as PPG raw data', () => {
+  it('treats Android protocol 0x07 samples as ECG during contact ECG', () => {
     const event = parseV8EcgPayload(
       {
         dataType: '64',
@@ -58,11 +59,32 @@ describe('V8 ECG helpers', () => {
         },
       },
       'android',
+      'ecg',
     );
 
     expect(event.kind).toBe('samples');
     expect(event.samples).toEqual([8451200, 8451456, 8450944, 8451712]);
+    expect(event.waveformSource).toBe('ecg');
+    expect(event.waveformField).toBe('arrayPpgRawData');
+    expect(event.sampleRateHz).toBe(250);
+  });
+
+  it('keeps Android protocol 0x07 samples labeled PPG in PPG mode', () => {
+    const event = parseV8EcgPayload(
+      {
+        dataType: '64',
+        dataEnd: false,
+        dicData: {
+          arrayPpgRawData: '8451200,8451456',
+          packetID: '8',
+        },
+      },
+      'android',
+      'ppg',
+    );
+
     expect(event.waveformSource).toBe('ppg');
+    expect(event.sampleRateHz).toBeNull();
   });
 
   it('parses the iOS real-time stream emitted as arrayPPGData', () => {
@@ -98,10 +120,13 @@ describe('V8 ECG helpers', () => {
       expect.objectContaining({
         id: 'ecg-1000',
         seniorId: 'senior-1',
+        requestedMode: 'ecg',
         phase: 'starting',
         startedAt: 1000,
         samples: [],
         waveformSource: null,
+        waveformField: null,
+        waveformDataType: null,
         firstSampleAt: null,
         firstSampleCount: 0,
         lastSampleAt: null,
@@ -152,5 +177,26 @@ describe('V8 ECG helpers', () => {
     expect(isEcgStreamStalled(session, 13_999)).toBe(false);
     expect(isEcgStreamStalled(session, 14_000)).toBe(true);
     expect(shouldAutoFinishEcg(session, 14_000)).toBe(false);
+  });
+
+  it('supports the 30-second contact ECG recording limit', () => {
+    const session = createV8EcgSession(
+      'senior-1',
+      null,
+      null,
+      1_000,
+      'ecg',
+    );
+    session.phase = 'measuring';
+
+    expect(shouldAutoFinishEcg(session, 30_999, 30_000)).toBe(false);
+    expect(shouldAutoFinishEcg(session, 31_000, 30_000)).toBe(true);
+  });
+
+  it('splits a recording into consecutive report strips without losing samples', () => {
+    const strips = splitWaveformIntoStrips([0, 1, 2, 3, 4, 5, 6, 7], 3);
+
+    expect(strips).toEqual([[0, 1, 2], [3, 4, 5], [6, 7]]);
+    expect(strips.flat()).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   });
 });

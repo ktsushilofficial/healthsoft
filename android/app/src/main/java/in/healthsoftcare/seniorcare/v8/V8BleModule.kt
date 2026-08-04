@@ -287,25 +287,60 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun startEcgMeasurement(promise: Promise) {
-    // The Android V8 SDK streams PPG during an AutoHRV measurement. Its
-    // ppgWithMode command belongs to the separate blood-glucose workflow.
-    enqueueVendorCommand(
-      BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, 50_000L, true),
+    // Contact ECG uses the vendor's HRV measurement command (0x28 0x04 0x01)
+    // plus raw ECG transmission (0x07 0x01). The Android SDK exposes the
+    // resulting 0x07 samples under the legacy arrayPpgRawData field name.
+    enqueueVendorCommands(
+      listOf(
+        BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, 30_000L, true),
+        BleSDK.setECGRealtimeDuringHRVEnabled(true),
+      ),
       promise,
     )
   }
 
   @ReactMethod
   fun stopEcgMeasurement(promise: Promise) {
-    enqueueVendorCommand(
-      BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, 50_000L, false),
+    enqueueVendorCommands(
+      listOf(
+        BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, 30_000L, false),
+        BleSDK.setECGRealtimeDuringHRVEnabled(false),
+      ),
       promise,
     )
   }
 
   @ReactMethod
   fun exitEcgMeasurement(promise: Promise) {
-    // Android has no additional exit command for the AutoHRV PPG workflow.
+    // Android has no additional exit command for the contact ECG workflow.
+    promise.resolve(true)
+  }
+
+  @ReactMethod
+  fun startPpgMeasurement(promise: Promise) {
+    // Preserve the existing optical waveform flow.
+    enqueueVendorCommands(
+      listOf(
+        BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, 50_000L, true),
+        BleSDK.setECGRealtimeDuringHRVEnabled(true),
+      ),
+      promise,
+    )
+  }
+
+  @ReactMethod
+  fun stopPpgMeasurement(promise: Promise) {
+    enqueueVendorCommands(
+      listOf(
+        BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, 50_000L, false),
+        BleSDK.setECGRealtimeDuringHRVEnabled(false),
+      ),
+      promise,
+    )
+  }
+
+  @ReactMethod
+  fun exitPpgMeasurement(promise: Promise) {
     promise.resolve(true)
   }
 
@@ -351,7 +386,12 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
 
   @SuppressLint("MissingPermission")
   private fun enqueueVendorCommand(command: ByteArray?, promise: Promise) {
-    if (command == null) {
+    enqueueVendorCommands(listOf(command), promise)
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun enqueueVendorCommands(commands: List<ByteArray?>, promise: Promise) {
+    if (commands.any { it == null }) {
       promise.reject("CMD_EMPTY", "Vendor command is empty")
       return
     }
@@ -362,7 +402,7 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
       )
       return
     }
-    writeQueue.offer(command)
+    commands.filterNotNull().forEach(writeQueue::offer)
     processWriteQueue()
     promise.resolve(true)
   }
