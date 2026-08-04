@@ -60,6 +60,10 @@
 	<string>Bluetooth access is required to scan and connect to nearby health devices.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Bluetooth access is required to communicate with nearby health devices.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Healthsoft accesses your photo library when you choose to save or share an ECG report image.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Healthsoft uses location to center safety maps and help configure geofences for senior care.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Location access is used for Bluetooth scanning and to center the map while setting a safety geofence.</string>
 	<key>RCTNewArchEnabled</key>
