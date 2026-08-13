@@ -5,7 +5,6 @@ import type {
 } from '../src/pillDispenser/vendorTypes';
 
 const expected: PillDispenserSettingsInput = {
-  language: 2,
   timeZoneDistrict: '+0530',
   dateFormat: 2,
   timeFormat: 1,
@@ -19,6 +18,7 @@ const expected: PillDispenserSettingsInput = {
 
 const actual: PillDispenserDeviceInformation = {
   ...expected,
+  language: 2,
   battery: 1,
   batteryVolume: 100,
   rotate: 0,
@@ -43,6 +43,6 @@ describe('findPillDispenserSettingsMismatches', () => {
         timeZoneDistrict: '+0000',
         timeOut: 60,
       }),
-    ).toEqual(['Language', 'Timezone', 'Overtime reminder']);
+    ).toEqual(['Timezone', 'Overtime reminder']);
   });
 });

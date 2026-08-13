@@ -403,25 +403,12 @@ export function usePillDispenserManagement(
           ...args,
           settings.timeOut,
         );
-        // Apply language last because some devices restart their local UI when
-        // changing language and can discard commands that immediately follow.
-        await pillDispenserVendorApi.setLanguage(...args, 2);
-
-        let verifiedInformation = await pillDispenserVendorApi.getInformation(...args);
-        if (verifiedInformation.language !== 2) {
-          // Zoomcare can acknowledge set_language before the device applies it.
-          // Retry once, then report the actual device state to the user.
-          await pillDispenserVendorApi.setLanguage(...args, 2);
-          verifiedInformation = await pillDispenserVendorApi.getInformation(...args);
-        }
+        const verifiedInformation =
+          await pillDispenserVendorApi.getInformation(...args);
         if (!mountedRef.current) return;
         setInformation(verifiedInformation);
-        const expectedSettings: PillDispenserSettingsInput = {
-          ...settings,
-          language: 2,
-        };
         const mismatches = findPillDispenserSettingsMismatches(
-          expectedSettings,
+          settings,
           verifiedInformation,
         );
         if (mismatches.length > 0) {

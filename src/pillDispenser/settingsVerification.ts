@@ -7,7 +7,6 @@ const SETTINGS_FIELDS: Array<{
   key: keyof PillDispenserSettingsInput;
   label: string;
 }> = [
-  { key: 'language', label: 'Language' },
   { key: 'timeZoneDistrict', label: 'Timezone' },
   { key: 'timeFormat', label: 'Time format' },
   { key: 'dateFormat', label: 'Date format' },

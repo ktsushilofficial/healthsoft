@@ -517,10 +517,9 @@ const PillDispenserManagementSection = () => {
       return;
     }
     setSettingsDraft({
-      language: 2,
       timeZoneDistrict: information.timeZoneDistrict,
-      dateFormat: information.dateFormat,
-      timeFormat: information.timeFormat,
+      dateFormat: 2,
+      timeFormat: 0,
       timeOut: information.timeOut,
       omitting: information.omitting,
       volume: information.volume,
@@ -561,6 +560,10 @@ const PillDispenserManagementSection = () => {
   const bound = !!record?.deviceSn;
   const busy = !!working;
   const controlsDisabled = busy || online !== true;
+  // Device status is a point-in-time cloud check and can become stale. Allow
+  // actions to reach the vendor API so it can make the authoritative online
+  // decision instead of leaving rows silently untappable.
+  const actionsDisabled = busy;
 
   const confirmUnbind = () => {
     Alert.alert(
@@ -880,30 +883,14 @@ const PillDispenserManagementSection = () => {
                   <View>
                     <Text style={styles.sectionTitle}>Device settings</Text>
                     <ChoiceRow
-                      label="Language"
-                      value={settingsDraft.language}
-                      options={[{ label: 'English', value: 2 }]}
+                      label="Time format"
+                      value={settingsDraft.timeFormat}
+                      options={[{ label: '24 hours', value: 0 }]}
                       disabled={controlsDisabled}
                       onChange={() =>
                         setSettingsDraft(current =>
                           current
-                            ? { ...current, language: 2 }
-                            : current,
-                        )
-                      }
-                    />
-                    <ChoiceRow
-                      label="Time format"
-                      value={settingsDraft.timeFormat}
-                      options={[
-                        { label: '24 hour', value: 0 },
-                        { label: '12 hour', value: 1 },
-                      ]}
-                      disabled={controlsDisabled}
-                      onChange={value =>
-                        setSettingsDraft(current =>
-                          current
-                            ? { ...current, timeFormat: value === 1 ? 1 : 0 }
+                            ? { ...current, timeFormat: 0 }
                             : current,
                         )
                       }
@@ -911,19 +898,14 @@ const PillDispenserManagementSection = () => {
                     <ChoiceRow
                       label="Date format"
                       value={settingsDraft.dateFormat}
-                      options={[
-                        { label: 'YY-MM-DD', value: 0 },
-                        { label: 'DD-MM-YY', value: 1 },
-                        { label: 'MM-DD-YY', value: 2 },
-                      ]}
+                      options={[{ label: 'MM-DD-YY', value: 2 }]}
                       disabled={controlsDisabled}
-                      onChange={value =>
+                      onChange={() =>
                         setSettingsDraft(current =>
                           current
                             ? {
                                 ...current,
-                                dateFormat:
-                                  value === 1 || value === 2 ? value : 0,
+                                dateFormat: 2,
                               }
                             : current,
                         )
@@ -1394,8 +1376,11 @@ const PillDispenserManagementSection = () => {
                 <View>
                   <Text style={styles.sectionTitle}>Device actions</Text>
                   <TouchableOpacity
-                    style={styles.actionRow}
-                    disabled={controlsDisabled}
+                    style={[
+                      styles.actionRow,
+                      actionsDisabled ? styles.disabled : null,
+                    ]}
+                    disabled={actionsDisabled}
                     onPress={() =>
                       confirmAction(
                         'takeMedicine',
@@ -1411,11 +1396,18 @@ const PillDispenserManagementSection = () => {
                         Advance the medicine plate immediately.
                       </Text>
                     </View>
-                    <Icon name="chevron-forward" size={18} color="#9A8F85" />
+                    {working === 'takeMedicine' ? (
+                      <ActivityIndicator size="small" color="#F28C28" />
+                    ) : (
+                      <Icon name="chevron-forward" size={18} color="#9A8F85" />
+                    )}
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={styles.actionRow}
-                    disabled={controlsDisabled}
+                    style={[
+                      styles.actionRow,
+                      actionsDisabled ? styles.disabled : null,
+                    ]}
+                    disabled={actionsDisabled}
                     onPress={() =>
                       confirmAction(
                         'muteAlarm',
@@ -1435,11 +1427,18 @@ const PillDispenserManagementSection = () => {
                         Silence the alarm currently sounding.
                       </Text>
                     </View>
-                    <Icon name="chevron-forward" size={18} color="#9A8F85" />
+                    {working === 'muteAlarm' ? (
+                      <ActivityIndicator size="small" color="#F28C28" />
+                    ) : (
+                      <Icon name="chevron-forward" size={18} color="#9A8F85" />
+                    )}
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={styles.actionRow}
-                    disabled={controlsDisabled}
+                    style={[
+                      styles.actionRow,
+                      actionsDisabled ? styles.disabled : null,
+                    ]}
+                    disabled={actionsDisabled}
                     onPress={() =>
                       confirmAction(
                         'reboot',
@@ -1455,11 +1454,18 @@ const PillDispenserManagementSection = () => {
                         Restart the dispenser software.
                       </Text>
                     </View>
-                    <Icon name="chevron-forward" size={18} color="#9A8F85" />
+                    {working === 'reboot' ? (
+                      <ActivityIndicator size="small" color="#B54708" />
+                    ) : (
+                      <Icon name="chevron-forward" size={18} color="#9A8F85" />
+                    )}
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={styles.actionRow}
-                    disabled={controlsDisabled}
+                    style={[
+                      styles.actionRow,
+                      actionsDisabled ? styles.disabled : null,
+                    ]}
+                    disabled={actionsDisabled}
                     onPress={() =>
                       confirmAction(
                         'resetMedicinePlate',
@@ -1481,7 +1487,11 @@ const PillDispenserManagementSection = () => {
                         Reinitialize the compartment plate position.
                       </Text>
                     </View>
-                    <Icon name="chevron-forward" size={18} color="#9A8F85" />
+                    {working === 'resetMedicinePlate' ? (
+                      <ActivityIndicator size="small" color="#B54708" />
+                    ) : (
+                      <Icon name="chevron-forward" size={18} color="#9A8F85" />
+                    )}
                   </TouchableOpacity>
                 </View>
               ) : null}

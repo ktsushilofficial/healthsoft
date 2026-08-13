@@ -77,7 +77,6 @@ export type PillDispenserPlan = {
 
 export type PillDispenserSettingsInput = Pick<
   PillDispenserDeviceInformation,
-  | 'language'
   | 'timeZoneDistrict'
   | 'dateFormat'
   | 'timeFormat'
