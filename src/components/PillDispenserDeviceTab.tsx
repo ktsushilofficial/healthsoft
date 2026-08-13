@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   StyleSheet,
   Text,
   TextInput,
@@ -10,6 +11,12 @@ import {
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { usePillDispenserProvisioning } from '../pillDispenser/usePillDispenserProvisioning';
+import {
+  loadSavedPillDispenserWifi,
+  removePillDispenserWifi,
+  savePillDispenserWifi,
+  type SavedPillDispenserWifi,
+} from '../pillDispenser/wifiCredentialStorage';
 import PillDispenserManagementSection from './PillDispenserManagementSection';
 
 function signalLabel(rssi: number | null) {
@@ -27,14 +34,14 @@ const PillDispenserDeviceTab = () => {
     stage,
     selectedDeviceId,
     connectedWifiSsid,
-    compatibilityAvailable,
+    alternateModeAvailable,
     connectionEncrypted,
     statusMessage,
     error,
     startScan,
     stopScan,
     connect,
-    connectCompatibility,
+    connectAlternateMode,
     provision,
     refreshWifi,
     checkWifiStatus,
@@ -43,6 +50,16 @@ const PillDispenserDeviceTab = () => {
   const [selectedSsid, setSelectedSsid] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [savedWifi, setSavedWifi] = useState<SavedPillDispenserWifi[]>([]);
+  const [savedWifiError, setSavedWifiError] = useState<string | null>(null);
+  const [wifiEditorVisible, setWifiEditorVisible] = useState(false);
+  const [editingOriginalSsid, setEditingOriginalSsid] = useState<string | null>(
+    null,
+  );
+  const [editorSsid, setEditorSsid] = useState('');
+  const [editorPassword, setEditorPassword] = useState('');
+  const [showEditorPassword, setShowEditorPassword] = useState(false);
+  const [savingWifi, setSavingWifi] = useState(false);
 
   const isScanning = stage === 'scanning';
   const isConnecting = stage === 'connecting' || stage === 'securing';
@@ -57,11 +74,104 @@ const PillDispenserDeviceTab = () => {
     }
   }, [isComplete]);
 
+  useEffect(() => {
+    let cancelled = false;
+    loadSavedPillDispenserWifi()
+      .then(profiles => {
+        if (!cancelled) setSavedWifi(profiles);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSavedWifiError('Saved Wi-Fi networks could not be loaded.');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const step = useMemo(() => {
     if (isComplete) return 3;
     if (isReady || isProvisioning) return 2;
     return 1;
   }, [isComplete, isProvisioning, isReady]);
+
+  const selectWifi = (ssid: string) => {
+    setSelectedSsid(ssid);
+    const saved = savedWifi.find(profile => profile.ssid === ssid);
+    setPassword(saved?.password ?? '');
+  };
+
+  const openWifiEditor = (
+    profile?: SavedPillDispenserWifi,
+    isSavedProfile = true,
+  ) => {
+    setEditingOriginalSsid(
+      profile && isSavedProfile ? profile.ssid : null,
+    );
+    setEditorSsid(profile?.ssid ?? '');
+    setEditorPassword(profile?.password ?? '');
+    setShowEditorPassword(false);
+    setWifiEditorVisible(true);
+  };
+
+  const saveWifiProfile = async () => {
+    const ssid = editorSsid.trim();
+    if (!ssid) {
+      Alert.alert('Wi-Fi name required', 'Enter the Wi-Fi network name.');
+      return;
+    }
+    setSavingWifi(true);
+    setSavedWifiError(null);
+    try {
+      const profiles = await savePillDispenserWifi(
+        ssid,
+        editorPassword,
+        editingOriginalSsid,
+      );
+      setSavedWifi(profiles);
+      setSelectedSsid(ssid);
+      setPassword(editorPassword);
+      setWifiEditorVisible(false);
+    } catch {
+      setSavedWifiError('The Wi-Fi network could not be saved securely.');
+    } finally {
+      setSavingWifi(false);
+    }
+  };
+
+  const confirmRemoveWifi = () => {
+    if (!editingOriginalSsid) return;
+    const ssidToRemove = editingOriginalSsid;
+    Alert.alert(
+      'Remove saved Wi-Fi?',
+      `Remove ${ssidToRemove} and its saved password from this device?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            setSavingWifi(true);
+            setSavedWifiError(null);
+            try {
+              const profiles = await removePillDispenserWifi(ssidToRemove);
+              setSavedWifi(profiles);
+              if (selectedSsid === ssidToRemove) {
+                setSelectedSsid('');
+                setPassword('');
+              }
+              setWifiEditorVisible(false);
+            } catch {
+              setSavedWifiError('The saved Wi-Fi network could not be removed.');
+            } finally {
+              setSavingWifi(false);
+            }
+          },
+        },
+      ],
+    );
+  };
 
   return (
     <>
@@ -141,27 +251,100 @@ const PillDispenserDeviceTab = () => {
           </Text>
         </View>
 
-        {compatibilityAvailable ? (
+        {alternateModeAvailable ? (
           <View style={styles.compatibilityBox}>
             <Text style={styles.compatibilityTitle}>
-              Encrypted setup was not accepted
+              Compatibility setup was not accepted
             </Text>
             <Text style={styles.compatibilityText}>
-              This dispenser appears to use an older or manufacturer-specific
-              BluFi setup. Compatibility mode may work, but the Wi-Fi password
-              will not be encrypted inside the Bluetooth connection.
+              This dispenser did not respond in its default compatibility mode.
+              You can retry using the standard encrypted BluFi handshake.
             </Text>
             <TouchableOpacity
               style={styles.compatibilityButton}
-              onPress={connectCompatibility}
+              onPress={connectAlternateMode}
             >
-              <Icon name="warning-outline" size={17} color="#FFFFFF" />
+              <Icon name="lock-closed-outline" size={17} color="#FFFFFF" />
               <Text style={styles.compatibilityButtonText}>
-                Continue in compatibility mode
+                Try encrypted mode
               </Text>
             </TouchableOpacity>
           </View>
         ) : null}
+
+        <View style={styles.savedWifiSection}>
+          <View style={styles.savedWifiHeader}>
+            <View style={styles.savedWifiHeaderText}>
+              <Text style={styles.sectionTitle}>Saved Wi-Fi networks</Text>
+              <Text style={styles.savedWifiHelp}>
+                Stored securely on this phone for future dispenser setup.
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.addWifiButton}
+              onPress={() => openWifiEditor()}
+            >
+              <Icon name="add" size={17} color="#FFFFFF" />
+              <Text style={styles.addWifiButtonText}>Add</Text>
+            </TouchableOpacity>
+          </View>
+          {savedWifi.length === 0 ? (
+            <Text style={styles.savedWifiEmpty}>
+              No Wi-Fi networks saved yet.
+            </Text>
+          ) : (
+            savedWifi.map(profile => {
+              const selected = selectedSsid === profile.ssid;
+              return (
+                <View
+                  key={profile.ssid}
+                  style={[
+                    styles.savedWifiRow,
+                    selected ? styles.wifiRowSelected : null,
+                  ]}
+                >
+                  <TouchableOpacity
+                    style={styles.savedWifiSelect}
+                    disabled={isProvisioning}
+                    onPress={() => selectWifi(profile.ssid)}
+                  >
+                    <Icon
+                      name="wifi"
+                      size={18}
+                      color={selected ? '#F28C28' : '#7A726A'}
+                    />
+                    <View style={styles.savedWifiText}>
+                      <Text style={styles.savedWifiName} numberOfLines={1}>
+                        {profile.ssid}
+                      </Text>
+                      <Text style={styles.savedWifiPassword}>Password saved</Text>
+                    </View>
+                    {selected ? (
+                      <Icon name="checkmark-circle" size={19} color="#F28C28" />
+                    ) : null}
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel={`Edit saved Wi-Fi ${profile.ssid}`}
+                    style={styles.editWifiButton}
+                    onPress={() => openWifiEditor(profile)}
+                  >
+                    <Icon name="create-outline" size={18} color="#8B5E34" />
+                  </TouchableOpacity>
+                </View>
+              );
+            })
+          )}
+          {savedWifi.length > 0 && !isReady && !isProvisioning ? (
+            <Text style={styles.savedWifiHint}>
+              Select a saved network now; its name and password will be ready
+              when the dispenser reaches the Wi-Fi step.
+            </Text>
+          ) : null}
+          {savedWifiError ? (
+            <Text style={styles.savedWifiError}>{savedWifiError}</Text>
+          ) : null}
+        </View>
 
         {step === 1 ? (
           <>
@@ -267,7 +450,7 @@ const PillDispenserDeviceTab = () => {
                     styles.wifiRow,
                     selected ? styles.wifiRowSelected : null,
                   ]}
-                  onPress={() => setSelectedSsid(network.ssid)}
+                  onPress={() => selectWifi(network.ssid)}
                   disabled={isProvisioning}
                 >
                   <Icon
@@ -289,7 +472,13 @@ const PillDispenserDeviceTab = () => {
             <Text style={styles.inputLabel}>Wi-Fi name</Text>
             <TextInput
               value={selectedSsid}
-              onChangeText={setSelectedSsid}
+              onChangeText={value => {
+                setSelectedSsid(value);
+                const saved = savedWifi.find(
+                  profile => profile.ssid === value.trim(),
+                );
+                setPassword(saved?.password ?? '');
+              }}
               editable={!isProvisioning}
               autoCapitalize="none"
               autoCorrect={false}
@@ -322,6 +511,34 @@ const PillDispenserDeviceTab = () => {
                 />
               </TouchableOpacity>
             </View>
+
+            <TouchableOpacity
+              style={[
+                styles.saveCurrentWifiButton,
+                !selectedSsid.trim() || isProvisioning
+                  ? styles.disabled
+                  : null,
+              ]}
+              disabled={!selectedSsid.trim() || isProvisioning}
+              onPress={() =>
+                openWifiEditor({
+                  ssid: selectedSsid.trim(),
+                  password,
+                  updatedAt: Date.now(),
+                }, savedWifi.some(
+                  profile => profile.ssid === selectedSsid.trim(),
+                ))
+              }
+            >
+              <Icon name="bookmark-outline" size={17} color="#8B5E34" />
+              <Text style={styles.saveCurrentWifiButtonText}>
+                {savedWifi.some(
+                  profile => profile.ssid === selectedSsid.trim(),
+                )
+                  ? 'Update saved Wi-Fi'
+                  : 'Save Wi-Fi for next time'}
+              </Text>
+            </TouchableOpacity>
 
             <Text style={styles.securityNote}>
               <Icon
@@ -389,6 +606,104 @@ const PillDispenserDeviceTab = () => {
           </View>
         ) : null}
       </View>
+      <Modal
+        visible={wifiEditorVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setWifiEditorVisible(false)}
+      >
+        <View style={styles.editorOverlay}>
+          <View style={styles.editorCard}>
+            <View style={styles.editorHeader}>
+              <View>
+                <Text style={styles.editorTitle}>
+                  {editingOriginalSsid ? 'Edit saved Wi-Fi' : 'Add Wi-Fi'}
+                </Text>
+                <Text style={styles.editorSubtitle}>
+                  Saved in this phone&apos;s secure credential storage.
+                </Text>
+              </View>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Close saved Wi-Fi editor"
+                disabled={savingWifi}
+                onPress={() => setWifiEditorVisible(false)}
+              >
+                <Icon name="close" size={23} color="#7A726A" />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.inputLabel}>Wi-Fi name (SSID)</Text>
+            <TextInput
+              value={editorSsid}
+              onChangeText={setEditorSsid}
+              editable={!savingWifi}
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="Enter Wi-Fi name"
+              placeholderTextColor="#A69B91"
+              style={styles.input}
+            />
+
+            <Text style={styles.inputLabel}>Wi-Fi password</Text>
+            <View style={styles.passwordWrap}>
+              <TextInput
+                value={editorPassword}
+                onChangeText={setEditorPassword}
+                editable={!savingWifi}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry={!showEditorPassword}
+                placeholder="Enter Wi-Fi password"
+                placeholderTextColor="#A69B91"
+                style={styles.passwordInput}
+              />
+              <TouchableOpacity
+                disabled={savingWifi}
+                onPress={() => setShowEditorPassword(value => !value)}
+                hitSlop={10}
+              >
+                <Icon
+                  name={
+                    showEditorPassword ? 'eye-off-outline' : 'eye-outline'
+                  }
+                  size={20}
+                  color="#7A726A"
+                />
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={[
+                styles.primaryButton,
+                !editorSsid.trim() || savingWifi ? styles.disabled : null,
+              ]}
+              disabled={!editorSsid.trim() || savingWifi}
+              onPress={saveWifiProfile}
+            >
+              {savingWifi ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Icon name="shield-checkmark-outline" size={18} color="#FFFFFF" />
+              )}
+              <Text style={styles.primaryButtonText}>
+                {editingOriginalSsid ? 'Update Wi-Fi' : 'Save Wi-Fi'}
+              </Text>
+            </TouchableOpacity>
+
+            {editingOriginalSsid ? (
+              <TouchableOpacity
+                style={styles.removeWifiButton}
+                disabled={savingWifi}
+                onPress={confirmRemoveWifi}
+              >
+                <Icon name="trash-outline" size={17} color="#B42318" />
+                <Text style={styles.removeWifiButtonText}>Remove saved Wi-Fi</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
       <PillDispenserManagementSection />
     </>
   );
@@ -535,6 +850,97 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginLeft: 6,
   },
+  savedWifiSection: {
+    borderWidth: 1,
+    borderColor: '#E8DDD1',
+    borderRadius: 14,
+    backgroundColor: '#FFFCF8',
+    padding: 11,
+    marginBottom: 14,
+  },
+  savedWifiHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  savedWifiHeaderText: {
+    flex: 1,
+    marginRight: 10,
+  },
+  savedWifiHelp: {
+    color: '#8B7F74',
+    fontSize: 10,
+    lineHeight: 14,
+    marginTop: 2,
+  },
+  addWifiButton: {
+    minHeight: 32,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F28C28',
+    borderRadius: 16,
+    paddingHorizontal: 11,
+  },
+  addWifiButtonText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+    marginLeft: 3,
+  },
+  savedWifiEmpty: {
+    color: '#8B7F74',
+    fontSize: 11,
+    marginTop: 10,
+  },
+  savedWifiRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    borderWidth: 1,
+    borderColor: '#ECE5DE',
+    borderRadius: 11,
+    marginTop: 8,
+    overflow: 'hidden',
+    backgroundColor: '#FFFFFF',
+  },
+  savedWifiSelect: {
+    flex: 1,
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingLeft: 10,
+  },
+  savedWifiText: {
+    flex: 1,
+    marginHorizontal: 8,
+  },
+  savedWifiName: {
+    color: '#3B342E',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  savedWifiPassword: {
+    color: '#8B7F74',
+    fontSize: 10,
+    marginTop: 2,
+  },
+  editWifiButton: {
+    width: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: '#E4D9CF',
+  },
+  savedWifiHint: {
+    color: '#8B7F74',
+    fontSize: 10,
+    lineHeight: 14,
+    marginTop: 8,
+  },
+  savedWifiError: {
+    color: '#B42318',
+    fontSize: 11,
+    marginTop: 8,
+  },
   primaryButton: {
     minHeight: 46,
     flexDirection: 'row',
@@ -669,6 +1075,23 @@ const styles = StyleSheet.create({
     color: '#2E2A27',
     paddingHorizontal: 12,
   },
+  saveCurrentWifiButton: {
+    minHeight: 38,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#D7C3AB',
+    borderRadius: 19,
+    backgroundColor: '#FFF9F2',
+    marginTop: 8,
+  },
+  saveCurrentWifiButtonText: {
+    color: '#8B5E34',
+    fontSize: 12,
+    fontWeight: '700',
+    marginLeft: 6,
+  },
   securityNote: {
     color: '#557063',
     fontSize: 11,
@@ -713,5 +1136,44 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 5,
     textAlign: 'center',
+  },
+  editorOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    backgroundColor: 'rgba(30, 24, 20, 0.45)',
+    padding: 20,
+  },
+  editorCard: {
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    padding: 16,
+  },
+  editorHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+  },
+  editorTitle: {
+    color: '#2E2A27',
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  editorSubtitle: {
+    color: '#8B7F74',
+    fontSize: 10,
+    marginTop: 3,
+  },
+  removeWifiButton: {
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 10,
+  },
+  removeWifiButtonText: {
+    color: '#B42318',
+    fontSize: 12,
+    fontWeight: '700',
+    marginLeft: 5,
   },
 });

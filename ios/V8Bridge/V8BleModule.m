@@ -367,10 +367,11 @@ RCT_REMAP_METHOD(startPpgMeasurement,
 #if TARGET_OS_SIMULATOR
   [self rejectSimulatorUnsupported:reject method:@"startPpgMeasurement"];
 #else
-  NSData *enableRealtime = [[BleSDK_V8 sharedManager]
-      setECGRealtimeDuringHRVEnabled:YES];
+  // Optical PPG uses the SDK's dedicated 0x78 workflow. The ECG real-time
+  // method controls the separate contact-electrode 0x07 stream.
+  self.awaitingContactEcgStartAck = NO;
   NSData *start = [[BleSDK_V8 sharedManager] ppgWithMode:1 ppgStatus:0];
-  [self enqueueCommands:@[enableRealtime, start] resolver:resolve rejecter:reject];
+  [self enqueueCommand:start resolver:resolve rejecter:reject];
 #endif
 }
 
@@ -380,10 +381,9 @@ RCT_REMAP_METHOD(stopPpgMeasurement,
 #if TARGET_OS_SIMULATOR
   [self rejectSimulatorUnsupported:reject method:@"stopPpgMeasurement"];
 #else
+  self.awaitingContactEcgStartAck = NO;
   NSData *stop = [[BleSDK_V8 sharedManager] ppgWithMode:3 ppgStatus:0];
-  NSData *disableRealtime = [[BleSDK_V8 sharedManager]
-      setECGRealtimeDuringHRVEnabled:NO];
-  [self enqueueCommands:@[stop, disableRealtime] resolver:resolve rejecter:reject];
+  [self enqueueCommand:stop resolver:resolve rejecter:reject];
 #endif
 }
 

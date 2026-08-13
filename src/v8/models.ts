@@ -36,6 +36,10 @@ export type V8EcgPhase =
 
 export type V8WaveformSource = 'ecg' | 'ppg';
 
+export type V8HeartRateSource = 'device' | 'waveform';
+
+export type V8SampleRateSource = 'device' | 'protocol' | 'observed';
+
 export type V8EcgSession = {
   id: string;
   seniorId: string;
@@ -49,10 +53,13 @@ export type V8EcgSession = {
   waveformField: string | null;
   waveformDataType: string | null;
   sampleRateHz: number | null;
+  sampleRateSource: V8SampleRateSource | null;
   firstSampleAt: number | null;
   firstSampleCount: number;
   lastSampleAt: number | null;
   heartRate: number | null;
+  heartRateSource: V8HeartRateSource | null;
+  heartRateConfidence: number | null;
   signalQuality: string | null;
   classification: string | null;
   statusMessage: string | null;
@@ -68,7 +75,9 @@ export type V8EcgEvent = {
   waveformField: string | null;
   dataType: string | null;
   heartRate: number | null;
+  heartRateSource: V8HeartRateSource | null;
   sampleRateHz: number | null;
+  sampleRateSource: V8SampleRateSource | null;
   signalQuality: string | null;
   classification: string | null;
   statusMessage: string | null;

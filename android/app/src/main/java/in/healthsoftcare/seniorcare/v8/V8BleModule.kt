@@ -130,6 +130,35 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
+  /**
+   * The bundled vendor SDK parses 0x28 measurement results for modes 1-3 but
+   * silently drops mode 4 (contact ECG). Mode 4 uses the same result layout:
+   * byte 2 is the device-computed heart rate. Ignore start/stop acknowledgements
+   * and malformed packets by requiring a physiologically plausible value.
+   */
+  private fun emitAndroidEcgResultIfPresent(value: ByteArray) {
+    if (value.size < 8) return
+    val command = value[0].toInt() and 0xff
+    val measurementMode = value[1].toInt() and 0xff
+    val heartRate = value[2].toInt() and 0xff
+    if (command != 0x28 || measurementMode != 0x04 || heartRate !in 20..250) return
+
+    val result = Arguments.createMap()
+    result.putString("Type", measurementMode.toString())
+    result.putInt("ECGHrValue", heartRate)
+    result.putInt("heartRate", heartRate)
+
+    val payload = Arguments.createMap()
+    payload.putString("dataType", "ECGResult")
+    payload.putBoolean("dataEnd", true)
+    payload.putMap("dicData", result)
+
+    val event = Arguments.createMap()
+    event.putString("type", "parsed")
+    event.putMap("payload", payload)
+    emit("V8Data", event)
+  }
+
   @ReactMethod
   fun startScan(nameFilters: ReadableArray?, promise: Promise) {
     val adapter = bluetoothAdapter
@@ -289,7 +318,8 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
   fun startEcgMeasurement(promise: Promise) {
     // Contact ECG uses the vendor's HRV measurement command (0x28 0x04 0x01)
     // plus raw ECG transmission (0x07 0x01). The Android SDK exposes the
-    // resulting 0x07 samples under the legacy arrayPpgRawData field name.
+    // resulting 0x07 samples under the legacy arrayPpgRawData field name. Its
+    // duration argument is milliseconds (unlike the iOS SDK's seconds value).
     enqueueVendorCommands(
       listOf(
         BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, 30_000L, true),
@@ -318,30 +348,19 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun startPpgMeasurement(promise: Promise) {
-    // Preserve the existing optical waveform flow.
-    enqueueVendorCommands(
-      listOf(
-        BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, 50_000L, true),
-        BleSDK.setECGRealtimeDuringHRVEnabled(true),
-      ),
-      promise,
-    )
+    // Optical PPG is the vendor's dedicated 0x78 blood-glucose/PPG workflow.
+    // Do not start AutoHRV or 0x07 here: those commands enable contact ECG.
+    enqueueVendorCommand(BleSDK.ppgWithMode(1, 0), promise)
   }
 
   @ReactMethod
   fun stopPpgMeasurement(promise: Promise) {
-    enqueueVendorCommands(
-      listOf(
-        BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, 50_000L, false),
-        BleSDK.setECGRealtimeDuringHRVEnabled(false),
-      ),
-      promise,
-    )
+    enqueueVendorCommand(BleSDK.ppgWithMode(3, 0), promise)
   }
 
   @ReactMethod
   fun exitPpgMeasurement(promise: Promise) {
-    promise.resolve(true)
+    enqueueVendorCommand(BleSDK.ppgWithMode(5, 0), promise)
   }
 
   @ReactMethod
@@ -478,6 +497,7 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
 
     override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
       val value = characteristic.value ?: return
+      emitAndroidEcgResultIfPresent(value)
       BleSDK.DataParsingWithData(value, object : DataListener2301 {
         override fun dataCallback(data: MutableMap<String, Any>?) {
           val map = Arguments.createMap()

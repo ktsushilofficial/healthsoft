@@ -46,11 +46,20 @@ function mapEntry(record: Record<string, unknown>): V8VitalSample {
     return null;
   };
 
-  const distanceRaw = pickNum('distanceKm', 'distance', 'stepDistance', 'totalDistance');
+  const distanceRaw = pickNum(
+    'distanceKm',
+    'distance',
+    'stepDistance',
+    'totalDistance',
+  );
   const systolicFromPair =
-    parseBpPart(readAnyKey(record, 'bp'), 0) ?? parseBpPart(readAnyKey(record, 'BP'), 0) ?? parseBpPart(readAnyKey(record, 'bloodPressure'), 0);
+    parseBpPart(readAnyKey(record, 'bp'), 0) ??
+    parseBpPart(readAnyKey(record, 'BP'), 0) ??
+    parseBpPart(readAnyKey(record, 'bloodPressure'), 0);
   const diastolicFromPair =
-    parseBpPart(readAnyKey(record, 'bp'), 1) ?? parseBpPart(readAnyKey(record, 'BP'), 1) ?? parseBpPart(readAnyKey(record, 'bloodPressure'), 1);
+    parseBpPart(readAnyKey(record, 'bp'), 1) ??
+    parseBpPart(readAnyKey(record, 'BP'), 1) ??
+    parseBpPart(readAnyKey(record, 'bloodPressure'), 1);
   return {
     timestamp:
       toText(readAnyKey(record, 'date')) ??
@@ -62,11 +71,41 @@ function mapEntry(record: Record<string, unknown>): V8VitalSample {
       toText(readAnyKey(record, 'historyDate')) ??
       toText(readAnyKey(record, 'day')),
     receivedAt: Date.now(),
-    heartRate: pickNum('heartRate', 'hr', 'singleHR', 'HeartRate', 'heartRateValue', 'onceHeartValue', 'HR'),
+    heartRate: pickNum(
+      'heartRate',
+      'hr',
+      'singleHR',
+      'HeartRate',
+      'heartRateValue',
+      'onceHeartValue',
+      'HR',
+    ),
     hrv: pickNum('hrv', 'hrvValue', 'HRV'),
     stress: pickNum('stress', 'stressValue', 'fatigueDegree'),
-    systolicBp: pickNum('highBP', 'sbp', 'sys', 'sysBp', 'systolic', 'systolicBP', 'highPressure', 'bloodHigh', 'KHrvBloodHighPressure') ?? systolicFromPair,
-    diastolicBp: pickNum('lowBP', 'dbp', 'dia', 'diaBp', 'diastolic', 'diastolicBP', 'lowPressure', 'bloodLow', 'KHrvBloodLowPressure') ?? diastolicFromPair,
+    systolicBp:
+      pickNum(
+        'highBP',
+        'sbp',
+        'sys',
+        'sysBp',
+        'systolic',
+        'systolicBP',
+        'highPressure',
+        'bloodHigh',
+        'KHrvBloodHighPressure',
+      ) ?? systolicFromPair,
+    diastolicBp:
+      pickNum(
+        'lowBP',
+        'dbp',
+        'dia',
+        'diaBp',
+        'diastolic',
+        'diastolicBP',
+        'lowPressure',
+        'bloodLow',
+        'KHrvBloodLowPressure',
+      ) ?? diastolicFromPair,
     spo2: pickNum(
       'spo2',
       'SpO2',
@@ -83,9 +122,17 @@ function mapEntry(record: Record<string, unknown>): V8VitalSample {
       'automaticSpo2Data',
       'manualSpo2Data',
     ),
-    temperatureC: pickNum('temperature', 'temp', 'axillaryTemperature', 'TempData'),
+    temperatureC: pickNum(
+      'temperature',
+      'temp',
+      'axillaryTemperature',
+      'TempData',
+    ),
     steps: pickNum('steps', 'step', 'stepCount'),
-    distanceKm: distanceRaw != null && distanceRaw > 1000 ? distanceRaw / 1000 : distanceRaw,
+    distanceKm:
+      distanceRaw != null && distanceRaw > 1000
+        ? distanceRaw / 1000
+        : distanceRaw,
     caloriesKcal: pickNum('calories', 'kcal', 'calorie'),
     exerciseMinutes: pickNum('exerciseMinutes', 'sportMinutes'),
     activeMinutes: pickNum('activeMinutes', 'StrengthTrainingTime'),
@@ -108,17 +155,36 @@ function parseNumberSeries(value: unknown): number[] {
     .filter(Number.isFinite);
 }
 
-function offsetSeriesTimestamp(timestamp: string | null, index: number): string | null {
+function offsetSeriesTimestamp(
+  timestamp: string | null,
+  index: number,
+): string | null {
   if (!timestamp || index === 0) return timestamp;
-  const match = timestamp.match(/^(\d{4})[.\/-](\d{1,2})[.\/-](\d{1,2})\s+(\d{1,2}):(\d{1,2}):(\d{1,2})$/);
+  const match = timestamp.match(
+    /^(\d{4})[./-](\d{1,2})[./-](\d{1,2})\s+(\d{1,2}):(\d{1,2}):(\d{1,2})$/,
+  );
   if (!match) return `${timestamp}#${index}`;
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6]) + index);
+  const date = new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4]),
+    Number(match[5]),
+    Number(match[6]) + index,
+  );
   const pad = (value: number) => String(value).padStart(2, '0');
-  return `${date.getFullYear()}.${pad(date.getMonth() + 1)}.${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  return `${date.getFullYear()}.${pad(date.getMonth() + 1)}.${pad(
+    date.getDate(),
+  )} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(
+    date.getSeconds(),
+  )}`;
 }
 
 function mapRecordEntries(record: Record<string, unknown>): V8VitalSample[] {
-  const dynamicHeartRates = parseNumberSeries(readAnyKey(record, 'arrayDynamicHR') ?? readAnyKey(record, 'arrayContinuousHR'));
+  const dynamicHeartRates = parseNumberSeries(
+    readAnyKey(record, 'arrayDynamicHR') ??
+      readAnyKey(record, 'arrayContinuousHR'),
+  );
   if (dynamicHeartRates.length === 0) return [mapEntry(record)];
 
   const base = mapEntry(record);
@@ -163,7 +229,9 @@ function parseDictDataUnknown(dicData: unknown): Record<string, unknown>[] {
     if (typeof node === 'object') {
       const obj = node as Record<string, unknown>;
       const values = Object.values(obj);
-      const hasPrimitiveValue = values.some(v => v == null || (typeof v !== 'object' && !Array.isArray(v)));
+      const hasPrimitiveValue = values.some(
+        v => v == null || (typeof v !== 'object' && !Array.isArray(v)),
+      );
       if (hasPrimitiveValue) {
         out.push(obj);
       }
@@ -175,7 +243,10 @@ function parseDictDataUnknown(dicData: unknown): Record<string, unknown>[] {
   return out;
 }
 
-function detectDataTypeFromPayload(payload: Record<string, unknown>): string | null {
+function detectDataTypeFromPayload(
+  payload: Record<string, unknown>,
+  platform?: 'ios' | 'android',
+): string | null {
   const raw = payload.dicData;
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
     const keys = Object.keys(raw);
@@ -186,11 +257,26 @@ function detectDataTypeFromPayload(payload: Record<string, unknown>): string | n
     if (keys.includes('arraySingleHR')) return 'staticHR';
     if (keys.includes('arrayDynamicHR')) return 'dynamicHR';
     if (keys.includes('arrayHrvData')) return 'hrv';
-    if (keys.includes('arrayAutomaticSpo2Data') || keys.includes('arrayManualSpo2Data') || keys.includes('arrayBloodOxygenData')) return 'spo2';
-    if (keys.includes('arrayemperatureData') || keys.includes('arrayTemperatureData')) return 'temperature';
+    if (
+      keys.includes('arrayAutomaticSpo2Data') ||
+      keys.includes('arrayManualSpo2Data') ||
+      keys.includes('arrayBloodOxygenData')
+    )
+      return 'spo2';
+    if (
+      keys.includes('arrayemperatureData') ||
+      keys.includes('arrayTemperatureData')
+    )
+      return 'temperature';
   }
 
   const dataType = toText(payload.dataType);
+  if (platform === 'ios' && dataType === '59') return 'hrv';
+  if (platform === 'android') {
+    if (dataType === '73') return 'hrv';
+    if (dataType === '74') return 'staticHR';
+    if (dataType === '75') return 'spo2';
+  }
   switch (dataType) {
     case '24':
       return 'totalActivity';
@@ -214,12 +300,18 @@ function detectDataTypeFromPayload(payload: Record<string, unknown>): string | n
   }
 }
 
-export function parseV8Payload(payload: Record<string, unknown>): {
+export function parseV8Payload(
+  payload: Record<string, unknown>,
+  platform?: 'ios' | 'android',
+): {
   history: V8HistoryBucket | null;
   infoPatch: Partial<V8DeviceInfo>;
 } {
-  const dataType = detectDataTypeFromPayload(payload) ?? toText(payload.dataType);
-  const dataEnd = payload.dataEnd === true || String(payload.dataEnd).toLowerCase() === 'true';
+  const dataType =
+    detectDataTypeFromPayload(payload, platform) ?? toText(payload.dataType);
+  const dataEnd =
+    payload.dataEnd === true ||
+    String(payload.dataEnd).toLowerCase() === 'true';
 
   const dicData = parseDictDataUnknown(payload.dicData);
   let entries = dicData.flatMap(mapRecordEntries);
@@ -261,12 +353,64 @@ export function parseV8Payload(payload: Record<string, unknown>): {
   }
 
   const infoPatch: Partial<V8DeviceInfo> = {
-    imei: pickText('imei', 'imeiNumber', 'deviceId', 'IMEI', 'deviceID', 'imeiStr', 'ID', 'id', 'serialNumber', 'sn', 'SN', 'deviceIdentifier', 'identifier'),
-    deviceName: pickText('deviceName', 'name', 'deviceNameValue', 'device_name', 'Name'),
-    mac: pickText('mac', 'macAddress', 'deviceMac', 'MAC', 'macAddr', 'mac_address'),
-    firmwareVersion: pickText('version', 'firmwareVersion', 'versionName', 'versionCode', 'ver', 'hardwareVersion', 'softwareVersion'),
-    batteryPercent: pickNum('battery', 'batteryLevel', 'electricity', 'electricQuantity', 'electric', 'power', 'batteryValue', 'bat', 'Battery'),
-    deviceTime: pickText('time', 'deviceTime', 'dateTime', 'currentTime', 'clock'),
+    imei: pickText(
+      'imei',
+      'imeiNumber',
+      'deviceId',
+      'IMEI',
+      'deviceID',
+      'imeiStr',
+      'ID',
+      'id',
+      'serialNumber',
+      'sn',
+      'SN',
+      'deviceIdentifier',
+      'identifier',
+    ),
+    deviceName: pickText(
+      'deviceName',
+      'name',
+      'deviceNameValue',
+      'device_name',
+      'Name',
+    ),
+    mac: pickText(
+      'mac',
+      'macAddress',
+      'deviceMac',
+      'MAC',
+      'macAddr',
+      'mac_address',
+      'strMac',
+    ),
+    firmwareVersion: pickText(
+      'version',
+      'firmwareVersion',
+      'versionName',
+      'versionCode',
+      'ver',
+      'hardwareVersion',
+      'softwareVersion',
+    ),
+    batteryPercent: pickNum(
+      'battery',
+      'batteryLevel',
+      'electricity',
+      'electricQuantity',
+      'electric',
+      'power',
+      'batteryValue',
+      'bat',
+      'Battery',
+    ),
+    deviceTime: pickText(
+      'time',
+      'deviceTime',
+      'dateTime',
+      'currentTime',
+      'clock',
+    ),
     updatedAt: Date.now(),
   };
 

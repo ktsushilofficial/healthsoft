@@ -1,8 +1,11 @@
 import {
+  analyzeWaveformHeartRate,
   createV8EcgSession,
   downsampleEcg,
   downsampleWaveformEnvelope,
   estimateObservedSampleRateHz,
+  filterWaveformForDisplay,
+  getWaveformDisplayRange,
   isEcgStreamStalled,
   parseV8EcgPayload,
   shouldAutoFinishEcg,
@@ -37,15 +40,67 @@ describe('V8 ECG helpers', () => {
   });
 
   it('parses an Android-style ECG result payload', () => {
-    const event = parseV8EcgPayload({
-      DataType: 'ECGResult',
-      ECGResultVALUE: 'recording-complete',
-      ECGHrValue: 68,
-    });
+    const event = parseV8EcgPayload(
+      {
+        dataType: 'ECGResult',
+        dataEnd: true,
+        dicData: {
+          Type: '4',
+          ECGResultVALUE: 'recording-complete',
+          ECGHrValue: 68,
+        },
+      },
+      'android',
+      'ecg',
+    );
 
     expect(event.kind).toBe('completed');
     expect(event.classification).toBe('recording-complete');
     expect(event.heartRate).toBe(68);
+    expect(event.heartRateSource).toBe('device');
+  });
+
+  it('captures the iOS manual-HRV heart-rate result used by contact ECG', () => {
+    const event = parseV8EcgPayload(
+      {
+        dataType: '59',
+        dataEnd: true,
+        dicData: { heartRate: '101', hrv: '54' },
+      },
+      'ios',
+      'ecg',
+    );
+
+    expect(event.kind).toBe('status');
+    expect(event.heartRate).toBe(101);
+    expect(event.heartRateSource).toBe('device');
+  });
+
+  it('does not use the Android mode-1 HRV callback as an ECG result', () => {
+    const event = parseV8EcgPayload(
+      {
+        dataType: '73',
+        dataEnd: true,
+        dicData: { Type: '1', heartRate: '96', hrv: '62' },
+      },
+      'android',
+      'ecg',
+    );
+
+    expect(event.kind).toBe('unknown');
+    expect(event.heartRate).toBe(96);
+    expect(event.heartRateSource).toBe('device');
+  });
+
+  it('rejects zero-valued SDK heart-rate sentinels', () => {
+    const event = parseV8EcgPayload(
+      { dataType: '73', dicData: { heartRate: '0' } },
+      'android',
+      'ecg',
+    );
+
+    expect(event.heartRate).toBeNull();
+    expect(event.heartRateSource).toBeNull();
   });
 
   it('treats Android protocol 0x07 samples as ECG during contact ECG', () => {
@@ -67,9 +122,10 @@ describe('V8 ECG helpers', () => {
     expect(event.waveformSource).toBe('ecg');
     expect(event.waveformField).toBe('arrayPpgRawData');
     expect(event.sampleRateHz).toBe(250);
+    expect(event.sampleRateSource).toBe('protocol');
   });
 
-  it('keeps Android protocol 0x07 samples labeled PPG in PPG mode', () => {
+  it('keeps Android protocol 0x07 labeled ECG so the PPG tab rejects it', () => {
     const event = parseV8EcgPayload(
       {
         dataType: '64',
@@ -83,7 +139,28 @@ describe('V8 ECG helpers', () => {
       'ppg',
     );
 
+    expect(event.waveformSource).toBe('ecg');
+    expect(event.sampleRateHz).toBe(250);
+    expect(event.sampleRateSource).toBe('protocol');
+  });
+
+  it('parses Android type-119 optical PPG samples on the PPG tab', () => {
+    const event = parseV8EcgPayload(
+      {
+        dataType: '119',
+        dataEnd: false,
+        dicData: {
+          PPG: '[1048572, 1048598, 1048611, 1048580]',
+        },
+      },
+      'android',
+      'ppg',
+    );
+
+    expect(event.kind).toBe('samples');
+    expect(event.samples).toEqual([1048572, 1048598, 1048611, 1048580]);
     expect(event.waveformSource).toBe('ppg');
+    expect(event.waveformField).toBe('PPG');
     expect(event.sampleRateHz).toBeNull();
   });
 
@@ -97,6 +174,7 @@ describe('V8 ECG helpers', () => {
         },
       },
       'ios',
+      'ppg',
     );
 
     expect(event.kind).toBe('samples');
@@ -104,6 +182,71 @@ describe('V8 ECG helpers', () => {
     expect(event.waveformSource).toBe('ppg');
     expect(event.waveformField).toBe('arrayPPGData');
     expect(event.dataType).toBe('70');
+  });
+
+  it('keeps iOS ECG type-54 samples labeled ECG on the PPG tab', () => {
+    const event = parseV8EcgPayload(
+      {
+        dataType: '54',
+        dataEnd: false,
+        dicData: { arrayEcgRawData: [10, 12, 18, 9] },
+      },
+      'ios',
+      'ppg',
+    );
+
+    expect(event.kind).toBe('samples');
+    expect(event.waveformSource).toBe('ecg');
+  });
+
+  it('keeps Android type-119 samples labeled PPG on the ECG tab', () => {
+    const event = parseV8EcgPayload(
+      {
+        dataType: '119',
+        dataEnd: false,
+        dicData: { PPG: '[1048572, 1048598]' },
+      },
+      'android',
+      'ecg',
+    );
+
+    expect(event.kind).toBe('samples');
+    expect(event.waveformSource).toBe('ppg');
+  });
+
+  it('treats the iOS firmware-0032 type-70 stream as contact ECG in ECG mode', () => {
+    const event = parseV8EcgPayload(
+      {
+        dataType: '70',
+        dataEnd: false,
+        dicData: {
+          arrayPPGData: [1048572, 1048598, 1048611, 1048580],
+        },
+      },
+      'ios',
+      'ecg',
+    );
+
+    expect(event.kind).toBe('samples');
+    expect(event.waveformSource).toBe('ecg');
+    expect(event.waveformField).toBe('arrayPPGData');
+    expect(event.sampleRateHz).toBe(250);
+    expect(event.sampleRateSource).toBe('protocol');
+  });
+
+  it('maps iOS PPG lifecycle callbacks only for the PPG tab', () => {
+    expect(
+      parseV8EcgPayload({ dataType: '71', dicData: {} }, 'ios', 'ppg').kind,
+    ).toBe('started');
+    expect(
+      parseV8EcgPayload({ dataType: '72', dicData: {} }, 'ios', 'ppg').kind,
+    ).toBe('failed');
+    expect(
+      parseV8EcgPayload({ dataType: '74', dicData: {} }, 'ios', 'ppg').kind,
+    ).toBe('stopped');
+    expect(
+      parseV8EcgPayload({ dataType: '71', dicData: {} }, 'ios', 'ecg').kind,
+    ).toBe('unknown');
   });
 
   it('does not confuse Android blood-oxygen type 55 with iOS ECG success', () => {
@@ -165,6 +308,142 @@ describe('V8 ECG helpers', () => {
     );
   });
 
+  it('removes slow baseline drift from a display copy without changing raw samples', () => {
+    const sampleRate = 250;
+    const raw = Array.from(
+      { length: sampleRate * 10 },
+      (_, index) =>
+        500 + 120 * Math.sin((2 * Math.PI * index) / (sampleRate * 4)),
+    );
+    const original = [...raw];
+
+    const filtered = filterWaveformForDisplay(raw, sampleRate, 'ecg');
+    const filteredRange = Math.max(...filtered) - Math.min(...filtered);
+
+    expect(raw).toEqual(original);
+    expect(filtered).toHaveLength(raw.length);
+    expect(filteredRange).toBeLessThan(80);
+  });
+
+  it('attenuates 50 Hz interference while retaining the ECG pulse shape', () => {
+    const sampleRate = 250;
+    const clean = Array.from({ length: sampleRate * 10 }, (_, index) => {
+      const seconds = index / sampleRate;
+      const phase = seconds % 0.8;
+      const distance = Math.min(phase, 0.8 - phase);
+      return 4 * Math.exp(-((distance / 0.02) ** 2));
+    });
+    const noisy = clean.map(
+      (value, index) =>
+        value + 1.5 * Math.sin((2 * Math.PI * 50 * index) / sampleRate),
+    );
+
+    const filtered = filterWaveformForDisplay(noisy, sampleRate, 'ecg');
+    const errorBefore = Math.sqrt(
+      noisy.reduce(
+        (total, value, index) => total + (value - clean[index]) ** 2,
+        0,
+      ) / noisy.length,
+    );
+    const errorAfter = Math.sqrt(
+      filtered.reduce(
+        (total, value, index) => total + (value - clean[index]) ** 2,
+        0,
+      ) / filtered.length,
+    );
+
+    expect(errorAfter).toBeLessThan(errorBefore * 0.65);
+    expect(Math.max(...filtered)).toBeGreaterThan(2);
+  });
+
+  it('keeps startup contact artifacts from flattening the report scale', () => {
+    const sampleRate = 250;
+    const samples = Array.from({ length: sampleRate * 30 }, (_, index) =>
+      index < sampleRate * 2 ? 1_000 : Math.sin(index / 10) * 4,
+    );
+
+    const range = getWaveformDisplayRange(samples, sampleRate);
+
+    expect(range.max - range.min).toBeLessThan(12);
+    expect(range.min).toBeLessThan(-3);
+    expect(range.max).toBeGreaterThan(3);
+  });
+
+  it('estimates BPM from a baseline-wandering ECG without a device result', () => {
+    const sampleRate = 250;
+    const durationSeconds = 30;
+    const beatInterval = 0.6; // 100 bpm
+    let randomState = 123456789;
+    const random = () => {
+      randomState = (randomState * 16807) % 2147483647;
+      return randomState / 2147483647 - 0.5;
+    };
+    const samples = Array.from(
+      { length: sampleRate * durationSeconds },
+      (_, index) => {
+        const seconds = index / sampleRate;
+        const baseline = 0.9 * Math.sin(2 * Math.PI * 0.22 * seconds);
+        const beatPhase = seconds % beatInterval;
+        const qrsDistance = Math.min(beatPhase, beatInterval - beatPhase);
+        const qrs = 4 * Math.exp(-((qrsDistance / 0.018) ** 2));
+        const initialContactArtifact = index < 3 ? 15 - index * 4 : 0;
+        return baseline + qrs + random() * 0.08 + initialContactArtifact;
+      },
+    );
+
+    const analysis = analyzeWaveformHeartRate(samples, sampleRate, 'ecg');
+
+    expect(analysis.heartRate).toBeGreaterThanOrEqual(98);
+    expect(analysis.heartRate).toBeLessThanOrEqual(102);
+    expect(analysis.confidence).toBeGreaterThanOrEqual(0.58);
+    expect(['good', 'fair']).toContain(analysis.quality);
+  });
+
+  it('estimates BPM after a large multi-second contact artefact', () => {
+    const sampleRate = 250;
+    const beatInterval = 0.75; // 80 bpm
+    const samples = Array.from({ length: sampleRate * 30 }, (_, index) => {
+      const seconds = index / sampleRate;
+      if (seconds < 5) {
+        return 80 * Math.sin(2 * Math.PI * 1.7 * seconds);
+      }
+      const beatPhase = seconds % beatInterval;
+      const qrsDistance = Math.min(beatPhase, beatInterval - beatPhase);
+      const baseline = 0.5 * Math.sin(2 * Math.PI * 0.18 * seconds);
+      return baseline + 2.5 * Math.exp(-((qrsDistance / 0.02) ** 2));
+    });
+
+    const analysis = analyzeWaveformHeartRate(samples, sampleRate, 'ecg');
+
+    expect(analysis.heartRate).toBeGreaterThanOrEqual(79);
+    expect(analysis.heartRate).toBeLessThanOrEqual(81);
+    expect(analysis.confidence).toBeGreaterThanOrEqual(0.58);
+  });
+
+  it('does not publish a waveform BPM for an unusable flat signal', () => {
+    const analysis = analyzeWaveformHeartRate(
+      Array.from({ length: 250 * 30 }, () => 42),
+      250,
+      'ecg',
+    );
+
+    expect(analysis.heartRate).toBeNull();
+    expect(analysis.quality).toBe('poor');
+  });
+
+  it('does not publish a waveform BPM for non-periodic noise', () => {
+    let randomState = 987654321;
+    const samples = Array.from({ length: 250 * 30 }, () => {
+      randomState = (randomState * 16807) % 2147483647;
+      return randomState / 2147483647 - 0.5;
+    });
+
+    const analysis = analyzeWaveformHeartRate(samples, 250, 'ecg');
+
+    expect(analysis.heartRate).toBeNull();
+    expect(analysis.quality).toBe('poor');
+  });
+
   it('auto-finishes at 2 minutes but continues waiting through a stream stall', () => {
     const session = createV8EcgSession('senior-1', null, null, 1_000);
     session.phase = 'measuring';
@@ -180,13 +459,7 @@ describe('V8 ECG helpers', () => {
   });
 
   it('supports the 30-second contact ECG recording limit', () => {
-    const session = createV8EcgSession(
-      'senior-1',
-      null,
-      null,
-      1_000,
-      'ecg',
-    );
+    const session = createV8EcgSession('senior-1', null, null, 1_000, 'ecg');
     session.phase = 'measuring';
 
     expect(shouldAutoFinishEcg(session, 30_999, 30_000)).toBe(false);
@@ -196,7 +469,11 @@ describe('V8 ECG helpers', () => {
   it('splits a recording into consecutive report strips without losing samples', () => {
     const strips = splitWaveformIntoStrips([0, 1, 2, 3, 4, 5, 6, 7], 3);
 
-    expect(strips).toEqual([[0, 1, 2], [3, 4, 5], [6, 7]]);
+    expect(strips).toEqual([
+      [0, 1, 2],
+      [3, 4, 5],
+      [6, 7],
+    ]);
     expect(strips.flat()).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   });
 });

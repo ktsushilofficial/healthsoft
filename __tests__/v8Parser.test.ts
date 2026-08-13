@@ -1,6 +1,64 @@
 import { parseV8Payload } from '../src/v8/parser';
 
 describe('parseV8Payload', () => {
+  it('reads the iOS SDK strMac field used by the MAC response', () => {
+    const { infoPatch } = parseV8Payload(
+      {
+        dataType: '10',
+        dataEnd: true,
+        dicData: { strMac: 'AA:BB:CC:DD:EE:FF' },
+      },
+      'ios',
+    );
+
+    expect(infoPatch.mac).toBe('AA:BB:CC:DD:EE:FF');
+  });
+
+  it('maps iOS manual-HRV type 59 to HRV rather than temperature', () => {
+    const { history } = parseV8Payload(
+      {
+        dataType: '59',
+        dataEnd: true,
+        dicData: { heartRate: 101, hrv: 55 },
+      },
+      'ios',
+    );
+
+    expect(history?.dataType).toBe('hrv');
+    expect(history?.entries[0]).toEqual(
+      expect.objectContaining({ heartRate: 101, hrv: 55 }),
+    );
+  });
+
+  it('maps Android AutoHRV type 73 to HRV', () => {
+    const { history } = parseV8Payload(
+      {
+        dataType: '73',
+        dataEnd: true,
+        dicData: { heartRate: 96, hrv: 61 },
+      },
+      'android',
+    );
+
+    expect(history?.dataType).toBe('hrv');
+    expect(history?.entries[0]?.heartRate).toBe(96);
+  });
+
+  it('keeps Android measurement callbacks separated by SDK type', () => {
+    expect(
+      parseV8Payload(
+        { dataType: '74', dataEnd: true, dicData: { heartRate: 82 } },
+        'android',
+      ).history?.dataType,
+    ).toBe('staticHR');
+    expect(
+      parseV8Payload(
+        { dataType: '75', dataEnd: true, dicData: { Blood_oxygen: 97 } },
+        'android',
+      ).history?.dataType,
+    ).toBe('spo2');
+  });
+
   it('parses iOS nested dicData arrays for activity, spo2, and BP/HRV records', () => {
     const payload = {
       dataType: 'DetailActivityData_V8',
@@ -14,7 +72,9 @@ describe('parseV8Payload', () => {
             calories: 45.6,
           },
         ],
-        arrayAutomaticSpo2Data: [{ date: '2026.05.08 10:20:00', automaticSpo2Data: 97 }],
+        arrayAutomaticSpo2Data: [
+          { date: '2026.05.08 10:20:00', automaticSpo2Data: 97 },
+        ],
         arrayAutomaticHRVData: [
           {
             date: '2026.05.08 10:40:00',
@@ -31,9 +91,15 @@ describe('parseV8Payload', () => {
     expect(history).not.toBeNull();
 
     const entries = history?.entries ?? [];
-    expect(entries.some(entry => entry.steps === 1234 && entry.distanceKm === 1.23)).toBe(true);
+    expect(
+      entries.some(entry => entry.steps === 1234 && entry.distanceKm === 1.23),
+    ).toBe(true);
     expect(entries.some(entry => entry.spo2 === 97)).toBe(true);
-    expect(entries.some(entry => entry.systolicBp === 121 && entry.diastolicBp === 79)).toBe(true);
+    expect(
+      entries.some(
+        entry => entry.systolicBp === 121 && entry.diastolicBp === 79,
+      ),
+    ).toBe(true);
   });
 
   it('normalizes total activity payload and maps total activity fields', () => {
@@ -70,7 +136,8 @@ describe('parseV8Payload', () => {
     const payload = {
       dataType: 'spo2',
       dataEnd: true,
-      dicData: '{date=2026.05.08 10:20:00, automaticSpo2Data=98, step=345, distance=0.27}',
+      dicData:
+        '{date=2026.05.08 10:20:00, automaticSpo2Data=98, step=345, distance=0.27}',
     };
 
     const { history } = parseV8Payload(payload as any);
@@ -105,7 +172,9 @@ describe('parseV8Payload', () => {
 
     const { history } = parseV8Payload(payload as any);
     expect(history?.dataType).toBe('dynamicHR');
-    expect(history?.entries.map(entry => entry.heartRate)).toEqual([0, 24, 72, 24]);
+    expect(history?.entries.map(entry => entry.heartRate)).toEqual([
+      0, 24, 72, 24,
+    ]);
     expect(history?.entries[0].timestamp).toBe('2026.07.14 09:15:00');
     expect(history?.entries[1].timestamp).toBe('2026.07.14 09:15:01');
   });
@@ -114,7 +183,8 @@ describe('parseV8Payload', () => {
     const payload = {
       dataType: '42',
       dataEnd: true,
-      dicData: '[{date=2026.07.14 09:20:00, hrv=79, stress=59, highBP=118, lowBP=68, heartRate=72}]',
+      dicData:
+        '[{date=2026.07.14 09:20:00, hrv=79, stress=59, highBP=118, lowBP=68, heartRate=72}]',
     };
 
     const { history } = parseV8Payload(payload as any);

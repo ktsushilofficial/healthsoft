@@ -9,7 +9,13 @@ const ECG_SAMPLE_KEYS = new Set([
   'kecgdatastring',
 ]);
 
-const PPG_SAMPLE_KEYS = new Set(['arrayppgrawdata', 'arrayppgdata', 'ppgdata']);
+const PPG_SAMPLE_KEYS = new Set([
+  'arrayppgrawdata',
+  'arrayppgdata',
+  'ppgdata',
+  // Android Blood_glucose_data (type 119) uses DeviceKey.PPG.
+  'ppg',
+]);
 
 const normalizeKey = (value: string) =>
   value.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
@@ -126,16 +132,40 @@ function detectKind(
   samples: number[],
   text: string,
   platform?: 'ios' | 'android',
+  requestedMode?: 'ecg' | 'ppg',
 ): V8EcgEvent['kind'] {
   // iOS DATATYPE_V8 values from the bundled SDK header.
   if (platform === 'ios') {
-    if (dataType === '52') return 'started';
-    if (dataType === '53') return 'stopped';
-    if (dataType === '54' || dataType === '51')
+    if (requestedMode !== 'ppg') {
+      if (dataType === '52') return 'started';
+      if (dataType === '53') return 'stopped';
+      if (dataType === '54' || dataType === '51')
+        return samples.length > 0 ? 'samples' : 'status';
+      if (dataType === '55') return 'completed';
+      if (dataType === '56') return 'status';
+      if (dataType === '57') return 'failed';
+      // Contact ECG is recorded through the SDK's manual HRV workflow. Its
+      // measurement result contains heartRate and arrives as type 59.
+      if (dataType === '59') return 'status';
+    }
+    if (requestedMode === 'ppg') {
+      if (dataType === '70')
+        return samples.length > 0 ? 'samples' : 'status';
+      if (dataType === '71') return 'started';
+      if (dataType === '72') return 'failed';
+      if (dataType === '73') return 'completed';
+      if (dataType === '74' || dataType === '75') return 'stopped';
+      if (dataType === '76') return 'status';
+    }
+  }
+
+  if (platform === 'android') {
+    // The dedicated Android optical PPG workflow emits status 118 and samples
+    // 119. Measurement callbacks 73-78 belong to 0x28 modes 1-3 and must not
+    // complete a contact-ECG or optical-PPG recording.
+    if (requestedMode === 'ppg' && dataType === '118') return 'status';
+    if (requestedMode === 'ppg' && dataType === '119')
       return samples.length > 0 ? 'samples' : 'status';
-    if (dataType === '55') return 'completed';
-    if (dataType === '56') return 'status';
-    if (dataType === '57') return 'failed';
   }
 
   if (
@@ -176,22 +206,29 @@ export function parseV8EcgPayload(
   const records: Record<string, unknown>[] = [];
   collectRecords(payload, records, new Set());
   const dataType = toText(findValue(records, ['dataType', 'DataType', 'type']));
-  const collectedWaveform =
-    collectWaveform(records);
+  const collectedWaveform = collectWaveform(records);
   const androidContactEcg =
     platform === 'android' &&
-    requestedMode === 'ecg' &&
     dataType === '64' &&
     collectedWaveform.waveformSource === 'ppg' &&
     normalizeKey(collectedWaveform.waveformField ?? '') === 'arrayppgrawdata';
+  const iosContactEcg =
+    platform === 'ios' &&
+    requestedMode === 'ecg' &&
+    dataType === '70' &&
+    collectedWaveform.waveformSource === 'ppg' &&
+    normalizeKey(collectedWaveform.waveformField ?? '') === 'arrayppgdata';
   const samples = collectedWaveform.samples;
-  const waveformSource = androidContactEcg
-    ? 'ecg'
-    : collectedWaveform.waveformSource;
+  const waveformSource =
+    androidContactEcg || iosContactEcg
+      ? 'ecg'
+      : collectedWaveform.waveformSource;
   const waveformField = collectedWaveform.waveformField;
   const contactEcgPacket =
     waveformSource === 'ecg' &&
-    ((platform === 'ios' && dataType === '54') || androidContactEcg);
+    ((platform === 'ios' && dataType === '54') ||
+      androidContactEcg ||
+      iosContactEcg);
   const text = payloadText(records);
   const statusMessage = toText(
     findValue(records, [
@@ -204,35 +241,49 @@ export function parseV8EcgPayload(
       'ppgMeasurementProgress',
     ]),
   );
+  const explicitSampleRateHz = toNumber(
+    findValue(records, [
+      'sampleRate',
+      'sampleRateHz',
+      'frequency',
+      'samplingFrequency',
+    ]),
+  );
+  const rawHeartRate = toNumber(
+    findValue(records, [
+      'ECGHrValue',
+      'EcgHR',
+      'ecgHeartRate',
+      'HeartRate',
+      'heartRate',
+      'heartValue',
+      'hrValue',
+      'HR',
+      'PPGHrValue',
+    ]),
+  );
+  // Zero is the SDK's common "not measured" sentinel. Keep a deliberately
+  // broad range so unusual but possible rates are not silently discarded.
+  const heartRate =
+    rawHeartRate != null && rawHeartRate >= 20 && rawHeartRate <= 250
+      ? Math.round(rawHeartRate)
+      : null;
 
   return {
-    kind: detectKind(dataType, samples, text, platform),
+    kind: detectKind(dataType, samples, text, platform, requestedMode),
     samples,
     waveformSource,
     waveformField,
     dataType,
-    heartRate: toNumber(
-      findValue(records, [
-        'ECGHrValue',
-        'EcgHR',
-        'ecgHeartRate',
-        'HeartRate',
-        'heartRate',
-        'heartValue',
-        'hrValue',
-        'HR',
-        'PPGHrValue',
-      ]),
-    ),
-    sampleRateHz:
-      toNumber(
-        findValue(records, [
-          'sampleRate',
-          'sampleRateHz',
-          'frequency',
-          'samplingFrequency',
-        ]),
-      ) ?? (contactEcgPacket ? 250 : null),
+    heartRate,
+    heartRateSource: heartRate == null ? null : 'device',
+    sampleRateHz: explicitSampleRateHz ?? (contactEcgPacket ? 250 : null),
+    sampleRateSource:
+      explicitSampleRateHz != null
+        ? 'device'
+        : contactEcgPacket
+        ? 'protocol'
+        : null,
     signalQuality: toText(
       findValue(records, [
         'ECGQualityValue',
@@ -274,10 +325,13 @@ export function createV8EcgSession(
     waveformField: null,
     waveformDataType: null,
     sampleRateHz: null,
+    sampleRateSource: null,
     firstSampleAt: null,
     firstSampleCount: 0,
     lastSampleAt: null,
     heartRate: null,
+    heartRateSource: null,
+    heartRateConfidence: null,
     signalQuality: null,
     classification: null,
     statusMessage: `Starting ${modeLabel} measurement…`,
@@ -352,6 +406,377 @@ export function downsampleEcg(samples: number[], maxPoints: number): number[] {
   return output;
 }
 
+function centeredMovingAverage(
+  samples: number[],
+  windowSize: number,
+): number[] {
+  if (samples.length === 0) return [];
+  const size = Math.max(1, Math.min(samples.length, Math.round(windowSize)));
+  if (size === 1) return [...samples];
+  const left = Math.floor(size / 2);
+  const right = size - left;
+  const prefix = new Array<number>(samples.length + 1).fill(0);
+  for (let index = 0; index < samples.length; index += 1) {
+    prefix[index + 1] = prefix[index] + samples[index];
+  }
+  return samples.map((_, index) => {
+    const start = Math.max(0, index - left);
+    const end = Math.min(samples.length, index + right);
+    return (prefix[end] - prefix[start]) / Math.max(1, end - start);
+  });
+}
+
+function quantile(sorted: number[], fraction: number): number {
+  if (sorted.length === 0) return 0;
+  const bounded = Math.max(0, Math.min(1, fraction));
+  const position = (sorted.length - 1) * bounded;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sorted[lower];
+  const weight = position - lower;
+  return sorted[lower] * (1 - weight) + sorted[upper] * weight;
+}
+
+function detrendAndSmoothWaveform(
+  samples: number[],
+  sampleRateHz: number,
+  source: 'ecg' | 'ppg',
+): number[] {
+  const finiteSamples = samples.map(value =>
+    Number.isFinite(value) ? value : 0,
+  );
+  const baselineSeconds = source === 'ecg' ? 0.8 : 1.5;
+  const baseline = centeredMovingAverage(
+    finiteSamples,
+    Math.max(3, sampleRateHz * baselineSeconds),
+  );
+  const detrended = finiteSamples.map(
+    (value, index) => value - baseline[index],
+  );
+
+  type BiquadCoefficients = {
+    b0: number;
+    b1: number;
+    b2: number;
+    a1: number;
+    a2: number;
+  };
+  const applyBiquad = (
+    input: number[],
+    coefficients: BiquadCoefficients,
+  ): number[] => {
+    let x1 = 0;
+    let x2 = 0;
+    let y1 = 0;
+    let y2 = 0;
+    return input.map(value => {
+      const output =
+        coefficients.b0 * value +
+        coefficients.b1 * x1 +
+        coefficients.b2 * x2 -
+        coefficients.a1 * y1 -
+        coefficients.a2 * y2;
+      x2 = x1;
+      x1 = value;
+      y2 = y1;
+      y1 = output;
+      return Number.isFinite(output) ? output : 0;
+    });
+  };
+  const normalizedBiquad = (
+    b0: number,
+    b1: number,
+    b2: number,
+    a0: number,
+    a1: number,
+    a2: number,
+  ): BiquadCoefficients => ({
+    b0: b0 / a0,
+    b1: b1 / a0,
+    b2: b2 / a0,
+    a1: a1 / a0,
+    a2: a2 / a0,
+  });
+  const lowPass = (cutoffHz: number): BiquadCoefficients => {
+    const omega = (2 * Math.PI * cutoffHz) / sampleRateHz;
+    const cosine = Math.cos(omega);
+    const alpha = Math.sin(omega) / (2 * Math.SQRT1_2);
+    return normalizedBiquad(
+      (1 - cosine) / 2,
+      1 - cosine,
+      (1 - cosine) / 2,
+      1 + alpha,
+      -2 * cosine,
+      1 - alpha,
+    );
+  };
+  const notch = (frequencyHz: number): BiquadCoefficients => {
+    const omega = (2 * Math.PI * frequencyHz) / sampleRateHz;
+    const cosine = Math.cos(omega);
+    const alpha = Math.sin(omega) / 40;
+    return normalizedBiquad(
+      1,
+      -2 * cosine,
+      1,
+      1 + alpha,
+      -2 * cosine,
+      1 - alpha,
+    );
+  };
+
+  let filtered = detrended;
+  if (source === 'ecg') {
+    // Remove common mains interference without committing the report to one
+    // locale. The notches are narrow enough to preserve ECG morphology.
+    if (sampleRateHz > 110) filtered = applyBiquad(filtered, notch(50));
+    if (sampleRateHz > 130) filtered = applyBiquad(filtered, notch(60));
+  }
+  const nyquistHz = sampleRateHz / 2;
+  const cutoffHz = Math.min(
+    source === 'ecg' ? 35 : 8,
+    Math.max(2, nyquistHz * 0.8),
+  );
+  const coefficients = lowPass(cutoffHz);
+  filtered = applyBiquad(filtered, coefficients);
+  // Reverse filtering removes the visible phase lag and adds attenuation to
+  // the high-frequency fuzz that the envelope renderer would otherwise retain.
+  return applyBiquad([...filtered].reverse(), coefficients).reverse();
+}
+
+/**
+ * Produces a baseline-corrected display copy. The session continues to retain
+ * the untouched raw device samples for export/debugging and future analysis.
+ */
+export function filterWaveformForDisplay(
+  samples: number[],
+  sampleRateHz: number | null,
+  source: 'ecg' | 'ppg' = 'ecg',
+): number[] {
+  if (samples.length < 3) return [...samples];
+  const rate =
+    sampleRateHz != null && sampleRateHz >= 20 && sampleRateHz <= 2_000
+      ? sampleRateHz
+      : 250;
+  const filtered = detrendAndSmoothWaveform(samples, rate, source);
+  const sorted = [...filtered].sort((a, b) => a - b);
+  const lower = quantile(sorted, 0.005);
+  const upper = quantile(sorted, 0.995);
+  if (upper <= lower) return filtered;
+  return filtered.map(value => Math.max(lower, Math.min(upper, value)));
+}
+
+/**
+ * Computes a stable shared display scale. The first seconds of a contact ECG
+ * commonly contain electrode-settling artifacts; excluding them from the
+ * scale calculation keeps those artifacts visible as clipping without making
+ * the useful remainder of all three strips appear flat.
+ */
+export function getWaveformDisplayRange(
+  samples: number[],
+  sampleRateHz: number | null,
+  settlingSeconds = 3,
+): { min: number; max: number } {
+  const finite = samples.filter(Number.isFinite);
+  if (finite.length === 0) return { min: -1, max: 1 };
+  const rate =
+    sampleRateHz != null && sampleRateHz >= 20 && sampleRateHz <= 2_000
+      ? sampleRateHz
+      : 250;
+  const settlingCount = Math.min(
+    finite.length - 1,
+    Math.max(0, Math.round(rate * settlingSeconds)),
+  );
+  const scaleSamples = finite.slice(settlingCount);
+  const sorted = [...(scaleSamples.length > 20 ? scaleSamples : finite)].sort(
+    (a, b) => a - b,
+  );
+  let min = quantile(sorted, 0.005);
+  let max = quantile(sorted, 0.995);
+  if (max <= min) {
+    const center = quantile(sorted, 0.5);
+    min = center - 1;
+    max = center + 1;
+  }
+  const padding = (max - min) * 0.08;
+  return { min: min - padding, max: max + padding };
+}
+
+export type WaveformHeartRateAnalysis = {
+  heartRate: number | null;
+  confidence: number;
+  quality: 'good' | 'fair' | 'poor';
+  peakCount: number;
+  rrVariation: number | null;
+};
+
+const poorHeartRateAnalysis = (
+  confidence = 0,
+  peakCount = 0,
+  rrVariation: number | null = null,
+): WaveformHeartRateAnalysis => ({
+  heartRate: null,
+  confidence,
+  quality: 'poor',
+  peakCount,
+  rrVariation,
+});
+
+/**
+ * Conservative waveform fallback for when the vendor result contains no BPM.
+ * It detects periodic QRS/pulse energy after baseline removal and refuses to
+ * publish a number unless interval consistency and signal contrast are usable.
+ */
+export function analyzeWaveformHeartRate(
+  samples: number[],
+  sampleRateHz: number | null,
+  source: 'ecg' | 'ppg' = 'ecg',
+): WaveformHeartRateAnalysis {
+  if (
+    sampleRateHz == null ||
+    sampleRateHz < 20 ||
+    sampleRateHz > 2_000 ||
+    samples.length < sampleRateHz * 8
+  ) {
+    return poorHeartRateAnalysis();
+  }
+
+  const filtered = detrendAndSmoothWaveform(samples, sampleRateHz, source);
+  const derivativeEnergy = new Array<number>(filtered.length).fill(0);
+  for (let index = 1; index < filtered.length; index += 1) {
+    const delta = filtered[index] - filtered[index - 1];
+    derivativeEnergy[index] = delta * delta;
+  }
+  const energy = centeredMovingAverage(
+    derivativeEnergy,
+    Math.max(2, sampleRateHz * (source === 'ecg' ? 0.08 : 0.12)),
+  );
+  // Contact/motion artefacts are common while the user first touches the
+  // electrode. Exclude that settling period from both threshold calibration
+  // and peak detection; otherwise one large spike can hide the valid beats in
+  // the remaining recording.
+  const leadingEdgeSamples = Math.round(
+    sampleRateHz * (source === 'ecg' ? 5 : 0.75),
+  );
+  const trailingEdgeSamples = Math.round(sampleRateHz * 0.75);
+  const end = energy.length - trailingEdgeSamples;
+  const analysisEnergy = energy.slice(leadingEdgeSamples, end);
+  if (analysisEnergy.length < sampleRateHz * 4) {
+    return poorHeartRateAnalysis();
+  }
+  const sortedEnergy = [...analysisEnergy].sort((a, b) => a - b);
+  const medianEnergy = quantile(sortedEnergy, 0.5);
+  const deviations = analysisEnergy
+    .map(value => Math.abs(value - medianEnergy))
+    .sort((a, b) => a - b);
+  const madEnergy = quantile(deviations, 0.5);
+  const highEnergy = quantile(sortedEnergy, 0.9);
+  const veryHighEnergy = quantile(sortedEnergy, 0.98);
+  if (!Number.isFinite(veryHighEnergy) || veryHighEnergy <= 0) {
+    return poorHeartRateAnalysis();
+  }
+  const threshold = Math.max(medianEnergy + madEnergy * 6, highEnergy * 0.35);
+  if (veryHighEnergy < threshold * 1.15) {
+    return poorHeartRateAnalysis();
+  }
+
+  const refractorySamples = Math.round(sampleRateHz * 0.28);
+  const peaks: number[] = [];
+  let index = leadingEdgeSamples;
+  while (index < end) {
+    if (energy[index] < threshold) {
+      index += 1;
+      continue;
+    }
+    let peakIndex = index;
+    let peakValue = energy[index];
+    while (index < end && energy[index] >= threshold * 0.6) {
+      if (energy[index] > peakValue) {
+        peakValue = energy[index];
+        peakIndex = index;
+      }
+      index += 1;
+    }
+    const previousIndex = peaks[peaks.length - 1];
+    if (
+      previousIndex == null ||
+      peakIndex - previousIndex >= refractorySamples
+    ) {
+      peaks.push(peakIndex);
+    } else if (energy[peakIndex] > energy[previousIndex]) {
+      peaks[peaks.length - 1] = peakIndex;
+    }
+  }
+
+  if (peaks.length < 5) return poorHeartRateAnalysis(0.1, peaks.length);
+  const plausibleIntervals = peaks
+    .slice(1)
+    .map((peak, peakIndex) => (peak - peaks[peakIndex]) / sampleRateHz)
+    .filter(seconds => seconds >= 0.3 && seconds <= 2);
+  if (plausibleIntervals.length < 4) {
+    return poorHeartRateAnalysis(0.15, peaks.length);
+  }
+  const sortedIntervals = [...plausibleIntervals].sort((a, b) => a - b);
+  const medianInterval = quantile(sortedIntervals, 0.5);
+  const intervalTolerance = Math.max(0.12, medianInterval * 0.3);
+  const acceptedIntervals = plausibleIntervals.filter(
+    seconds => Math.abs(seconds - medianInterval) <= intervalTolerance,
+  );
+  if (acceptedIntervals.length < 4) {
+    return poorHeartRateAnalysis(0.2, peaks.length);
+  }
+
+  const acceptedMean =
+    acceptedIntervals.reduce((total, seconds) => total + seconds, 0) /
+    acceptedIntervals.length;
+  const intervalVariance =
+    acceptedIntervals.reduce(
+      (total, seconds) => total + (seconds - acceptedMean) ** 2,
+      0,
+    ) / acceptedIntervals.length;
+  const rrVariation =
+    acceptedMean > 0 ? Math.sqrt(intervalVariance) / acceptedMean : 1;
+  const acceptedRatio = acceptedIntervals.length / plausibleIntervals.length;
+  const contrast = Math.max(
+    0,
+    Math.min(
+      1,
+      (veryHighEnergy - medianEnergy) /
+        Math.max(veryHighEnergy, Number.EPSILON),
+    ),
+  );
+  const regularity = Math.max(0, Math.min(1, 1 - rrVariation / 0.25));
+  const intervalScore = Math.min(1, acceptedIntervals.length / 10);
+  const durationScore = Math.min(1, samples.length / sampleRateHz / 20);
+  const confidence = Math.max(
+    0,
+    Math.min(
+      1,
+      regularity * 0.35 +
+        acceptedRatio * 0.25 +
+        intervalScore * 0.2 +
+        contrast * 0.1 +
+        durationScore * 0.1,
+    ),
+  );
+  const heartRate = Math.round(60 / medianInterval);
+  if (
+    heartRate < 30 ||
+    heartRate > 200 ||
+    rrVariation > 0.22 ||
+    acceptedRatio < 0.55 ||
+    confidence < 0.58
+  ) {
+    return poorHeartRateAnalysis(confidence, peaks.length, rrVariation);
+  }
+  return {
+    heartRate,
+    confidence,
+    quality: confidence >= 0.78 ? 'good' : 'fair',
+    peakCount: peaks.length,
+    rrVariation,
+  };
+}
+
 export function splitWaveformIntoStrips(
   samples: number[],
   stripCount: number,
@@ -389,9 +814,7 @@ export function downsampleWaveformEnvelope(
     return samples.map((value, index) => ({ index, value }));
   }
 
-  const output: IndexedWaveformPoint[] = [
-    { index: 0, value: samples[0] },
-  ];
+  const output: IndexedWaveformPoint[] = [{ index: 0, value: samples[0] }];
   const bucketCount = Math.max(1, Math.floor((maxPoints - 2) / 2));
   const bucketSize = (samples.length - 2) / bucketCount;
 

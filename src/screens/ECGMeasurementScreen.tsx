@@ -30,16 +30,24 @@ import {
 import {
   downsampleEcg,
   downsampleWaveformEnvelope,
+  filterWaveformForDisplay,
+  getWaveformDisplayRange,
   isEcgStreamStalled,
   shouldAutoFinishEcg,
   splitWaveformIntoStrips,
 } from '../v8/ecg';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
+import {
+  normalizeMacAddress,
+  resolveConnectedHandBandMac,
+} from '../utils/deviceAssignments';
 
 const ACTIVE_PHASES = new Set(['starting', 'measuring', 'processing']);
 const MIN_ECG_SAMPLE_RATE_HZ = 250;
 const PREFERRED_ECG_SAMPLE_RATE_HZ = 500;
-const ECG_MAX_RECORDING_DURATION_MS = 30_000;
+// Leave a short grace period for Android's 30-second AutoHRV result packet.
+// The report duration remains the actual recording target, not cleanup time.
+const ECG_MAX_RECORDING_DURATION_MS = 31_000;
 const PPG_MAX_RECORDING_DURATION_MS = 120_000;
 const ECG_STALL_NOTICE_MS = 4_000;
 const ECG_REPORT_STRIP_COUNT = 3;
@@ -153,7 +161,7 @@ const EcgReportStrip = ({
   const path = useMemo(() => {
     const points = downsampleWaveformEnvelope(
       samples,
-      Math.max(240, Math.floor(chartWidth * 2)),
+      Math.max(240, Math.floor(chartWidth)),
     );
     if (points.length < 2 || samples.length < 2) return '';
     const amplitude = Math.max(1, range.max - range.min);
@@ -161,7 +169,10 @@ const EcgReportStrip = ({
     return points
       .map((point, index) => {
         const x = (point.index / (samples.length - 1)) * chartWidth;
-        const clippedValue = Math.min(range.max, Math.max(range.min, point.value));
+        const clippedValue = Math.min(
+          range.max,
+          Math.max(range.min, point.value),
+        );
         const y =
           chartHeight -
           verticalPadding -
@@ -236,41 +247,38 @@ const EcgReportWaveform = ({
   samples,
   width,
   sampleRateHz,
+  sampleRateSource,
 }: {
   samples: number[];
   width: number;
   sampleRateHz: number | null;
+  sampleRateSource: string | null;
 }) => {
   const strips = useMemo(
     () => splitWaveformIntoStrips(samples, ECG_REPORT_STRIP_COUNT),
     [samples],
   );
   const range = useMemo(() => {
-    if (samples.length === 0) return { min: -1, max: 1 };
-    const sorted = [...samples].sort((a, b) => a - b);
-    const lowerIndex = Math.floor((sorted.length - 1) * 0.01);
-    const upperIndex = Math.ceil((sorted.length - 1) * 0.99);
-    let min = sorted[lowerIndex];
-    let max = sorted[upperIndex];
-    if (max <= min) {
-      min -= 1;
-      max += 1;
-    }
-    const padding = (max - min) * 0.08;
-    return { min: min - padding, max: max + padding };
-  }, [samples]);
+    return getWaveformDisplayRange(samples, sampleRateHz);
+  }, [sampleRateHz, samples]);
 
   return (
     <View style={styles.reportWaveformSection}>
       <View style={styles.reportWaveformHeadingRow}>
         <View>
-          <Text style={styles.reportWaveformTitle}>30-second ECG recording</Text>
+          <Text style={styles.reportWaveformTitle}>
+            30-second ECG recording
+          </Text>
           <Text style={styles.reportWaveformSubtitle}>
             Three consecutive 10-second strips
           </Text>
         </View>
         <Text style={styles.reportWaveformRate}>
-          {sampleRateHz ? `${sampleRateHz} Hz` : 'Raw ECG'}
+          {sampleRateHz
+            ? `${sampleRateHz} Hz${
+                sampleRateSource ? ` · ${sampleRateSource}` : ''
+              }`
+            : 'Raw ECG'}
         </Text>
       </View>
       {strips.map((strip, index) => (
@@ -283,7 +291,8 @@ const EcgReportWaveform = ({
         />
       ))}
       <Text style={styles.reportWaveformFootnote}>
-        Time grid: 0.2 sec small divisions · amplitude auto-scaled from raw device data
+        Time grid: 0.2 sec small divisions · display-filtered, auto-scaled
+        amplitude
       </Text>
     </View>
   );
@@ -295,6 +304,9 @@ const ECGMeasurementScreen = () => {
   const { user, selectedSenior, selectedSeniorHandBandMacs } = useAuth();
   const {
     connectionStates,
+    activeDeviceId,
+    deviceInfo,
+    requestDeviceMac,
     ensureAutoConnect,
     ecgSession,
     startEcgMeasurement,
@@ -302,45 +314,85 @@ const ECGMeasurementScreen = () => {
     cancelEcgMeasurement,
     resetEcgMeasurement,
   } = useV8DeviceManager();
-  const [measurementMode, setMeasurementMode] =
-    useState<MeasurementMode>('ecg');
+  const [measurementMode] = useState<MeasurementMode>('ecg');
   const [now, setNow] = useState(Date.now());
   const [actionBusy, setActionBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState<'png' | 'pdf' | null>(null);
   const allowLeaveRef = useRef(false);
   const reportRef = useRef<View>(null);
   const autoFinishSessionRef = useRef<string | null>(null);
-  const connected = Object.values(connectionStates).some(
-    state => state === 'connected',
+  const activeDeviceConnected =
+    !!activeDeviceId &&
+    connectionStates[activeDeviceId.trim().toLowerCase()] === 'connected';
+  const assignedHandBandMacs = useMemo(
+    () =>
+      new Set(
+        selectedSeniorHandBandMacs
+          .map(value => normalizeMacAddress(value))
+          .filter((value): value is string => !!value),
+      ),
+    [selectedSeniorHandBandMacs],
   );
+  const connectedHandBandMac = activeDeviceConnected
+    ? resolveConnectedHandBandMac(deviceInfo.mac, activeDeviceId)
+    : null;
+  const connected =
+    !!connectedHandBandMac && assignedHandBandMacs.has(connectedHandBandMac);
+  const unassignedBandConnected =
+    activeDeviceConnected && !!connectedHandBandMac && !connected;
+
+  useEffect(() => {
+    if (!activeDeviceConnected || connectedHandBandMac) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
+    const requestMac = () => {
+      if (cancelled) return;
+      attempts += 1;
+      requestDeviceMac().catch(() => {});
+      if (attempts < 3) {
+        timer = setTimeout(requestMac, 1200);
+      }
+    };
+
+    // The provider requests the MAC at connect time. Retry after its initial
+    // command queue settles because some firmware drops that first response.
+    timer = setTimeout(requestMac, 800);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [
+    activeDeviceConnected,
+    activeDeviceId,
+    connectedHandBandMac,
+    requestDeviceMac,
+  ]);
+
   const ecgSeniorId =
     user?.role === 'SENIOR'
       ? user.user_id?.trim()
       : user?.role === 'CARE_TAKER' || user?.role === 'GUARDIAN'
-        ? selectedSenior?.userId?.trim()
-        : '';
-  const canUseEcg =
-    !!ecgSeniorId && selectedSeniorHandBandMacs.length > 0;
+      ? selectedSenior?.userId?.trim()
+      : '';
+  const canUseEcg = !!ecgSeniorId && selectedSeniorHandBandMacs.length > 0;
   const active = !!ecgSession && ACTIVE_PHASES.has(ecgSession.phase);
   const reportReady = ecgSession?.phase === 'completed';
   const sessionMode = ecgSession?.requestedMode ?? measurementMode;
   const modeLabel = sessionMode === 'ecg' ? 'ECG' : 'PPG';
   const reportSeniorName = useMemo(() => {
     if (user?.role === 'SENIOR') {
-      return [user.first_name, user.last_name].filter(Boolean).join(' ') ||
-        'Senior';
+      return (
+        [user.first_name, user.last_name].filter(Boolean).join(' ') || 'Senior'
+      );
     }
     return selectedSenior
       ? [selectedSenior.firstName, selectedSenior.lastName]
           .filter(Boolean)
           .join(' ') || 'Selected senior'
       : 'Selected senior';
-  }, [
-    selectedSenior,
-    user?.first_name,
-    user?.last_name,
-    user?.role,
-  ]);
+  }, [selectedSenior, user?.first_name, user?.last_name, user?.role]);
 
   useEffect(() => {
     if (!active) return;
@@ -378,7 +430,10 @@ const ECGMeasurementScreen = () => {
       try {
         await action();
       } catch (error) {
-        Alert.alert(modeLabel, error instanceof Error ? error.message : fallback);
+        Alert.alert(
+          modeLabel,
+          error instanceof Error ? error.message : fallback,
+        );
       } finally {
         setActionBusy(false);
       }
@@ -397,11 +452,12 @@ const ECGMeasurementScreen = () => {
 
   const handleStart = () =>
     run(
-      () => startEcgMeasurement(measurementMode),
-      `Unable to start ${measurementMode === 'ecg' ? 'ECG' : 'PPG'} measurement.`,
+      () => startEcgMeasurement('ecg'),
+      'Unable to start ECG measurement.',
     );
   const handleFinish = useCallback(
-    () => run(finishEcgMeasurement, `Unable to finish ${modeLabel} measurement.`),
+    () =>
+      run(finishEcgMeasurement, `Unable to finish ${modeLabel} measurement.`),
     [finishEcgMeasurement, modeLabel, run],
   );
 
@@ -425,18 +481,23 @@ const ECGMeasurementScreen = () => {
   }, [ecgSession, handleFinish, now]);
 
   const handleCancel = () => {
-    Alert.alert(`Cancel ${modeLabel}?`, 'The current recording will be discarded.', [
-      { text: 'Keep measuring', style: 'cancel' },
-      {
-        text: 'Cancel recording',
-        style: 'destructive',
-        onPress: () => {
-          run(cancelEcgMeasurement, `Unable to cancel ${modeLabel} measurement.`).catch(
-            () => {},
-          );
+    Alert.alert(
+      `Cancel ${modeLabel}?`,
+      'The current recording will be discarded.',
+      [
+        { text: 'Keep measuring', style: 'cancel' },
+        {
+          text: 'Cancel recording',
+          style: 'destructive',
+          onPress: () => {
+            run(
+              cancelEcgMeasurement,
+              `Unable to cancel ${modeLabel} measurement.`,
+            ).catch(() => {});
+          },
         },
-      },
-    ]);
+      ],
+    );
   };
 
   const captureReportPng = useCallback(async (): Promise<string> => {
@@ -460,7 +521,9 @@ const ECGMeasurementScreen = () => {
       .replace(/^-+|-+$/g, '')
       .toLowerCase();
     return {
-      fileStem: `healthsoft-${sessionMode}-${safeSeniorName || 'senior'}-${datePart}`,
+      fileStem: `healthsoft-${sessionMode}-${
+        safeSeniorName || 'senior'
+      }-${datePart}`,
       title: `Healthsoft ${modeLabel} report`,
       subject: `Healthsoft ${modeLabel} report - ${reportSeniorName} - ${datePart}`,
     };
@@ -497,6 +560,23 @@ const ECGMeasurementScreen = () => {
     },
     [buildShareMetadata, captureReportPng, exportBusy],
   );
+  const displaySamples = useMemo(
+    () =>
+      filterWaveformForDisplay(
+        ecgSession?.samples ?? [],
+        ecgSession?.sampleRateHz ?? null,
+        ecgSession?.waveformSource ??
+          ecgSession?.requestedMode ??
+          measurementMode,
+      ),
+    [
+      ecgSession?.requestedMode,
+      ecgSession?.sampleRateHz,
+      ecgSession?.samples,
+      ecgSession?.waveformSource,
+      measurementMode,
+    ],
+  );
 
   if (!canUseEcg) {
     const needsSeniorSelection =
@@ -505,16 +585,14 @@ const ECGMeasurementScreen = () => {
     const restrictionMessage = needsSeniorSelection
       ? 'Select a senior before starting a waveform measurement.'
       : ecgSeniorId
-        ? 'The selected senior does not have an assigned hand band.'
-        : 'ECG and PPG measurements are available to seniors, caretakers, and guardians.';
+      ? 'The selected senior does not have an assigned hand band.'
+      : 'ECG measurements are available to seniors, caretakers, and guardians.';
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.restricted}>
           <Icon name="lock-closed-outline" size={42} color="#8A817A" />
           <Text style={styles.restrictedTitle}>Measurement unavailable</Text>
-          <Text style={styles.restrictedText}>
-            {restrictionMessage}
-          </Text>
+          <Text style={styles.restrictedText}>{restrictionMessage}</Text>
           <TouchableOpacity
             style={styles.secondaryButton}
             onPress={() => navigation.goBack()}
@@ -527,7 +605,8 @@ const ECGMeasurementScreen = () => {
   }
 
   const elapsedMs = ecgSession
-    ? (ecgSession.completedAt ?? now) - ecgSession.startedAt
+    ? ecgSession.durationMs ??
+      (ecgSession.completedAt ?? now) - ecgSession.startedAt
     : 0;
   const phaseLabel = !ecgSession
     ? 'Ready'
@@ -542,10 +621,30 @@ const ECGMeasurementScreen = () => {
     active && ecgSession.samples.length === 0
       ? 'Waiting'
       : active
-        ? 'Receiving'
-        : 'Not provided';
+      ? 'Receiving'
+      : 'Not provided';
   const waveformSource = ecgSession?.waveformSource ?? null;
   const measuredSampleRateHz = ecgSession?.sampleRateHz ?? null;
+  const sampleRateSourceLabel =
+    ecgSession?.sampleRateSource === 'device'
+      ? 'device'
+      : ecgSession?.sampleRateSource === 'observed'
+      ? 'observed'
+      : ecgSession?.sampleRateSource === 'protocol'
+      ? 'protocol nominal'
+      : null;
+  const heartRateSourceLabel =
+    ecgSession?.heartRateSource === 'device'
+      ? 'device result'
+      : ecgSession?.heartRateSource === 'waveform'
+      ? `waveform estimate${
+          ecgSession.heartRateConfidence != null
+            ? ` · ${Math.round(
+                ecgSession.heartRateConfidence * 100,
+              )}% confidence`
+            : ''
+        }`
+      : 'not available';
   const streamStalled =
     ecgSession != null &&
     isEcgStreamStalled(ecgSession, now, ECG_STALL_NOTICE_MS);
@@ -553,42 +652,49 @@ const ECGMeasurementScreen = () => {
     waveformSource == null
       ? `Waiting for the ${modeLabel} signal channel…`
       : waveformSource === 'ppg'
-        ? 'Optical PPG pulse waveform detected.'
-        : measuredSampleRateHz == null
-          ? 'ECG channel detected. Measuring its sample frequency…'
-          : measuredSampleRateHz >= PREFERRED_ECG_SAMPLE_RATE_HZ
-            ? `${measuredSampleRateHz} Hz ECG meets the preferred acquisition target.`
-            : measuredSampleRateHz >= MIN_ECG_SAMPLE_RATE_HZ
-              ? `${measuredSampleRateHz} Hz ECG meets the minimum acquisition target.`
-              : `${measuredSampleRateHz} Hz ECG is below the 250 Hz minimum target.`;
-  const signalSourceLabel = waveformSource == null
-    ? `Signal: waiting for ${modeLabel}`
-    : waveformSource === 'ecg'
+      ? 'Optical PPG pulse waveform detected.'
+      : measuredSampleRateHz == null
+      ? 'ECG channel detected. Measuring its sample frequency…'
+      : measuredSampleRateHz >= PREFERRED_ECG_SAMPLE_RATE_HZ
+      ? `${measuredSampleRateHz} Hz${
+          sampleRateSourceLabel ? ` (${sampleRateSourceLabel})` : ''
+        } ECG meets the preferred acquisition target.`
+      : measuredSampleRateHz >= MIN_ECG_SAMPLE_RATE_HZ
+      ? `${measuredSampleRateHz} Hz${
+          sampleRateSourceLabel ? ` (${sampleRateSourceLabel})` : ''
+        } ECG meets the minimum acquisition target.`
+      : `${measuredSampleRateHz} Hz${
+          sampleRateSourceLabel ? ` (${sampleRateSourceLabel})` : ''
+        } ECG is below the 250 Hz minimum target.`;
+  const signalSourceLabel =
+    waveformSource == null
+      ? `Signal: waiting for ${modeLabel}`
+      : waveformSource === 'ecg'
       ? 'Signal: ECG contact electrode'
       : 'Signal: optical PPG sensor';
-  const signalProtocolLabel = waveformSource == null
-    ? null
-    : Platform.OS === 'android' &&
+  const signalProtocolLabel =
+    waveformSource == null
+      ? null
+      : Platform.OS === 'android' &&
         waveformSource === 'ecg' &&
         ecgSession?.waveformField?.toLowerCase() === 'arrayppgrawdata'
-      ? 'Android protocol 0x07 · SDK field arrayPpgRawData (ECG)'
-      : [
-          ecgSession?.waveformDataType
-            ? `dataType ${ecgSession.waveformDataType}`
-            : null,
-          ecgSession?.waveformField ?? null,
-        ]
-          .filter(Boolean)
-          .join(' · ');
-  const displayStatusMessage =
-    streamStalled
-      ? 'Signal paused — waiting for more samples from the hand band'
-      : reportReady &&
-          waveformSource === 'ecg' &&
-          measuredSampleRateHz != null &&
-          measuredSampleRateHz < MIN_ECG_SAMPLE_RATE_HZ
-        ? 'Recording completed with insufficient ECG sample frequency'
-        : ecgSession?.statusMessage ?? 'Listening for hand band data…';
+      ? 'Android real-time contact ECG channel'
+      : Platform.OS === 'ios' &&
+        waveformSource === 'ecg' &&
+        ecgSession?.waveformDataType === '70' &&
+        ecgSession?.waveformField?.toLowerCase() === 'arrayppgdata'
+      ? 'iOS real-time contact ECG channel'
+      : waveformSource === 'ecg'
+      ? 'Device contact ECG channel'
+      : 'Device optical pulse channel';
+  const displayStatusMessage = streamStalled
+    ? 'Signal paused — waiting for more samples from the hand band'
+    : reportReady &&
+      waveformSource === 'ecg' &&
+      measuredSampleRateHz != null &&
+      measuredSampleRateHz < MIN_ECG_SAMPLE_RATE_HZ
+    ? 'Recording completed with insufficient ECG sample frequency'
+    : ecgSession?.statusMessage ?? 'Listening for hand band data…';
 
   return (
     <SafeAreaView style={styles.container}>
@@ -613,7 +719,13 @@ const ECGMeasurementScreen = () => {
             ]}
           />
           <Text style={styles.connectionText}>
-            {connected ? 'Hand band connected' : 'Hand band not connected'}
+            {connected
+              ? 'Selected senior’s hand band connected'
+              : unassignedBandConnected
+              ? 'Connected hand band is not assigned to the selected senior'
+              : activeDeviceConnected
+              ? 'Checking connected hand band MAC…'
+              : 'Hand band not connected'}
           </Text>
           {!connected && !active ? (
             <TouchableOpacity disabled={actionBusy} onPress={handleConnect}>
@@ -625,43 +737,16 @@ const ECGMeasurementScreen = () => {
         {!ecgSession ? (
           <>
             <View style={styles.modeSelectorRow}>
-              {(['ecg', 'ppg'] as const).map(mode => {
-                const selected = measurementMode === mode;
-                const isEcg = mode === 'ecg';
-                return (
-                  <TouchableOpacity
-                    key={mode}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected }}
-                    style={[
-                      styles.modeCard,
-                      selected &&
-                        (isEcg
-                          ? styles.modeCardActiveEcg
-                          : styles.modeCardActivePpg),
-                    ]}
-                    onPress={() => setMeasurementMode(mode)}
-                  >
-                    <Icon
-                      name={isEcg ? 'pulse' : 'heart'}
-                      size={23}
-                      color={
-                        selected
-                          ? isEcg
-                            ? '#D64545'
-                            : '#E67E22'
-                          : '#8A817A'
-                      }
-                    />
-                    <Text style={styles.modeCardTitle}>
-                      {isEcg ? 'ECG' : 'PPG'}
-                    </Text>
-                    <Text style={styles.modeCardSubtitle}>
-                      {isEcg ? 'Contact electrode' : 'Optical pulse'}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
+              <View
+                accessibilityRole="summary"
+                style={[styles.modeCard, styles.modeCardActiveEcg]}
+              >
+                <Icon name="pulse" size={23} color="#D64545" />
+                <Text style={styles.modeCardTitle}>ECG</Text>
+                <Text style={styles.modeCardSubtitle}>
+                  Contact electrode · 250 Hz
+                </Text>
+              </View>
             </View>
 
             <View style={styles.card}>
@@ -680,7 +765,7 @@ const ECGMeasurementScreen = () => {
               <Text style={styles.title}>Prepare for your {modeLabel}</Text>
               <Text style={styles.subtitle}>
                 {measurementMode === 'ecg'
-                  ? 'The contact-electrode ECG records automatically for 30 seconds.'
+                  ? 'The 250 Hz contact-electrode ECG records automatically for 30 seconds.'
                   : 'Record the optical pulse waveform for up to 2 minutes.'}
               </Text>
               {(measurementMode === 'ecg'
@@ -738,10 +823,10 @@ const ECGMeasurementScreen = () => {
                       measuredSampleRateHz >= MIN_ECG_SAMPLE_RATE_HZ
                         ? 'Single-lead ECG waveform report'
                         : waveformSource === 'ecg'
-                          ? 'Low-rate device waveform report'
+                        ? 'Low-rate device waveform report'
                         : waveformSource === 'ppg'
-                          ? 'Pulse waveform (PPG) report'
-                          : 'Hand band waveform report'}
+                        ? 'Pulse waveform (PPG) report'
+                        : 'Hand band waveform report'}
                     </Text>
                   </View>
                 </View>
@@ -770,6 +855,9 @@ const ECGMeasurementScreen = () => {
                     {ecgSession.heartRate ?? '—'}
                   </Text>
                   <Text style={styles.reportSummaryLabel}>Heart rate bpm</Text>
+                  <Text style={styles.reportSummaryDetail}>
+                    {heartRateSourceLabel}
+                  </Text>
                 </View>
                 <View style={styles.reportSummaryDivider} />
                 <View style={styles.reportSummaryMetric}>
@@ -812,27 +900,28 @@ const ECGMeasurementScreen = () => {
 
             {reportReady && waveformSource === 'ecg' ? (
               <EcgReportWaveform
-                samples={ecgSession.samples}
+                samples={displaySamples}
                 width={width - 80}
                 sampleRateHz={measuredSampleRateHz}
+                sampleRateSource={sampleRateSourceLabel}
               />
             ) : (
               <EcgWaveform
-                samples={ecgSession.samples}
+                samples={displaySamples}
                 width={reportReady ? width - 80 : width - 48}
                 mode={sessionMode}
               />
             )}
 
             <View style={styles.statusCard}>
-              <Text style={styles.statusTitle}>
-                {displayStatusMessage}
-              </Text>
+              <Text style={styles.statusTitle}>{displayStatusMessage}</Text>
               {ecgSession.error ? (
                 <Text style={styles.errorText}>{ecgSession.error}</Text>
               ) : null}
               <View style={styles.signalSourceCard}>
-                <Text style={styles.signalSourceTitle}>{signalSourceLabel}</Text>
+                <Text style={styles.signalSourceTitle}>
+                  {signalSourceLabel}
+                </Text>
                 {signalProtocolLabel ? (
                   <Text style={styles.signalSourceDetail}>
                     {signalProtocolLabel}
@@ -843,8 +932,8 @@ const ECGMeasurementScreen = () => {
                 style={[
                   styles.samplingNotice,
                   waveformSource === 'ecg' &&
-                    ecgSession.sampleRateHz != null &&
-                    ecgSession.sampleRateHz < MIN_ECG_SAMPLE_RATE_HZ
+                  ecgSession.sampleRateHz != null &&
+                  ecgSession.sampleRateHz < MIN_ECG_SAMPLE_RATE_HZ
                     ? styles.samplingWarning
                     : null,
                 ]}
@@ -860,8 +949,8 @@ const ECGMeasurementScreen = () => {
                   size={17}
                   color={
                     waveformSource === 'ecg' &&
-                      ecgSession.sampleRateHz != null &&
-                      ecgSession.sampleRateHz < MIN_ECG_SAMPLE_RATE_HZ
+                    ecgSession.sampleRateHz != null &&
+                    ecgSession.sampleRateHz < MIN_ECG_SAMPLE_RATE_HZ
                       ? '#A85B20'
                       : '#71665E'
                   }
@@ -876,6 +965,20 @@ const ECGMeasurementScreen = () => {
                     {ecgSession.sampleRateHz ?? missingMetricStatus}
                   </Text>
                   <Text style={styles.metricLabel}>Sample Hz</Text>
+                  {sampleRateSourceLabel ? (
+                    <Text style={styles.metricDetail}>
+                      {sampleRateSourceLabel}
+                    </Text>
+                  ) : null}
+                </View>
+                <View style={styles.metric}>
+                  <Text style={styles.metricValue}>
+                    {ecgSession.heartRate ?? missingMetricStatus}
+                  </Text>
+                  <Text style={styles.metricLabel}>Heart BPM</Text>
+                  <Text style={styles.metricDetail}>
+                    {heartRateSourceLabel}
+                  </Text>
                 </View>
               </View>
               {ecgSession.classification ? (
@@ -895,7 +998,11 @@ const ECGMeasurementScreen = () => {
               <Text style={styles.reportDisclaimer}>
                 {waveformSource === 'ppg'
                   ? 'Optical pulse waveform (PPG), not an electrocardiogram. It must not be interpreted as ECG.'
-                  : 'Device-generated single-lead waveform for informational use only. Time uses the received sample rate; amplitude is auto-scaled raw device data, not calibrated mV. This report is not a medical diagnosis.'}
+                  : `Device-generated single-lead waveform for informational use only. Display filtering does not overwrite the captured raw samples. ${
+                      ecgSession.heartRate != null
+                        ? `Heart rate source: ${heartRateSourceLabel}.`
+                        : 'The device did not provide a usable heart rate.'
+                    } Amplitude is not calibrated mV. This report is not a medical diagnosis.`}
               </Text>
             ) : null}
           </View>
@@ -1001,7 +1108,9 @@ const ECGMeasurementScreen = () => {
               onPress={resetEcgMeasurement}
             >
               <Icon name="refresh" size={19} color="#FFFFFF" />
-              <Text style={styles.primaryButtonText}>Take another {modeLabel}</Text>
+              <Text style={styles.primaryButtonText}>
+                Take another {modeLabel}
+              </Text>
             </TouchableOpacity>
           </View>
         )}
@@ -1319,6 +1428,12 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.35,
   },
+  reportSummaryDetail: {
+    color: '#9A8F88',
+    fontSize: 6.8,
+    marginTop: 2,
+    textAlign: 'center',
+  },
   reportSummaryDivider: {
     width: StyleSheet.hairlineWidth,
     height: 28,
@@ -1360,10 +1475,16 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 15,
   },
-  metricsRow: { alignItems: 'center', marginTop: 16 },
-  metric: { alignItems: 'center' },
+  metricsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-around',
+    marginTop: 16,
+  },
+  metric: { alignItems: 'center', flex: 1 },
   metricValue: { color: '#2E2925', fontSize: 17, fontWeight: '700' },
   metricLabel: { color: '#8A817A', fontSize: 10, marginTop: 2 },
+  metricDetail: { color: '#9A8F88', fontSize: 9, marginTop: 2 },
   resultRow: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -34,7 +34,7 @@ function readableError(error: unknown, fallback: string): string {
 
 export function usePillDispenserProvisioning() {
   const discoveredDeviceCountRef = useRef(0);
-  const connectionEncryptedRef = useRef(true);
+  const connectionEncryptedRef = useRef(false);
   const wifiScanRequestRef = useRef(0);
   const [devices, setDevices] = useState<EspBlufiDevice[]>([]);
   const [wifiNetworks, setWifiNetworks] = useState<EspBlufiWifiNetwork[]>([]);
@@ -43,8 +43,8 @@ export function usePillDispenserProvisioning() {
   const [connectedWifiSsid, setConnectedWifiSsid] = useState<string | null>(
     null,
   );
-  const [compatibilityAvailable, setCompatibilityAvailable] = useState(false);
-  const [connectionEncrypted, setConnectionEncrypted] = useState(true);
+  const [alternateModeAvailable, setAlternateModeAvailable] = useState(false);
+  const [connectionEncrypted, setConnectionEncrypted] = useState(false);
   const [statusMessage, setStatusMessage] = useState(
     'Put the pill dispenser in Wi-Fi setup mode, then scan.',
   );
@@ -109,18 +109,24 @@ export function usePillDispenserProvisioning() {
           break;
         case 'connecting':
           setStage('connecting');
-          setStatusMessage('Connecting securely to the pill dispenser…');
+          setStatusMessage(
+            connectionEncryptedRef.current
+              ? 'Connecting securely to the pill dispenser…'
+              : 'Connecting to the pill dispenser in compatibility mode…',
+          );
           break;
         case 'connected':
           setStage('securing');
           setStatusMessage(
-            'Connected. Establishing an encrypted BluFi session…',
+            connectionEncryptedRef.current
+              ? 'Connected. Establishing an encrypted BluFi session…'
+              : 'Connected. Starting the BluFi compatibility session…',
           );
           break;
         case 'secure':
           connectionEncryptedRef.current = true;
           setConnectionEncrypted(true);
-          setCompatibilityAvailable(false);
+          setAlternateModeAvailable(false);
           setStage('ready');
           setStatusMessage(
             'Secure connection ready. Reading nearby Wi-Fi networks…',
@@ -131,7 +137,7 @@ export function usePillDispenserProvisioning() {
         case 'compatible':
           connectionEncryptedRef.current = false;
           setConnectionEncrypted(false);
-          setCompatibilityAvailable(false);
+          setAlternateModeAvailable(false);
           setStage('ready');
           setStatusMessage(
             'Connected in compatibility mode. Reading nearby Wi-Fi networks…',
@@ -141,10 +147,12 @@ export function usePillDispenserProvisioning() {
           break;
         case 'securityUnsupported':
           setStage('error');
-          setCompatibilityAvailable(true);
+          setAlternateModeAvailable(true);
           setError(
             event.message ||
-              'This dispenser did not answer the standard encrypted BluFi handshake.',
+              (connectionEncryptedRef.current
+                ? 'This dispenser did not answer the standard encrypted BluFi handshake.'
+                : 'This dispenser did not answer in BluFi compatibility mode.'),
           );
           break;
         case 'provisioning':
@@ -243,9 +251,9 @@ export function usePillDispenserProvisioning() {
     setWifiNetworks([]);
     setConnectedWifiSsid(null);
     setSelectedDeviceId(null);
-    setCompatibilityAvailable(false);
-    connectionEncryptedRef.current = true;
-    setConnectionEncrypted(true);
+    setAlternateModeAvailable(false);
+    connectionEncryptedRef.current = false;
+    setConnectionEncrypted(false);
 
     if (!espBlufi.isAvailable) {
       setStage('error');
@@ -281,37 +289,43 @@ export function usePillDispenserProvisioning() {
     setError(null);
     setSelectedDeviceId(deviceId);
     setWifiNetworks([]);
+    setAlternateModeAvailable(false);
+    connectionEncryptedRef.current = false;
+    setConnectionEncrypted(false);
     try {
       await espBlufi.stopScan();
-      await espBlufi.connect(deviceId);
+      await espBlufi.connectCompatibility(deviceId);
     } catch (connectError) {
       setStage('error');
       setError(
-        readableError(connectError, 'Unable to connect to the pill dispenser.'),
+        readableError(
+          connectError,
+          'Unable to connect to the pill dispenser in compatibility mode.',
+        ),
       );
     }
   }, []);
 
-  const connectCompatibility = useCallback(async () => {
+  const connectAlternateMode = useCallback(async () => {
     if (!selectedDeviceId) {
       setError('Scan again and select the pill dispenser.');
       return;
     }
     setError(null);
-    setCompatibilityAvailable(false);
-    connectionEncryptedRef.current = false;
-    setConnectionEncrypted(false);
+    setAlternateModeAvailable(false);
+    connectionEncryptedRef.current = true;
+    setConnectionEncrypted(true);
     setStage('connecting');
-    setStatusMessage('Reconnecting in BluFi compatibility mode…');
+    setStatusMessage('Reconnecting with encrypted BluFi…');
     try {
-      await espBlufi.connectCompatibility(selectedDeviceId);
+      await espBlufi.connect(selectedDeviceId);
     } catch (connectError) {
       setStage('error');
-      setCompatibilityAvailable(true);
+      setAlternateModeAvailable(true);
       setError(
         readableError(
           connectError,
-          'Unable to connect in BluFi compatibility mode.',
+          'Unable to connect with encrypted BluFi.',
         ),
       );
     }
@@ -376,9 +390,9 @@ export function usePillDispenserProvisioning() {
       setStage('idle');
       setSelectedDeviceId(null);
       setWifiNetworks([]);
-      setCompatibilityAvailable(false);
-      connectionEncryptedRef.current = true;
-      setConnectionEncrypted(true);
+      setAlternateModeAvailable(false);
+      connectionEncryptedRef.current = false;
+      setConnectionEncrypted(false);
       setStatusMessage(
         'Bluetooth disconnected. Scan to configure another dispenser.',
       );
@@ -393,14 +407,14 @@ export function usePillDispenserProvisioning() {
       stage,
       selectedDeviceId,
       connectedWifiSsid,
-      compatibilityAvailable,
+      alternateModeAvailable,
       connectionEncrypted,
       statusMessage,
       error,
       startScan,
       stopScan,
       connect,
-      connectCompatibility,
+      connectAlternateMode,
       provision,
       refreshWifi,
       checkWifiStatus,
@@ -409,8 +423,8 @@ export function usePillDispenserProvisioning() {
     [
       checkWifiStatus,
       connect,
-      connectCompatibility,
-      compatibilityAvailable,
+      connectAlternateMode,
+      alternateModeAvailable,
       connectionEncrypted,
       connectedWifiSsid,
       devices,
