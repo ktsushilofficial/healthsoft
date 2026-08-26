@@ -1,5 +1,8 @@
 import type { V8EcgEvent, V8EcgSession } from './models';
 
+export const ECG_RECORDING_DURATION_SECONDS = 30;
+export const ECG_RECORDING_DURATION_MS = ECG_RECORDING_DURATION_SECONDS * 1_000;
+
 const ECG_SAMPLE_KEYS = new Set([
   'arrayecgrawdata',
   'arrayecgdata',
@@ -149,8 +152,7 @@ function detectKind(
       if (dataType === '59') return 'status';
     }
     if (requestedMode === 'ppg') {
-      if (dataType === '70')
-        return samples.length > 0 ? 'samples' : 'status';
+      if (dataType === '70') return samples.length > 0 ? 'samples' : 'status';
       if (dataType === '71') return 'started';
       if (dataType === '72') return 'failed';
       if (dataType === '73') return 'completed';

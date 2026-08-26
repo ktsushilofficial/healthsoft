@@ -1,4 +1,5 @@
 import {
+  ECG_RECORDING_DURATION_MS,
   analyzeWaveformHeartRate,
   createV8EcgSession,
   downsampleEcg,
@@ -458,12 +459,24 @@ describe('V8 ECG helpers', () => {
     expect(shouldAutoFinishEcg(session, 14_000)).toBe(false);
   });
 
-  it('supports the 30-second contact ECG recording limit', () => {
+  it('supports the configured contact ECG recording limit', () => {
     const session = createV8EcgSession('senior-1', null, null, 1_000, 'ecg');
     session.phase = 'measuring';
 
-    expect(shouldAutoFinishEcg(session, 30_999, 30_000)).toBe(false);
-    expect(shouldAutoFinishEcg(session, 31_000, 30_000)).toBe(true);
+    expect(
+      shouldAutoFinishEcg(
+        session,
+        session.startedAt + ECG_RECORDING_DURATION_MS - 1,
+        ECG_RECORDING_DURATION_MS,
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoFinishEcg(
+        session,
+        session.startedAt + ECG_RECORDING_DURATION_MS,
+        ECG_RECORDING_DURATION_MS,
+      ),
+    ).toBe(true);
   });
 
   it('splits a recording into consecutive report strips without losing samples', () => {

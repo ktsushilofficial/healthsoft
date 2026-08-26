@@ -9,6 +9,7 @@
 static NSString * const kV8ScanEvent = @"V8ScanResult";
 static NSString * const kV8ConnectionEvent = @"V8ConnectionState";
 static NSString * const kV8DataEvent = @"V8Data";
+static const NSInteger kContactEcgMeasurementSeconds = 30;
 
 @interface V8BleModule () <CBCentralManagerDelegate, CBPeripheralDelegate>
 @property(nonatomic, strong) CBCentralManager *central;
@@ -322,7 +323,7 @@ RCT_REMAP_METHOD(startEcgMeasurement,
   }
   NSData *cmd = [[BleSDK_V8 sharedManager]
       manualMeasurementWithDataType:hrvData_v8
-      measurementTime:30
+      measurementTime:(int)kContactEcgMeasurementSeconds
       open:YES];
   if (cmd.length == 0) {
     reject(@"CMD_EMPTY", @"Vendor command is empty.", nil);
@@ -342,7 +343,7 @@ RCT_REMAP_METHOD(stopEcgMeasurement,
   self.awaitingContactEcgStartAck = NO;
   NSData *stop = [[BleSDK_V8 sharedManager]
       manualMeasurementWithDataType:hrvData_v8
-      measurementTime:30
+      measurementTime:(int)kContactEcgMeasurementSeconds
       open:NO];
   NSData *disableRaw = [[BleSDK_V8 sharedManager]
       setECGRealtimeDuringHRVEnabled:NO];

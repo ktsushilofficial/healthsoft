@@ -24,6 +24,7 @@ import type {
 } from './models';
 import { parseV8Payload } from './parser';
 import {
+  ECG_RECORDING_DURATION_MS,
   analyzeWaveformHeartRate,
   createV8EcgSession,
   estimateObservedSampleRateHz,
@@ -119,7 +120,10 @@ const V8_HISTORY_USER = 'v8-history';
 const V8_ECG_SERVICE = 'healthsoft.v8.ecg.latest';
 const V8_ECG_USER = 'v8-ecg';
 const MAX_ECG_SAMPLES = 120_000;
-const MAX_PERSISTED_ECG_SAMPLES = 4_000;
+// Retain a full 30-second recording even when the device supplies the
+// preferred 500 Hz stream, with headroom for trailing packets, so reopening
+// the report cannot shorten its trace.
+const MAX_PERSISTED_ECG_SAMPLES = 20_000;
 const MIN_ECG_SAMPLE_RATE_HZ = 250;
 const LATE_ECG_RESULT_WINDOW_MS = 5_000;
 const normalizeId = (id?: string | null) => (id ?? '').trim().toLowerCase();
@@ -674,7 +678,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           durationMs:
             completed || failed
               ? requestedMode === 'ecg'
-                ? Math.min(30_000, now - prev.startedAt)
+                ? Math.min(ECG_RECORDING_DURATION_MS, now - prev.startedAt)
                 : now - prev.startedAt
               : prev.durationMs,
           samples: combinedSamples,
@@ -1225,7 +1229,10 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           completedAt: now,
           durationMs:
             mode === 'ecg'
-              ? Math.min(30_000, recordingStoppedAt - prev.startedAt)
+              ? Math.min(
+                  ECG_RECORDING_DURATION_MS,
+                  recordingStoppedAt - prev.startedAt,
+                )
               : recordingStoppedAt - prev.startedAt,
           heartRate: prev.heartRate ?? waveformAnalysis?.heartRate ?? null,
           heartRateSource:

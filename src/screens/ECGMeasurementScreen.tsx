@@ -28,7 +28,8 @@ import {
   type EcgReportShareMetadata,
 } from '../utils/ecgReport';
 import {
-  downsampleEcg,
+  ECG_RECORDING_DURATION_MS,
+  ECG_RECORDING_DURATION_SECONDS,
   downsampleWaveformEnvelope,
   filterWaveformForDisplay,
   getWaveformDisplayRange,
@@ -45,13 +46,16 @@ import {
 const ACTIVE_PHASES = new Set(['starting', 'measuring', 'processing']);
 const MIN_ECG_SAMPLE_RATE_HZ = 250;
 const PREFERRED_ECG_SAMPLE_RATE_HZ = 500;
-// Leave a short grace period for Android's 30-second AutoHRV result packet.
+// Leave a short grace period for Android's AutoHRV result packet.
 // The report duration remains the actual recording target, not cleanup time.
-const ECG_MAX_RECORDING_DURATION_MS = 31_000;
+const ECG_MAX_RECORDING_DURATION_MS = ECG_RECORDING_DURATION_MS + 1_000;
 const PPG_MAX_RECORDING_DURATION_MS = 120_000;
 const ECG_STALL_NOTICE_MS = 4_000;
-const ECG_REPORT_STRIP_COUNT = 3;
 const ECG_REPORT_STRIP_SECONDS = 10;
+const ECG_REPORT_STRIP_COUNT =
+  ECG_RECORDING_DURATION_SECONDS / ECG_REPORT_STRIP_SECONDS;
+const ECG_LIVE_WINDOW_SECONDS = 6;
+const PPG_LIVE_WINDOW_SECONDS = 8;
 
 type MeasurementMode = 'ecg' | 'ppg';
 
@@ -69,58 +73,123 @@ const EcgWaveform = ({
   samples,
   width,
   mode,
+  sampleRateHz,
 }: {
   samples: number[];
   width: number;
   mode: MeasurementMode;
+  sampleRateHz: number | null;
 }) => {
   const height = 180;
   const chartWidth = Math.max(240, width);
+  const effectiveSampleRateHz =
+    sampleRateHz != null && sampleRateHz >= 20 && sampleRateHz <= 2_000
+      ? sampleRateHz
+      : 250;
+  const windowSeconds =
+    mode === 'ecg' ? ECG_LIVE_WINDOW_SECONDS : PPG_LIVE_WINDOW_SECONDS;
+  const windowSampleCount = Math.max(
+    2,
+    Math.round(effectiveSampleRateHz * windowSeconds),
+  );
+  const visibleSamples = useMemo(
+    () => samples.slice(-windowSampleCount),
+    [samples, windowSampleCount],
+  );
+  const displayRange = useMemo(() => {
+    const range = getWaveformDisplayRange(samples, effectiveSampleRateHz);
+    // A centered baseline is visually stable and matches the presentation of
+    // bedside ECG monitors. Device units are not calibrated mV, so gain stays
+    // automatic and is labelled as such below.
+    const maxMagnitude = Math.max(1, Math.abs(range.min), Math.abs(range.max));
+    return { min: -maxMagnitude, max: maxMagnitude };
+  }, [effectiveSampleRateHz, samples]);
   const path = useMemo(() => {
-    const points = downsampleEcg(samples, Math.max(80, Math.floor(chartWidth)));
-    if (points.length < 2) return '';
-    const min = Math.min(...points);
-    const max = Math.max(...points);
-    const range = Math.max(1, max - min);
+    const points = downsampleWaveformEnvelope(
+      visibleSamples,
+      Math.max(120, Math.floor(chartWidth * 1.5)),
+    );
+    if (points.length < 2 || visibleSamples.length < 2) return '';
+    const range = Math.max(1, displayRange.max - displayRange.min);
     return points
-      .map((value, index) => {
-        const x = (index / (points.length - 1)) * chartWidth;
-        const y = height - 14 - ((value - min) / range) * (height - 28);
+      .map((point, index) => {
+        const x = (point.index / (windowSampleCount - 1)) * chartWidth;
+        const clippedValue = Math.min(
+          displayRange.max,
+          Math.max(displayRange.min, point.value),
+        );
+        const y =
+          height -
+          10 -
+          ((clippedValue - displayRange.min) / range) * (height - 20);
         return `${index === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
       })
       .join(' ');
-  }, [chartWidth, samples]);
+  }, [
+    chartWidth,
+    displayRange.max,
+    displayRange.min,
+    visibleSamples,
+    windowSampleCount,
+  ]);
+
+  const verticalGridLineCount = windowSeconds * 25;
+  const horizontalGridLineCount = 40;
 
   return (
     <View style={styles.waveformWrap}>
       {samples.length > 1 ? (
         <Svg width={chartWidth} height={height}>
-          {[1, 2, 3, 4].map(index => (
-            <Line
-              key={`h-${index}`}
-              x1="0"
-              x2={chartWidth}
-              y1={(height / 5) * index}
-              y2={(height / 5) * index}
-              stroke="#F5D9D9"
-              strokeWidth="1"
-            />
-          ))}
-          {[1, 2, 3, 4, 5].map(index => (
-            <Line
-              key={`v-${index}`}
-              y1="0"
-              y2={height}
-              x1={(chartWidth / 6) * index}
-              x2={(chartWidth / 6) * index}
-              stroke="#F5D9D9"
-              strokeWidth="1"
-            />
-          ))}
+          <Rect width={chartWidth} height={height} fill="#FFFCFC" />
+          {Array.from(
+            { length: verticalGridLineCount - 1 },
+            (_, index) => index + 1,
+          ).map(index => {
+            const major = index % 5 === 0;
+            const oneSecond = index % 25 === 0;
+            return (
+              <Line
+                key={`v-${index}`}
+                y1="0"
+                y2={height}
+                x1={(chartWidth / verticalGridLineCount) * index}
+                x2={(chartWidth / verticalGridLineCount) * index}
+                stroke={oneSecond ? '#DF9999' : major ? '#EABBBB' : '#F7E7E7'}
+                strokeWidth={oneSecond ? 0.9 : major ? 0.65 : 0.4}
+              />
+            );
+          })}
+          {Array.from(
+            { length: horizontalGridLineCount - 1 },
+            (_, index) => index + 1,
+          ).map(index => {
+            const major = index % 5 === 0;
+            return (
+              <Line
+                key={`h-${index}`}
+                x1="0"
+                x2={chartWidth}
+                y1={(height / horizontalGridLineCount) * index}
+                y2={(height / horizontalGridLineCount) * index}
+                stroke={major ? '#EABBBB' : '#F7E7E7'}
+                strokeWidth={major ? 0.65 : 0.4}
+              />
+            );
+          })}
+          <Line
+            x1="0"
+            x2={chartWidth}
+            y1={height / 2}
+            y2={height / 2}
+            stroke="#E1A4A4"
+            strokeWidth="0.8"
+          />
           <Path
             d={path}
             stroke={mode === 'ecg' ? '#D64545' : '#E67E22'}
-            strokeWidth="2"
+            strokeWidth="1.5"
+            strokeLinejoin="round"
+            strokeLinecap="round"
             fill="none"
           />
         </Svg>
@@ -141,6 +210,13 @@ const EcgWaveform = ({
           </Text>
         </View>
       )}
+      {samples.length > 1 ? (
+        <View pointerEvents="none" style={styles.waveformScaleBadge}>
+          <Text style={styles.waveformScaleText}>
+            {windowSeconds} sec sweep · auto gain · filtered display
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 };
@@ -158,6 +234,8 @@ const EcgReportStrip = ({
 }) => {
   const chartWidth = Math.max(240, width);
   const chartHeight = 112;
+  const smallGridWidth = chartWidth / (ECG_REPORT_STRIP_SECONDS * 25);
+  const horizontalGridLineCount = Math.floor(chartHeight / smallGridWidth);
   const path = useMemo(() => {
     const points = downsampleWaveformEnvelope(
       samples,
@@ -199,13 +277,16 @@ const EcgReportStrip = ({
       <View style={styles.reportStripChart}>
         <Svg width={chartWidth} height={chartHeight}>
           <Rect width={chartWidth} height={chartHeight} fill="#FFFCFC" />
-          {Array.from({ length: 49 }, (_, index) => index + 1).map(index => {
+          {Array.from(
+            { length: ECG_REPORT_STRIP_SECONDS * 25 - 1 },
+            (_, index) => index + 1,
+          ).map(index => {
             const major = index % 5 === 0;
             return (
               <Line
                 key={`report-v-${index}`}
-                x1={(chartWidth / 50) * index}
-                x2={(chartWidth / 50) * index}
+                x1={smallGridWidth * index}
+                x2={smallGridWidth * index}
                 y1="0"
                 y2={chartHeight}
                 stroke={major ? '#E7AAAA' : '#F5DEDE'}
@@ -213,15 +294,18 @@ const EcgReportStrip = ({
               />
             );
           })}
-          {Array.from({ length: 15 }, (_, index) => index + 1).map(index => {
+          {Array.from(
+            { length: horizontalGridLineCount },
+            (_, index) => index + 1,
+          ).map(index => {
             const major = index % 5 === 0;
             return (
               <Line
                 key={`report-h-${index}`}
                 x1="0"
                 x2={chartWidth}
-                y1={(chartHeight / 16) * index}
-                y2={(chartHeight / 16) * index}
+                y1={smallGridWidth * index}
+                y2={smallGridWidth * index}
                 stroke={major ? '#E7AAAA' : '#F5DEDE'}
                 strokeWidth={major ? 0.8 : 0.45}
               />
@@ -267,10 +351,10 @@ const EcgReportWaveform = ({
       <View style={styles.reportWaveformHeadingRow}>
         <View>
           <Text style={styles.reportWaveformTitle}>
-            30-second ECG recording
+            {ECG_RECORDING_DURATION_SECONDS}-second ECG recording
           </Text>
           <Text style={styles.reportWaveformSubtitle}>
-            Three consecutive 10-second strips
+            {ECG_REPORT_STRIP_COUNT} consecutive 10-second strips
           </Text>
         </View>
         <Text style={styles.reportWaveformRate}>
@@ -291,8 +375,8 @@ const EcgReportWaveform = ({
         />
       ))}
       <Text style={styles.reportWaveformFootnote}>
-        Time grid: 0.2 sec small divisions · display-filtered, auto-scaled
-        amplitude
+        Time grid: 0.04 sec small divisions · 0.2 sec large divisions ·
+        display-filtered, auto-scaled amplitude
       </Text>
     </View>
   );
@@ -451,10 +535,7 @@ const ECGMeasurementScreen = () => {
     }, 'Unable to connect the assigned hand band.');
 
   const handleStart = () =>
-    run(
-      () => startEcgMeasurement('ecg'),
-      'Unable to start ECG measurement.',
-    );
+    run(() => startEcgMeasurement('ecg'), 'Unable to start ECG measurement.');
   const handleFinish = useCallback(
     () =>
       run(finishEcgMeasurement, `Unable to finish ${modeLabel} measurement.`),
@@ -765,7 +846,7 @@ const ECGMeasurementScreen = () => {
               <Text style={styles.title}>Prepare for your {modeLabel}</Text>
               <Text style={styles.subtitle}>
                 {measurementMode === 'ecg'
-                  ? 'The 250 Hz contact-electrode ECG records automatically for 30 seconds.'
+                  ? `The 250 Hz contact-electrode ECG records automatically for ${ECG_RECORDING_DURATION_SECONDS} seconds.`
                   : 'Record the optical pulse waveform for up to 2 minutes.'}
               </Text>
               {(measurementMode === 'ecg'
@@ -773,7 +854,7 @@ const ECGMeasurementScreen = () => {
                     'Wear the band snugly on your wrist, about one finger above the wrist bone.',
                     'Sit with both feet flat and rest your band-wearing arm naturally on a table.',
                     'With your other hand, gently place your index finger on the metal contact at the center of the band.',
-                    'Maintain light contact and remain still and quiet for the full 30 seconds.',
+                    `Maintain light contact and remain still and quiet for the full ${ECG_RECORDING_DURATION_SECONDS} seconds.`,
                   ]
                 : [
                     'Sit comfortably and keep your arm relaxed.',
@@ -910,6 +991,7 @@ const ECGMeasurementScreen = () => {
                 samples={displaySamples}
                 width={reportReady ? width - 80 : width - 48}
                 mode={sessionMode}
+                sampleRateHz={measuredSampleRateHz}
               />
             )}
 
@@ -1280,6 +1362,22 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: '#FFF9F9',
     marginVertical: 12,
+    position: 'relative',
+  },
+  waveformScaleBadge: {
+    position: 'absolute',
+    right: 8,
+    top: 7,
+    borderRadius: 5,
+    backgroundColor: 'rgba(255, 252, 252, 0.9)',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+  },
+  waveformScaleText: {
+    color: '#8B5D5D',
+    fontSize: 8,
+    fontWeight: '700',
+    letterSpacing: 0.15,
   },
   waveformEmpty: {
     flex: 1,

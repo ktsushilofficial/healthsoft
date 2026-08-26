@@ -32,6 +32,8 @@ import java.util.UUID
 class V8BleModule(private val reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
 
+  private val ecgMeasurementDurationMs = 30_000L
+
   private val bluetoothAdapter: BluetoothAdapter? by lazy {
     val manager = reactContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
     manager?.adapter
@@ -322,7 +324,7 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
     // duration argument is milliseconds (unlike the iOS SDK's seconds value).
     enqueueVendorCommands(
       listOf(
-        BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, 30_000L, true),
+        BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, ecgMeasurementDurationMs, true),
         BleSDK.setECGRealtimeDuringHRVEnabled(true),
       ),
       promise,
@@ -333,7 +335,7 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
   fun stopEcgMeasurement(promise: Promise) {
     enqueueVendorCommands(
       listOf(
-        BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, 30_000L, false),
+        BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHRV, ecgMeasurementDurationMs, false),
         BleSDK.setECGRealtimeDuringHRVEnabled(false),
       ),
       promise,
