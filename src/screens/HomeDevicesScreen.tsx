@@ -15,6 +15,10 @@ import {
 } from '../utils/mapSeniorDashboardDeviceToSnapshot';
 import type { SeniorDashboardDeviceRecord } from '../types/seniorDashboard';
 import type { SeniorAssignedDevice } from '../utils/deviceAssignments';
+import {
+  getDashboardDeviceImei,
+  getDashboardDeviceUuid,
+} from '../utils/dashboardDeviceIdentity';
 
 const NA = 'NA';
 
@@ -84,19 +88,6 @@ function formatDeviceActivityStatus(record: SeniorDashboardDeviceRecord | null):
   return NA;
 }
 
-function readDeviceIdentifier(row: SeniorDashboardDeviceRecord): string {
-  return readStringField(row, 'ident') ?? readStringField(row, 'imei') ?? '';
-}
-
-function readDeviceUuid(row: SeniorDashboardDeviceRecord): string {
-  return (
-    readStringField(row, 'device.uuid') ??
-    readStringField(row, 'deviceUUID') ??
-    readStringField(row, 'deviceUuid') ??
-    ''
-  );
-}
-
 const HomeDevicesScreen = () => {
   const navigation = useNavigation<any>();
   const route = useRoute();
@@ -121,7 +112,7 @@ const HomeDevicesScreen = () => {
       dashboardDevices.map((row, index) => {
         const snap = mapSeniorDashboardDeviceToSnapshot(row);
         return {
-          key: `pendant-${readDeviceIdentifier(row) || index}`,
+          key: `pendant-${getDashboardDeviceUuid(row) || getDashboardDeviceImei(row) || index}`,
           row,
           label: getSeniorDashboardDeviceLabel(row),
           subtitle: snap.alarmSeverity === 'critical' ? 'Fall Detected!' : 'Fall detection · Armed',
@@ -162,8 +153,8 @@ const HomeDevicesScreen = () => {
             onPress={() => {
               navigation.navigate('PendantDetail', {
                 seniorId: params.activeSeniorId || undefined,
-                imei: readDeviceIdentifier(item.row),
-                deviceUuid: readDeviceUuid(item.row),
+                imei: getDashboardDeviceImei(item.row),
+                deviceUuid: getDashboardDeviceUuid(item.row),
                 deviceName: item.label,
               });
             }}

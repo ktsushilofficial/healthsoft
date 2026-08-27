@@ -92,7 +92,7 @@ function formatLastUpdatedFromKeys(
 ): string | null {
   const sec = resolveTimestampSecondsFromKeys(record, keys);
   if (sec == null) {
-    return formatLastUpdated(record);
+    return null;
   }
   try {
     return formatDistanceToNow(new Date(sec * 1000), { addSuffix: true });
@@ -227,6 +227,10 @@ export function mapSeniorDashboardDeviceToSnapshot(
       'status.server.timestamp',
       'battery.timestamp',
       'status.timestamp',
+      'server.timestamp',
+      'serverTimestamp',
+      'timestamp',
+      'timestamp.key',
     ]),
     locationUpdatedLabel: formatLastUpdatedFromKeys(record, [
       'position.server.timestamp',

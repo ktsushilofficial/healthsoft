@@ -36,6 +36,10 @@ import {
 } from '../utils/deviceAssignments';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import type { SeniorHomeSnapshot } from '../types/seniorHomeSnapshot';
+import {
+  getDashboardDeviceImei,
+  getDashboardDeviceUuid,
+} from '../utils/dashboardDeviceIdentity';
 
 const HERO_IMAGES = [
   { uri: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80' },
@@ -182,9 +186,9 @@ function pickLatestEpochValue(a: number | null, b: number | null): number | null
 function withPositionAliases(position: SeniorDashboardDeviceRecord): SeniorDashboardDeviceRecord {
   return {
     ...position,
-    ident: readStringField(position, 'imei') ?? readStringField(position, 'ident'),
-    imei: readStringField(position, 'imei'),
-    'device.uuid': readStringField(position, 'deviceUUID') ?? readStringField(position, 'deviceUuid'),
+    ident: getDashboardDeviceImei(position),
+    imei: getDashboardDeviceImei(position),
+    'device.uuid': getDashboardDeviceUuid(position),
     'device.name': readStringField(position, 'deviceName') ?? readStringField(position, 'device.name'),
     deviceName: readStringField(position, 'deviceName') ?? readStringField(position, 'device.name'),
     'device.serial.number':
@@ -227,7 +231,7 @@ function mergeGuardianDeviceStatusWithPosition(
   alarmRows.forEach(alarm => {
     const ident = readStringField(alarm, 'ident');
     if (ident) alarmsByIdent.set(ident, alarm);
-    const uuid = readStringField(alarm, 'deviceUUID') ?? readStringField(alarm, 'deviceUuid') ?? readStringField(alarm, 'device.uuid');
+    const uuid = getDashboardDeviceUuid(alarm);
     if (uuid) alarmsByUuid.set(uuid, alarm);
   });
 
@@ -247,10 +251,10 @@ function mergeGuardianDeviceStatusWithPosition(
   return statusRows.map(status => {
     const normalizedStatus: SeniorDashboardDeviceRecord = {
       ...status,
-      ident: readStringField(status, 'imei') ?? readStringField(status, 'ident'),
+      ident: getDashboardDeviceImei(status),
       'device.name': readStringField(status, 'deviceName') ?? readStringField(status, 'device.name'),
       'device.id': readNumberField(status, 'deviceId') ?? readNumberField(status, 'device.id'),
-      'device.uuid': readStringField(status, 'deviceUuid') ?? readStringField(status, 'deviceUUID'),
+      'device.uuid': getDashboardDeviceUuid(status),
       'battery.level': readNumberField(status, 'batteryLevel') ?? readNumberField(status, 'battery.level'),
       'battery.charging.status':
         (status['batteryChargingStatus'] as boolean | undefined) ??
@@ -1083,9 +1087,9 @@ const HomeScreen = () => {
       liveSnapshot.speedKph != null && !Number.isNaN(liveSnapshot.speedKph)
         ? `${Math.round(liveSnapshot.speedKph)} km/h`
         : NA;
-    const updatedPart = liveSnapshot.locationUpdatedLabel ?? liveSnapshot.lastUpdatedLabel;
-    return joinDisplayParts(speedPart, updatedPart);
-  }, [liveSnapshot.locationUpdatedLabel, liveSnapshot.lastUpdatedLabel, liveSnapshot.speedKph]);
+    const updatedPart = liveSnapshot.locationUpdatedLabel ?? NA;
+    return speedPart === NA ? updatedPart : `${speedPart} · ${updatedPart}`;
+  }, [liveSnapshot.locationUpdatedLabel, liveSnapshot.speedKph]);
 
   const batteryStatusLine = useMemo(() => {
     return joinDisplayParts(chargingCaption(liveSnapshot.charging), liveSnapshot.batteryUpdatedLabel);
@@ -1402,16 +1406,13 @@ const HomeScreen = () => {
     const lat = liveSnapshot.latitude;
     const lon = liveSnapshot.longitude;
     if (lat == null || lon == null) return;
-    const deviceUuid = activeDeviceRecord
-      ? readStringField(activeDeviceRecord, 'device.uuid') ??
-        readStringField(activeDeviceRecord, 'deviceUUID') ??
-        readStringField(activeDeviceRecord, 'deviceUuid')
-      : null;
+    const deviceUuid = getDashboardDeviceUuid(activeDeviceRecord);
     navigation.navigate('LocationMap', {
       latitude: lat,
       longitude: lon,
       title: 'Last position',
       deviceUuid,
+      imei: getDashboardDeviceImei(activeDeviceRecord),
     });
   }, [
     activeDeviceRecord,
@@ -1656,17 +1657,14 @@ const HomeScreen = () => {
               const rowBatteryIcon = batteryIconFor(snap.batteryPercent, snap.charging);
               return (
                 <TouchableOpacity
-                  key={`pendant-${row.ident || index}`}
+                  key={`pendant-${getDashboardDeviceUuid(row) || getDashboardDeviceImei(row) || index}`}
                   style={styles.deviceRowCard}
                   activeOpacity={0.8}
                   onPress={() => {
                     navigation.navigate('PendantDetail', {
                       seniorId: activeDashboardSeniorId || user?.user_id,
-                      imei: row.ident || row.imei || '',
-                      deviceUuid:
-                        readStringField(row, 'device.uuid') ??
-                        readStringField(row, 'deviceUUID') ??
-                        readStringField(row, 'deviceUuid'),
+                      imei: getDashboardDeviceImei(row),
+                      deviceUuid: getDashboardDeviceUuid(row),
                       deviceName: getSeniorDashboardDeviceLabel(row),
                     });
                   }}

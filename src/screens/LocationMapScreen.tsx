@@ -18,6 +18,7 @@ type LocationMapParams = {
   longitude: number;
   title?: string;
   deviceUuid?: string | null;
+  imei?: string | null;
 };
 
 const LocationMapScreen = () => {
@@ -29,6 +30,7 @@ const LocationMapScreen = () => {
     longitude,
     title = 'Last position',
     deviceUuid,
+    imei,
   } = route.params as LocationMapParams;
   const mapRef = useRef<MapView>(null);
   const [coordinate, setCoordinate] = useState({ latitude, longitude });
@@ -38,6 +40,7 @@ const LocationMapScreen = () => {
   const [streamMessage, setStreamMessage] = useState<string | null>(null);
   const providerName = Platform.OS === 'ios' ? 'Apple Maps' : 'Google Maps';
   const canTrack = canAccessPendantTracking(user?.role);
+  const normalizedImei = typeof imei === 'string' ? imei.trim() : '';
 
   useEffect(() => {
     setCoordinate({ latitude, longitude });
@@ -124,7 +127,12 @@ const LocationMapScreen = () => {
           showsScale
           toolbarEnabled={false}
         >
-          <Marker coordinate={coordinate} title={title} pinColor="#F28C28" />
+          <Marker
+            coordinate={coordinate}
+            title={title}
+            description={normalizedImei ? `IMEI: ${normalizedImei}` : undefined}
+            pinColor="#F28C28"
+          />
         </MapView>
 
         <View style={styles.coordinateCard}>
@@ -154,6 +162,11 @@ const LocationMapScreen = () => {
               {coordinate.latitude.toFixed(6)},{' '}
               {coordinate.longitude.toFixed(6)}
             </Text>
+            {normalizedImei ? (
+              <Text selectable style={styles.deviceIdentity}>
+                IMEI: {normalizedImei}
+              </Text>
+            ) : null}
             {streamMessage ? (
               <Text numberOfLines={2} style={styles.streamMessage}>
                 {streamMessage}
@@ -268,6 +281,12 @@ const styles = StyleSheet.create({
     color: '#2F2B27',
     fontSize: 14,
     fontWeight: '700',
+  },
+  deviceIdentity: {
+    marginTop: 4,
+    color: '#6F665E',
+    fontSize: 12,
+    fontWeight: '600',
   },
   streamMessage: {
     marginTop: 3,

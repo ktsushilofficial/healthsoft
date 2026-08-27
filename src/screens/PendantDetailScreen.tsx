@@ -35,6 +35,11 @@ import {
   formatDashboardGeofenceValue,
   getDashboardGeofenceStatus,
 } from '../utils/dashboardGeofenceStatus';
+import {
+  dashboardDeviceIdentityMatches,
+  getDashboardDeviceImei,
+  getDashboardDeviceUuid,
+} from '../utils/dashboardDeviceIdentity';
 
 const SENIOR_ROLE = 'SENIOR';
 const CARETAKER_ROLE = 'CARE_TAKER';
@@ -114,9 +119,9 @@ function pickLatestEpochValue(a: number | null, b: number | null): number | null
 function withPositionAliases(position: SeniorDashboardDeviceRecord): SeniorDashboardDeviceRecord {
   return {
     ...position,
-    ident: readStringField(position, 'imei') ?? readStringField(position, 'ident'),
-    imei: readStringField(position, 'imei'),
-    'device.uuid': readStringField(position, 'deviceUUID') ?? readStringField(position, 'deviceUuid'),
+    ident: getDashboardDeviceImei(position),
+    imei: getDashboardDeviceImei(position),
+    'device.uuid': getDashboardDeviceUuid(position),
     'device.name': readStringField(position, 'deviceName') ?? readStringField(position, 'device.name'),
     deviceName: readStringField(position, 'deviceName') ?? readStringField(position, 'device.name'),
     'device.serial.number':
@@ -159,7 +164,7 @@ function mergeGuardianDeviceStatusWithPosition(
   alarmRows.forEach(alarm => {
     const ident = readStringField(alarm, 'ident');
     if (ident) alarmsByIdent.set(ident, alarm);
-    const uuid = readStringField(alarm, 'deviceUUID') ?? readStringField(alarm, 'deviceUuid') ?? readStringField(alarm, 'device.uuid');
+    const uuid = getDashboardDeviceUuid(alarm);
     if (uuid) alarmsByUuid.set(uuid, alarm);
   });
 
@@ -179,10 +184,10 @@ function mergeGuardianDeviceStatusWithPosition(
   return statusRows.map(status => {
     const normalizedStatus: SeniorDashboardDeviceRecord = {
       ...status,
-      ident: readStringField(status, 'imei') ?? readStringField(status, 'ident'),
+      ident: getDashboardDeviceImei(status),
       'device.name': readStringField(status, 'deviceName') ?? readStringField(status, 'device.name'),
       'device.id': readNumberField(status, 'deviceId') ?? readNumberField(status, 'device.id'),
-      'device.uuid': readStringField(status, 'deviceUuid') ?? readStringField(status, 'deviceUUID'),
+      'device.uuid': getDashboardDeviceUuid(status),
       'battery.level': readNumberField(status, 'batteryLevel') ?? readNumberField(status, 'battery.level'),
       'battery.charging.status':
         (status['batteryChargingStatus'] as boolean | undefined) ??
@@ -487,29 +492,33 @@ const PendantDetailScreen = () => {
     setDashboardDevices(list);
   }, [user, guardianSeniorProfiles, guardianDevicePositions, guardianDeviceAlarms, seniorId]);
 
-  // Find the specific device status record matching the parameter imei/ident
+  // Keep the detail page bound to the exact row that was tapped. UUID is the
+  // primary identity because it is also used for the live-position stream;
+  // IMEI/ident remains a fallback for older dashboard payloads.
   const matchedDeviceRecord = useMemo(() => {
     if (dashboardDevices.length === 0) return null;
     return (
-      dashboardDevices.find(
-        d =>
-          (typeof d.ident === 'string' && d.ident.toLowerCase() === imei?.toLowerCase()) ||
-          (typeof d.imei === 'string' && d.imei.toLowerCase() === imei?.toLowerCase())
-      ) || dashboardDevices[0]
+      dashboardDevices.find(d =>
+        dashboardDeviceIdentityMatches(d, {
+          deviceUuid: routeDeviceUuid,
+          imei,
+        }),
+      ) ?? null
     );
-  }, [dashboardDevices, imei]);
+  }, [dashboardDevices, imei, routeDeviceUuid]);
 
   const pendantDeviceUuid = useMemo(() => {
     const routeValue = typeof routeDeviceUuid === 'string' ? routeDeviceUuid.trim() : '';
     if (routeValue) return routeValue;
     if (!matchedDeviceRecord) return '';
-    return (
-      readStringField(matchedDeviceRecord, 'device.uuid') ??
-      readStringField(matchedDeviceRecord, 'deviceUUID') ??
-      readStringField(matchedDeviceRecord, 'deviceUuid') ??
-      ''
-    );
+    return getDashboardDeviceUuid(matchedDeviceRecord);
   }, [matchedDeviceRecord, routeDeviceUuid]);
+
+  const pendantImei = useMemo(() => {
+    const routeValue = typeof imei === 'string' ? imei.trim() : '';
+    if (routeValue) return routeValue;
+    return getDashboardDeviceImei(matchedDeviceRecord);
+  }, [imei, matchedDeviceRecord]);
 
   const liveSnapshot = useMemo(() => {
     if (matchedDeviceRecord) {
@@ -542,9 +551,9 @@ const PendantDetailScreen = () => {
       liveSnapshot.speedKph != null && !Number.isNaN(liveSnapshot.speedKph)
         ? `${Math.round(liveSnapshot.speedKph)} km/h`
         : NA;
-    const updatedPart = liveSnapshot.locationUpdatedLabel ?? liveSnapshot.lastUpdatedLabel;
-    return joinDisplayParts(speedPart, updatedPart);
-  }, [liveSnapshot.locationUpdatedLabel, liveSnapshot.lastUpdatedLabel, liveSnapshot.speedKph]);
+    const updatedPart = liveSnapshot.locationUpdatedLabel ?? NA;
+    return speedPart === NA ? updatedPart : `${speedPart} · ${updatedPart}`;
+  }, [liveSnapshot.locationUpdatedLabel, liveSnapshot.speedKph]);
 
   const batteryStatusLine = useMemo(() => {
     return joinDisplayParts(chargingCaption(liveSnapshot.charging), liveSnapshot.batteryUpdatedLabel);
@@ -618,8 +627,10 @@ const PendantDetailScreen = () => {
       longitude: lon,
       title: 'Last position',
       deviceUuid: pendantDeviceUuid,
+      imei: pendantImei,
     });
   }, [
+    pendantImei,
     pendantDeviceUuid,
     liveSnapshot.latitude,
     liveSnapshot.longitude,

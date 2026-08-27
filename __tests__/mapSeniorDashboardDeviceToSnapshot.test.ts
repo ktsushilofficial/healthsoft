@@ -48,6 +48,23 @@ describe('mapSeniorDashboardDeviceToSnapshot', () => {
     );
   });
 
+  test('does not present a status-event timestamp as a location or alarm time', () => {
+    const record = {
+      batteryLevel: 1,
+      movementStatus: false,
+      fallAlarmStatus: false,
+      timestamp: 1786810991,
+      serverTimestamp: 1786811003.840046,
+    };
+
+    const snapshot = mapSeniorDashboardDeviceToSnapshot(record);
+
+    expect(snapshot.locationUpdatedLabel).toBeNull();
+    expect(snapshot.lastAlarmAt).toBeNull();
+    expect(snapshot.lastUpdatedLabel).not.toBeNull();
+    expect(snapshot.batteryUpdatedLabel).not.toBeNull();
+  });
+
   test('derives activity and environment labels from the matching telemetry fields', () => {
     expect(getSeniorDashboardActivityAnalysis({ movementStatus: true })).toEqual(
       expect.objectContaining({ label: 'Active' }),
