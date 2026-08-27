@@ -937,11 +937,18 @@ const HomeScreen = () => {
   }, [guardianWelcomeVisible, isCaretaker, seniors.length]);
 
   useEffect(() => {
-    if (!user || user.role !== GUARDIAN_ROLE) {
+    if (!user) {
       setDashboardDevices([]);
       setSelectedDeviceIndex(0);
       return;
     }
+
+    // Senior and caretaker dashboard devices are owned by fetchDashboardData.
+    // Do not clear them when guardian-only state changes during a refresh.
+    if (user.role !== GUARDIAN_ROLE) {
+      return;
+    }
+
     setDevicePickerVisible(false);
     if (guardianSeniorProfiles.length === 0) {
       setDashboardDevices([]);
