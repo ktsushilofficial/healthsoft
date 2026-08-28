@@ -1314,6 +1314,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     const path = `/api/v1/position/by-device/${encodeURIComponent(uuid)}/stream`;
+    const url = `${API_BASE_URL}${path}`;
     let stopped = false;
     let activeRequest: XMLHttpRequest | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1353,9 +1354,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       let consumedLength = 0;
       let pendingText = '';
       let closeHandled = false;
+      let connectionResponseLogged = false;
+
+      const logConnectionResponse = () => {
+        if (connectionResponseLogged || request.status <= 0) return;
+        connectionResponseLogged = true;
+        let responseHeaders = '';
+        try {
+          responseHeaders = request.getAllResponseHeaders();
+        } catch {
+          // Some React Native XMLHttpRequest implementations do not expose headers.
+        }
+        logApiResponse(
+          'GET',
+          path,
+          request.status,
+          responseHeaders,
+          '<text/event-stream connected>',
+        );
+      };
 
       const processBlock = (block: string) => {
         const payload = parseSseEventBlock(block);
+        if (payload != null) {
+          console.log(
+            `[API Stream Response] GET ${url}\nStatus: ${request.status || 'streaming'}\nBody: ${stringifyForLog(payload)}`,
+          );
+        }
         const position = parseDevicePositionUpdate(payload);
         if (!position || position.positionValid === false) return;
         reconnectAttempt = 0;
@@ -1411,15 +1436,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         );
       };
 
-      request.open('GET', `${API_BASE_URL}${path}`, true);
-      request.setRequestHeader('Accept', 'text/event-stream');
-      request.setRequestHeader('Content-Type', 'application/json');
-      request.setRequestHeader('Cache-Control', 'no-cache');
-      request.setRequestHeader(
-        'Authorization',
-        `${sessionTokens.tokenType} ${sessionTokens.accessToken}`,
-      );
+      const requestHeaders = {
+        Accept: 'text/event-stream',
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache',
+        Authorization: `${sessionTokens.tokenType} ${sessionTokens.accessToken}`,
+      };
+      logApiRequest('GET', path, requestHeaders);
+      request.open('GET', url, true);
+      Object.entries(requestHeaders).forEach(([key, value]) => {
+        request.setRequestHeader(key, value);
+      });
       request.onreadystatechange = () => {
+        if (request.readyState >= XMLHttpRequest.HEADERS_RECEIVED) {
+          logConnectionResponse();
+        }
         if (
           request.readyState === XMLHttpRequest.LOADING ||
           request.readyState === XMLHttpRequest.DONE
