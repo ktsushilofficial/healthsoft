@@ -1637,7 +1637,7 @@ const HomeScreen = () => {
               navigation.navigate('HomeDevices', {
                 dashboardDevices,
                 activeSeniorId: activeDashboardSeniorId || user?.user_id || null,
-                showV8HandBand: selectedSeniorHandBandMacs.length > 0,
+                showV8HandBand: user?.role === SENIOR_ROLE || selectedSeniorHandBandMacs.length > 0,
                 pillDispenserAssignments,
               })
             }
@@ -1648,41 +1648,44 @@ const HomeScreen = () => {
 
         {/* Devices list */}
         <View style={styles.devicesListContainer}>
-          {/* PENDANT DEVICES FROM REST DASHBOARD API */}
           {dashboardDevices.length > 0 ? (
-            dashboardDevices.map((row, index) => {
-              const snap = mapSeniorDashboardDeviceToSnapshot(row);
-              const rowActivityStatus = formatDeviceActivityStatus(row);
-              const rowBatteryValue = formatDashboardBattery(snap);
-              const rowBatteryIcon = batteryIconFor(snap.batteryPercent, snap.charging);
+            dashboardDevices.map((device, index) => {
+              const displayLabel = getSeniorDashboardDeviceLabel(device);
+              const snapshot = mapSeniorDashboardDeviceToSnapshot(device);
+              const deviceKey = `dashboard-device-${getDashboardDeviceUuid(device) || getDashboardDeviceImei(device) || index}`;
+              const rowStatusText = formatDeviceActivityStatus(device);
+              const rowBatteryPercent = snapshot.batteryPercent;
+              const rowBatteryValue = formatBatteryPercent(rowBatteryPercent);
+              const rowBatteryIcon = batteryIconFor(rowBatteryPercent, snapshot.charging);
+
               return (
                 <TouchableOpacity
-                  key={`pendant-${getDashboardDeviceUuid(row) || getDashboardDeviceImei(row) || index}`}
+                  key={deviceKey}
                   style={styles.deviceRowCard}
                   activeOpacity={0.8}
                   onPress={() => {
                     navigation.navigate('PendantDetail', {
-                      seniorId: activeDashboardSeniorId || user?.user_id,
-                      imei: getDashboardDeviceImei(row),
-                      deviceUuid: getDashboardDeviceUuid(row),
-                      deviceName: getSeniorDashboardDeviceLabel(row),
+                      seniorId: activeDashboardSeniorId || user?.user_id || undefined,
+                      imei: getDashboardDeviceImei(device),
+                      deviceUuid: getDashboardDeviceUuid(device),
+                      deviceName: displayLabel,
                     });
                   }}
                 >
                   <View style={[styles.deviceRowIconWrap, styles.deviceIconPendantBg]}>
                     <Icon name="sunny" size={22} color="#D97706" />
                   </View>
+
                   <View style={styles.deviceRowTextCol}>
-                    <Text style={styles.deviceRowName}>
-                      {getSeniorDashboardDeviceLabel(row)}
-                    </Text>
+                    <Text style={styles.deviceRowName}>{displayLabel}</Text>
                     <Text style={styles.deviceRowSub}>
-                      {snap.alarmSeverity === 'critical' ? 'Fall Detected!' : 'Fall detection · Armed'}
+                      {snapshot.alarmSeverity === 'critical' ? 'Fall Detected!' : 'Fall detection · Armed'}
                     </Text>
                   </View>
+
                   <View style={styles.deviceRowStatusCol}>
                     <Text style={[styles.deviceRowStatusText, styles.deviceRowStatusActive]}>
-                      {rowActivityStatus}
+                      {rowStatusText}
                     </Text>
                     <View style={styles.deviceRowBatteryWrap}>
                       <Icon name={rowBatteryIcon} size={14} color="#8A827A" />
@@ -1697,7 +1700,7 @@ const HomeScreen = () => {
           ) : !dashboardLoading &&
               !assignedDevicesLoading &&
               pillDispenserAssignments.length === 0 &&
-              selectedSeniorHandBandMacs.length === 0 ? (
+              !(user?.role === SENIOR_ROLE || selectedSeniorHandBandMacs.length > 0) ? (
             <View style={styles.noDevicesBox}>
               <Text style={styles.noDevicesText}>No active devices assigned.</Text>
             </View>
@@ -1735,7 +1738,7 @@ const HomeScreen = () => {
           ))}
 
           {/* V8 SMART BAND DEVICE */}
-          {selectedSeniorHandBandMacs && selectedSeniorHandBandMacs.length > 0 && (
+          {(user?.role === SENIOR_ROLE || (selectedSeniorHandBandMacs && selectedSeniorHandBandMacs.length > 0)) && (
             <TouchableOpacity
               style={styles.deviceRowCard}
               activeOpacity={0.8}
@@ -1747,6 +1750,11 @@ const HomeScreen = () => {
               <View style={styles.deviceRowTextCol}>
                 <Text style={styles.deviceRowName}>Smart Band</Text>
                 <Text style={styles.deviceRowSub}>Heart rate</Text>
+              </View>
+              <View style={styles.deviceRowStatusCol}>
+                <Text style={[styles.deviceRowStatusText, handBandConnected ? styles.deviceRowStatusActive : null]}>
+                  {handBandConnected ? 'Connected' : 'Available'}
+                </Text>
               </View>
             </TouchableOpacity>
           )}

@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
+import { useAuth } from '../context/AuthContext';
 import { usePillDispenserProvisioning } from '../pillDispenser/usePillDispenserProvisioning';
 import {
   loadSavedPillDispenserWifi,
@@ -27,6 +28,8 @@ function signalLabel(rssi: number | null) {
 }
 
 const PillDispenserDeviceTab = () => {
+  const { user } = useAuth();
+  const isSenior = user?.role === 'SENIOR';
   const {
     isAvailable,
     devices,
@@ -175,15 +178,14 @@ const PillDispenserDeviceTab = () => {
 
   return (
     <>
+      {isSenior ? (
       <View style={styles.card}>
         <View style={styles.titleIcon}>
           <Icon name="medical-outline" size={22} color="#F28C28" />
         </View>
         <Text style={styles.cardTitle}>Pill Dispenser Wi-Fi Setup</Text>
         <Text style={styles.cardSubtitle}>
-          Connect to the dispenser over Bluetooth, then securely give it your
-          Wi-Fi details. The scan shows devices advertising the ESP-BluFi setup
-          service, even if their Bluetooth name changes.
+          Connect to the dispenser over Bluetooth, then securely give it your Wi-Fi details. The scan shows devices advertising the ESP-BluFi setup service, even if their Bluetooth name changes.
         </Text>
 
         <View style={styles.steps}>
@@ -348,36 +350,39 @@ const PillDispenserDeviceTab = () => {
 
         {step === 1 ? (
           <>
-            <TouchableOpacity
-              style={[
-                styles.primaryButton,
-                !isAvailable ? styles.disabled : null,
-              ]}
-              disabled={!isAvailable || isConnecting}
-              onPress={() => (isScanning ? stopScan() : startScan())}
-            >
-              {isScanning || isConnecting ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : (
-                <Icon name="bluetooth" size={18} color="#FFFFFF" />
-              )}
-              <Text style={styles.primaryButtonText}>
-                {isScanning
-                  ? 'Stop Scanning'
-                  : isConnecting
-                  ? 'Connecting…'
-                  : 'Scan Pill Dispensers'}
-              </Text>
-            </TouchableOpacity>
+            {isSenior ? (
+              <TouchableOpacity
+                style={[
+                  styles.primaryButton,
+                  !isAvailable ? styles.disabled : null,
+                ]}
+                disabled={!isAvailable || isConnecting}
+                onPress={() => (isScanning ? stopScan() : startScan())}
+              >
+                {isScanning || isConnecting ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Icon name="bluetooth" size={18} color="#FFFFFF" />
+                )}
+                <Text style={styles.primaryButtonText}>
+                  {isScanning
+                    ? 'Stop Scanning'
+                    : isConnecting
+                    ? 'Connecting…'
+                    : 'Scan Pill Dispensers'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
 
-            {devices.length === 0 && isScanning ? (
+            {isSenior && devices.length === 0 && isScanning ? (
               <Text style={styles.helperText}>
                 Keep the dispenser close, make sure its setup light is blinking,
                 and look for the BLE name printed in its manual or label.
               </Text>
             ) : null}
 
-            {devices.map(device => {
+            {isSenior
+              ? devices.map(device => {
               const selected = device.id === selectedDeviceId;
               return (
                 <View key={device.id} style={styles.deviceRow}>
@@ -422,7 +427,7 @@ const PillDispenserDeviceTab = () => {
                   </TouchableOpacity>
                 </View>
               );
-            })}
+            }) : null}
           </>
         ) : null}
 
@@ -606,6 +611,7 @@ const PillDispenserDeviceTab = () => {
           </View>
         ) : null}
       </View>
+      ) : null}
       <Modal
         visible={wifiEditorVisible}
         transparent

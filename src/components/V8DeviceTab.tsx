@@ -20,7 +20,8 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
   const normalizeId = (id?: string | null) => (id ?? '').trim().toLowerCase();
   const compactMac = (value?: string | null) => normalizeMacAddress(value);
   const navigation = useNavigation<NativeStackNavigationProp<DeviceStackParamList>>();
-  const { selectedSeniorHandBandMacs } = useAuth();
+  const { user, selectedSeniorHandBandMacs } = useAuth();
+  const isSenior = user?.role === 'SENIOR';
   const {
     bleState,
     devices,
@@ -179,15 +180,19 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
     <View style={styles.card}>
       <Text style={styles.cardTitle}>Hand Band Manager</Text>
       <Text style={styles.cardSubtitle}>
-        Dedicated Hand Band detection and connection flow, isolated from your current device manager.
+        {isSenior
+          ? 'Dedicated Hand Band detection and connection flow, isolated from your current device manager.'
+          : 'View and manage assigned Hand Band devices for the selected senior profile.'}
       </Text>
 
-      <TouchableOpacity style={styles.primaryButton} onPress={() => (isScanning ? stopScan() : startScan())}>
-        {isScanning ? <ActivityIndicator color="#fff" /> : <Icon name="bluetooth" size={18} color="#fff" />}
-        <Text style={styles.primaryButtonText}>
-          {isScanning ? 'Scanning Hand Band...' : bleState === 'PoweredOn' ? 'Scan Hand Band Devices' : 'Enable Bluetooth'}
-        </Text>
-      </TouchableOpacity>
+      {isSenior ? (
+        <TouchableOpacity style={styles.primaryButton} onPress={() => (isScanning ? stopScan() : startScan())}>
+          {isScanning ? <ActivityIndicator color="#fff" /> : <Icon name="bluetooth" size={18} color="#fff" />}
+          <Text style={styles.primaryButtonText}>
+            {isScanning ? 'Scanning Hand Band...' : bleState === 'PoweredOn' ? 'Scan Hand Band Devices' : 'Enable Bluetooth'}
+          </Text>
+        </TouchableOpacity>
+      ) : null}
 
       <TouchableOpacity
         style={[styles.clearSessionButton, clearingSession ? styles.disabled : null]}
@@ -207,12 +212,12 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
         </Text>
       </TouchableOpacity>
 
-      {scanError ? <Text style={styles.warningText}>{scanError}</Text> : null}
+      {isSenior && scanError ? <Text style={styles.warningText}>{scanError}</Text> : null}
       {selectedSeniorHandBandMacs.length > 0 ? (
         <View style={styles.assignedInfoBox}>
           <Text style={styles.assignedInfoTitle}>Selected senior hand bands</Text>
           <Text style={styles.assignedInfoText}>
-            {selectedSeniorHandBandMacs.length} assigned · {matchedDeviceIds.size} in scan range
+            {selectedSeniorHandBandMacs.length} assigned{isSenior ? ` · ${matchedDeviceIds.size} in scan range` : ''}
           </Text>
         </View>
       ) : null}
@@ -225,7 +230,7 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
         </>
       ) : null}
 
-      {otherHandBandDevices.length > 0 ? (
+      {isSenior && otherHandBandDevices.length > 0 ? (
         <>
           <Text style={styles.sectionTitle}>Other Hand Bands</Text>
           {otherHandBandDevices.map(renderDeviceRow)}
