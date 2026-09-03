@@ -454,13 +454,9 @@ const ECGMeasurementScreen = () => {
     requestDeviceMac,
   ]);
 
-  const ecgSeniorId =
-    user?.role === 'SENIOR'
-      ? user.user_id?.trim()
-      : user?.role === 'CARE_TAKER' || user?.role === 'GUARDIAN'
-      ? selectedSenior?.userId?.trim()
-      : '';
-  const canUseEcg = !!ecgSeniorId && selectedSeniorHandBandMacs.length > 0;
+  const isSeniorUser = user?.role === 'SENIOR';
+  const ecgSeniorId = isSeniorUser ? user.user_id?.trim() : '';
+  const canUseEcg = isSeniorUser && !!ecgSeniorId && selectedSeniorHandBandMacs.length > 0;
   const active = !!ecgSession && ACTIVE_PHASES.has(ecgSession.phase);
   const reportReady = ecgSession?.phase === 'completed';
   const sessionMode = ecgSession?.requestedMode ?? measurementMode;
@@ -660,14 +656,9 @@ const ECGMeasurementScreen = () => {
   );
 
   if (!canUseEcg) {
-    const needsSeniorSelection =
-      (user?.role === 'CARE_TAKER' || user?.role === 'GUARDIAN') &&
-      !selectedSenior?.userId;
-    const restrictionMessage = needsSeniorSelection
-      ? 'Select a senior before starting a waveform measurement.'
-      : ecgSeniorId
-      ? 'The selected senior does not have an assigned hand band.'
-      : 'ECG measurements are available to seniors, caretakers, and guardians.';
+    const restrictionMessage = !isSeniorUser
+      ? 'ECG measurements are only available when logged in as a Senior user.'
+      : 'An assigned hand band is required to record ECG measurements.';
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.restricted}>

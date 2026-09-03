@@ -135,11 +135,7 @@ const V8DeviceManageScreen = () => {
   const state = connectionStates[normalizeId(deviceId)] ?? 'disconnected';
   const connected = state === 'connected';
   const isSeniorUser = user?.role === 'SENIOR';
-  const canUseEcg =
-    selectedSeniorHandBandMacs.length > 0 &&
-    (isSeniorUser ||
-      ((user?.role === 'CARE_TAKER' || user?.role === 'GUARDIAN') &&
-        !!selectedSenior?.userId));
+  const canUseEcg = isSeniorUser && selectedSeniorHandBandMacs.length > 0;
 
   const [refreshingLive, setRefreshingLive] = useState(false);
   const [rangeVitalsFetching, setRangeVitalsFetching] = useState(false);

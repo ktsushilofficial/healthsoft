@@ -1346,11 +1346,9 @@ const HomeScreen = () => {
   const healthCardStatus = formatDeviceActivityStatus(activeDeviceRecord);
   const showAutomaticHandBandSync = user?.role === SENIOR_ROLE && selectedSeniorHandBandMacs.length > 0;
   const showHandBandEcg =
+    user?.role === SENIOR_ROLE &&
     !!activeDashboardSeniorId &&
-    selectedSeniorHandBandMacs.length > 0 &&
-    (user?.role === SENIOR_ROLE ||
-      user?.role === CARETAKER_ROLE ||
-      user?.role === GUARDIAN_ROLE);
+    selectedSeniorHandBandMacs.length > 0;
   const automaticSyncTitle = autoSyncStatus.phase === 'syncing'
     ? 'Syncing health data…'
     : autoSyncStatus.phase === 'waiting'
