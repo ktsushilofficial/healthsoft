@@ -17,10 +17,20 @@ import { isMacAddressLike } from '../utils/deviceAssignments';
 type VitalsSummaryRow = {
   recordDate: string;
   steps: number | null;
+  hrMin: number | null;
+  hrMax: number | null;
   hrAvg: number | null;
+  spo2Min: number | null;
+  spo2Max: number | null;
   spo2Avg: number | null;
+  tempMin: number | null;
+  tempMax: number | null;
   tempAvg: number | null;
+  systolicBpMin: number | null;
+  systolicBpMax: number | null;
   systolicBpAvg: number | null;
+  diastolicBpMin: number | null;
+  diastolicBpMax: number | null;
   diastolicBpAvg: number | null;
 };
 
@@ -108,6 +118,22 @@ function formatBloodPressure(row: VitalsSummaryRow | null): string {
     : 'NA';
 }
 
+function formatBloodPressureValues(
+  systolic: number | null | undefined,
+  diastolic: number | null | undefined,
+): string {
+  return systolic != null && diastolic != null
+    ? `${Math.round(systolic)}/${Math.round(diastolic)}`
+    : 'NA';
+}
+
+function formatMetricValue(
+  value: number | null | undefined,
+  fractionDigits = 0,
+): string {
+  return value != null ? value.toFixed(fractionDigits) : 'NA';
+}
+
 function ymdDate(value: string): Date | null {
   const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return null;
@@ -156,10 +182,20 @@ function normalizeSummaryRows(payload: unknown): VitalsSummaryRow[] {
       return {
         recordDate,
         steps: asNumber(row.steps),
+        hrMin: asNumber(row.hrMin) ?? asNumber(row.heartRateMin),
+        hrMax: asNumber(row.hrMax) ?? asNumber(row.heartRateMax),
         hrAvg: asNumber(row.hrAvg) ?? asNumber(row.heartRateAvg),
+        spo2Min: asNumber(row.spo2Min),
+        spo2Max: asNumber(row.spo2Max),
         spo2Avg: asNumber(row.spo2Avg),
+        tempMin: asNumber(row.tempMin) ?? asNumber(row.temperatureMinC),
+        tempMax: asNumber(row.tempMax) ?? asNumber(row.temperatureMaxC),
         tempAvg: asNumber(row.tempAvg) ?? asNumber(row.temperatureAvgC),
+        systolicBpMin: asNumber(row.systolicBpMin),
+        systolicBpMax: asNumber(row.systolicBpMax),
         systolicBpAvg: asNumber(row.systolicBpAvg),
+        diastolicBpMin: asNumber(row.diastolicBpMin),
+        diastolicBpMax: asNumber(row.diastolicBpMax),
         diastolicBpAvg: asNumber(row.diastolicBpAvg),
       };
     })
@@ -454,7 +490,9 @@ const ActivityScreen = () => {
               <Icon name="heart" size={24} color="#F28C28" />
             </View>
             <View style={styles.metricInfo}>
-              <Text style={styles.metricLabel}>{summaryPeriodLabel} Blood Pressure</Text>
+              <Text style={styles.metricLabel}>
+                {summaryPeriodLabel} Blood Pressure{isMultiDayRange ? '' : ' (mmHg)'}
+              </Text>
               {isMultiDayRange ? (
                 <View style={styles.metricRangeRow}>
                   <View style={styles.metricRangeItem}>
@@ -478,9 +516,33 @@ const ActivityScreen = () => {
                   </View>
                 </View>
               ) : (
-                <View style={styles.inlineRow}>
-                  <Text style={styles.metricValue}>{formatBloodPressure(singleDayRow)}</Text>
-                  <Text style={styles.metricUnit}>mmHg</Text>
+                <View style={styles.metricRangeRow}>
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>AVERAGE</Text>
+                    <Text style={styles.metricRangeValue}>
+                      {formatBloodPressure(singleDayRow)}
+                    </Text>
+                  </View>
+                  <View style={[styles.metricRangeDivider, styles.dailyRangeDivider]} />
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>HIGH</Text>
+                    <Text style={styles.metricRangeValue}>
+                      {formatBloodPressureValues(
+                        singleDayRow?.systolicBpMax,
+                        singleDayRow?.diastolicBpMax,
+                      )}
+                    </Text>
+                  </View>
+                  <View style={[styles.metricRangeDivider, styles.dailyRangeDivider]} />
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>LOW</Text>
+                    <Text style={styles.metricRangeValue}>
+                      {formatBloodPressureValues(
+                        singleDayRow?.systolicBpMin,
+                        singleDayRow?.diastolicBpMin,
+                      )}
+                    </Text>
+                  </View>
                 </View>
               )}
             </View>
@@ -513,9 +575,34 @@ const ActivityScreen = () => {
                   </View>
                 </View>
               ) : (
-                <Text style={styles.metricValue}>
-                  {singleDayRow?.spo2Avg != null ? `${Math.round(singleDayRow.spo2Avg)}%` : 'NA'}
-                </Text>
+                <View style={styles.metricRangeRow}>
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>AVERAGE</Text>
+                    <Text style={styles.metricRangeValue}>
+                      {singleDayRow?.spo2Avg != null
+                        ? `${Math.round(singleDayRow.spo2Avg)}%`
+                        : 'NA'}
+                    </Text>
+                  </View>
+                  <View style={[styles.metricRangeDivider, styles.dailyRangeDivider]} />
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>HIGH</Text>
+                    <Text style={styles.metricRangeValue}>
+                      {singleDayRow?.spo2Max != null
+                        ? `${Math.round(singleDayRow.spo2Max)}%`
+                        : 'NA'}
+                    </Text>
+                  </View>
+                  <View style={[styles.metricRangeDivider, styles.dailyRangeDivider]} />
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>LOW</Text>
+                    <Text style={styles.metricRangeValue}>
+                      {singleDayRow?.spo2Min != null
+                        ? `${Math.round(singleDayRow.spo2Min)}%`
+                        : 'NA'}
+                    </Text>
+                  </View>
+                </View>
               )}
             </View>
           </View>
@@ -553,11 +640,36 @@ const ActivityScreen = () => {
                   </View>
                 </View>
               ) : (
-                <View style={styles.inlineRow}>
-                  <Text style={styles.metricValue}>
-                    {singleDayRow?.hrAvg != null ? `${Math.round(singleDayRow.hrAvg)}` : 'NA'}
-                  </Text>
-                  <Text style={styles.metricUnit}>BPM</Text>
+                <View style={styles.metricRangeRow}>
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>AVERAGE</Text>
+                    <View style={styles.inlineRow}>
+                      <Text style={styles.metricRangeValue}>
+                        {formatMetricValue(singleDayRow?.hrAvg)}
+                      </Text>
+                      <Text style={styles.metricRangeUnit}>BPM</Text>
+                    </View>
+                  </View>
+                  <View style={[styles.metricRangeDivider, styles.dailyRangeDivider]} />
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>HIGH</Text>
+                    <View style={styles.inlineRow}>
+                      <Text style={styles.metricRangeValue}>
+                        {formatMetricValue(singleDayRow?.hrMax)}
+                      </Text>
+                      <Text style={styles.metricRangeUnit}>BPM</Text>
+                    </View>
+                  </View>
+                  <View style={[styles.metricRangeDivider, styles.dailyRangeDivider]} />
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>LOW</Text>
+                    <View style={styles.inlineRow}>
+                      <Text style={styles.metricRangeValue}>
+                        {formatMetricValue(singleDayRow?.hrMin)}
+                      </Text>
+                      <Text style={styles.metricRangeUnit}>BPM</Text>
+                    </View>
+                  </View>
                 </View>
               )}
             </View>
@@ -596,11 +708,36 @@ const ActivityScreen = () => {
                   </View>
                 </View>
               ) : (
-                <View style={styles.inlineRow}>
-                  <Text style={styles.metricValue}>
-                    {singleDayRow?.tempAvg != null ? `${singleDayRow.tempAvg.toFixed(1)}` : 'NA'}
-                  </Text>
-                  <Text style={styles.metricUnit}>°C</Text>
+                <View style={styles.metricRangeRow}>
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>AVERAGE</Text>
+                    <View style={styles.inlineRow}>
+                      <Text style={styles.metricRangeValue}>
+                        {formatMetricValue(singleDayRow?.tempAvg, 1)}
+                      </Text>
+                      <Text style={styles.metricRangeUnit}>°C</Text>
+                    </View>
+                  </View>
+                  <View style={[styles.metricRangeDivider, styles.dailyRangeDivider]} />
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>HIGH</Text>
+                    <View style={styles.inlineRow}>
+                      <Text style={styles.metricRangeValue}>
+                        {formatMetricValue(singleDayRow?.tempMax, 1)}
+                      </Text>
+                      <Text style={styles.metricRangeUnit}>°C</Text>
+                    </View>
+                  </View>
+                  <View style={[styles.metricRangeDivider, styles.dailyRangeDivider]} />
+                  <View style={styles.metricRangeItem}>
+                    <Text style={styles.metricRangeLabel}>LOW</Text>
+                    <View style={styles.inlineRow}>
+                      <Text style={styles.metricRangeValue}>
+                        {formatMetricValue(singleDayRow?.tempMin, 1)}
+                      </Text>
+                      <Text style={styles.metricRangeUnit}>°C</Text>
+                    </View>
+                  </View>
                 </View>
               )}
             </View>
@@ -813,6 +950,9 @@ const styles = StyleSheet.create({
     width: 1,
     backgroundColor: '#E6D9CC',
     marginHorizontal: 12,
+  },
+  dailyRangeDivider: {
+    marginHorizontal: 6,
   },
   metricRangeLabel: {
     color: '#9A6A3B',

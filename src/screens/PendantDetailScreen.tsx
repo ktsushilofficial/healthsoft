@@ -681,45 +681,47 @@ const PendantDetailScreen = () => {
 
         {!dashboardLoading && matchedDeviceRecord ? (
           <>
-            {/* Live Map Coordinates Card */}
-            <View style={styles.weatherCard}>
-              <View style={styles.weatherLeft}>
-                <View style={styles.weatherHeader}>
-                  <Icon name="location" size={18} color="#FF9500" />
-                  <Text style={styles.weatherLocation}>Last known position</Text>
-                </View>
-                <View style={styles.coordBlock}>
-                  <Text style={styles.coordLabel}>Latitude</Text>
-                  <Text style={[styles.coordValue, styles.coordValueLat]} selectable>
-                    {displayDeg(liveSnapshot.latitude)}
-                  </Text>
-                  <Text style={[styles.coordLabel, styles.coordLabelLon]}>Longitude</Text>
-                  <Text style={[styles.coordValue, styles.coordValueLon]} selectable>
-                    {displayDeg(liveSnapshot.longitude)}
-                  </Text>
-                </View>
-                <Text style={styles.weatherRangeTight}>{speedAndUpdatedLine}</Text>
-                <Text style={styles.weatherRange}>{displayStr(liveSnapshot.networkLabel)}</Text>
-                <TouchableOpacity
-                  style={[styles.mapButton, !hasLiveCoordinates && styles.mapButtonDisabled]}
-                  onPress={openLastPositionMap}
-                  activeOpacity={0.85}
-                  disabled={!hasLiveCoordinates}
-                >
-                  <Icon name="map-outline" size={18} color={hasLiveCoordinates ? '#FF9500' : '#C7C1BA'} />
-                  <View style={styles.mapButtonTextCol}>
-                    <Text style={[styles.mapButtonTitle, !hasLiveCoordinates && styles.mapButtonTitleDisabled]}>
-                      View on map
+            {/* Seniors must not see pendant location details. */}
+            {user?.role !== SENIOR_ROLE ? (
+              <View style={styles.weatherCard}>
+                <View style={styles.weatherLeft}>
+                  <View style={styles.weatherHeader}>
+                    <Icon name="location" size={18} color="#FF9500" />
+                    <Text style={styles.weatherLocation}>Last known position</Text>
+                  </View>
+                  <View style={styles.coordBlock}>
+                    <Text style={styles.coordLabel}>Latitude</Text>
+                    <Text style={[styles.coordValue, styles.coordValueLat]} selectable>
+                      {displayDeg(liveSnapshot.latitude)}
                     </Text>
-                    <Text style={styles.mapButtonSubtitle}>
-                      {hasLiveCoordinates ? `${MAP_PROVIDER_NAME} · marker at this point` : NA}
+                    <Text style={[styles.coordLabel, styles.coordLabelLon]}>Longitude</Text>
+                    <Text style={[styles.coordValue, styles.coordValueLon]} selectable>
+                      {displayDeg(liveSnapshot.longitude)}
                     </Text>
                   </View>
-                  <Icon name="chevron-forward" size={18} color="#C7C1BA" />
-                </TouchableOpacity>
+                  <Text style={styles.weatherRangeTight}>{speedAndUpdatedLine}</Text>
+                  <Text style={styles.weatherRange}>{displayStr(liveSnapshot.networkLabel)}</Text>
+                  <TouchableOpacity
+                    style={[styles.mapButton, !hasLiveCoordinates && styles.mapButtonDisabled]}
+                    onPress={openLastPositionMap}
+                    activeOpacity={0.85}
+                    disabled={!hasLiveCoordinates}
+                  >
+                    <Icon name="map-outline" size={18} color={hasLiveCoordinates ? '#FF9500' : '#C7C1BA'} />
+                    <View style={styles.mapButtonTextCol}>
+                      <Text style={[styles.mapButtonTitle, !hasLiveCoordinates && styles.mapButtonTitleDisabled]}>
+                        View on map
+                      </Text>
+                      <Text style={styles.mapButtonSubtitle}>
+                        {hasLiveCoordinates ? `${MAP_PROVIDER_NAME} · marker at this point` : NA}
+                      </Text>
+                    </View>
+                    <Icon name="chevron-forward" size={18} color="#C7C1BA" />
+                  </TouchableOpacity>
+                </View>
+                <Image source={locationThumb} style={styles.weatherImage} />
               </View>
-              <Image source={locationThumb} style={styles.weatherImage} />
-            </View>
+            ) : null}
 
             {/* Geofence status from the dashboard device DTO */}
             <View
