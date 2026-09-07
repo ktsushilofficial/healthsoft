@@ -1901,7 +1901,7 @@ const HomeScreen = () => {
               <View style={styles.syncedVitalsCard}>
                 <DailyVitalsTable
                   rows={syncedVitalsRows}
-                  title="Last synced to backend"
+                  title="Last synced to cloud"
                 />
               </View>
             ) : null}
