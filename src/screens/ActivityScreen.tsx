@@ -13,6 +13,7 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useAuth } from '../context/AuthContext';
 import { isMacAddressLike } from '../utils/deviceAssignments';
+import { addVitalsDays, startOfVitalsDay, vitalsDayStart } from '../utils/vitalsDay';
 
 type VitalsSummaryRow = {
   recordDate: string;
@@ -135,10 +136,7 @@ function formatMetricValue(
 }
 
 function ymdDate(value: string): Date | null {
-  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return null;
-  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00`);
-  return Number.isNaN(d.getTime()) ? null : d;
+  return vitalsDayStart(value);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -334,14 +332,12 @@ const ActivityScreen = () => {
   );
 
   const visibleRows = useMemo(() => {
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const yesterday = new Date(today);
-    yesterday.setDate(today.getDate() - 1);
-    const startOfWeek = new Date(today);
-    startOfWeek.setDate(today.getDate() - 6);
-    const lastOneMonthStart = new Date(today);
-    lastOneMonthStart.setDate(today.getDate() - 29);
+    // Day boundaries must sit on the same timeline as the row dates, which the
+    // backend files in UTC - see src/utils/vitalsDay.ts.
+    const today = startOfVitalsDay(new Date());
+    const yesterday = addVitalsDays(today, -1);
+    const startOfWeek = addVitalsDays(today, -6);
+    const lastOneMonthStart = addVitalsDays(today, -29);
 
     const inRange = (date: Date): boolean => {
       switch (selectedRange) {

@@ -20,6 +20,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
 import { useAuth } from '../context/AuthContext';
+import { todayVitalsDayKey } from '../utils/vitalsDay';
 import SeniorSelectionModal from '../components/SeniorSelectionModal';
 import GuardianWelcomeModal from '../components/GuardianWelcomeModal';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -408,13 +409,6 @@ function asString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function localDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
 function normalizeRecordDateKey(value: string): string | null {
   const match = value.match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})/);
   if (!match) return null;
@@ -464,7 +458,7 @@ function normalizeSummaryRows(payload: unknown): VitalsSummaryRow[] {
 }
 
 function findTodaySummaryRow(rows: VitalsSummaryRow[]): VitalsSummaryRow | null {
-  const todayKey = localDateKey(new Date());
+  const todayKey = todayVitalsDayKey();
   return rows.find(row => normalizeRecordDateKey(row.recordDate) === todayKey) ?? null;
 }
 
@@ -1653,7 +1647,7 @@ const HomeScreen = () => {
         return;
       }
 
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayVitalsDayKey();
       const todayRows = await buildDailyVitalsRange(today, today);
       const rowsToSync = todayRows.filter(row => row.date === today);
       if (rowsToSync.length === 0) {

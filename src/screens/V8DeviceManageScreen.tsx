@@ -18,6 +18,7 @@ import DateTimePicker, { type DateTimePickerEvent } from '@react-native-communit
 import { useAuth } from '../context/AuthContext';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import type { V8DailyVitalSummary } from '../v8/models';
+import { todayVitalsDayKey } from '../utils/vitalsDay';
 
 type RouteParams = {
   deviceId: string;
@@ -392,7 +393,7 @@ const V8DeviceManageScreen = () => {
   }, [deviceInfo.batteryPercent]);
 
   const todayMotionFallback = useMemo(() => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayVitalsDayKey();
     const all = Object.values(historyByType).flatMap(bucket => bucket.entries);
     const todayEntries = all.filter(entry => sampleDayKey(entry) === today);
     let steps: number | null = null;
@@ -446,7 +447,7 @@ const V8DeviceManageScreen = () => {
 
   const latestIsToday = useMemo(() => {
     if (!latestLiveData) return false;
-    return sampleDayKey(latestLiveData) === new Date().toISOString().slice(0, 10);
+    return sampleDayKey(latestLiveData) === todayVitalsDayKey();
   }, [latestLiveData]);
 
   const displaySteps = latestIsToday

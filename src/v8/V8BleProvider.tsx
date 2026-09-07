@@ -23,6 +23,7 @@ import type {
   V8WebVitalsSyncPayload,
 } from './models';
 import { parseV8Payload } from './parser';
+import { todayVitalsDayKey } from '../utils/vitalsDay';
 import {
   ECG_RECORDING_DURATION_MS,
   analyzeWaveformHeartRate,
@@ -2510,7 +2511,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         nextSyncAt: null,
         error: null,
       });
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayVitalsDayKey();
       const todayRows = await buildDailyVitalsRange(today, today);
       const rowsToSync = todayRows.filter(row => row.date === today);
       if (rowsToSync.length === 0) {
