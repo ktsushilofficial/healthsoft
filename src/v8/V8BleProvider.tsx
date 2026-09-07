@@ -47,6 +47,14 @@ type ParsedData = {
   payloadHex?: string;
 };
 
+type V8BleState =
+  | 'PoweredOn'
+  | 'PoweredOff'
+  | 'Unauthorized'
+  | 'Unsupported'
+  | 'Resetting'
+  | 'Unknown';
+
 export type V8AutoSyncStatus = {
   enabled: boolean;
   phase: 'disabled' | 'waiting' | 'scheduled' | 'syncing' | 'error';
@@ -56,7 +64,7 @@ export type V8AutoSyncStatus = {
 };
 
 type V8BleContextValue = {
-  bleState: 'PoweredOn' | 'Unsupported';
+  bleState: V8BleState;
   devices: V8Device[];
   isScanning: boolean;
   scanError: string | null;
@@ -69,6 +77,7 @@ type V8BleContextValue = {
   liveModeEnabled: boolean;
   ecgSession: V8EcgSession | null;
   autoSyncStatus: V8AutoSyncStatus;
+  openBluetoothSettings: () => Promise<void>;
   startScan: () => Promise<void>;
   stopScan: () => Promise<void>;
   connect: (deviceId: string) => Promise<void>;
@@ -127,6 +136,31 @@ const MAX_PERSISTED_ECG_SAMPLES = 20_000;
 const MIN_ECG_SAMPLE_RATE_HZ = 250;
 const LATE_ECG_RESULT_WINDOW_MS = 5_000;
 const normalizeId = (id?: string | null) => (id ?? '').trim().toLowerCase();
+const normalizeBluetoothState = (value: unknown): V8BleState => {
+  switch (value) {
+    case 'PoweredOn':
+    case 'PoweredOff':
+    case 'Unauthorized':
+    case 'Unsupported':
+    case 'Resetting':
+    case 'Unknown':
+      return value;
+    default:
+      return 'Unknown';
+  }
+};
+const isBluetoothAvailabilityError = (message: string | null): boolean => {
+  if (!message) return false;
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('bluetooth is off') ||
+    normalized.includes('bluetooth permission') ||
+    normalized.includes('bluetooth is unsupported') ||
+    normalized.includes('bluetooth is resetting') ||
+    normalized.includes('bluetooth state is unknown') ||
+    normalized.includes('bluetooth is unavailable')
+  );
+};
 const logV8Debug = (label: string, value?: unknown) => {
   if (!__DEV__) return;
   if (value === undefined) {
@@ -218,6 +252,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     getAssignedDevicesForSenior,
     selectedSeniorHandBandMacs,
   } = useAuth();
+  const [bleState, setBleState] = useState<V8BleState>(
+    isV8NativeAvailable ? 'Unknown' : 'Unsupported',
+  );
   const [devicesById, setDevicesById] = useState<Record<string, V8Device>>({});
   const [connectionStates, setConnectionStates] = useState<
     Record<string, V8ConnectionState>
@@ -278,6 +315,60 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   );
   const ecgCleanupSessionIdRef = useRef<string | null>(null);
 
+  const refreshBluetoothState = useCallback(async (): Promise<V8BleState> => {
+    const settleBluetoothOffUi = (state: V8BleState) => {
+      if (state === 'PoweredOn') return;
+      if (scanStopTimerRef.current) {
+        clearTimeout(scanStopTimerRef.current);
+        scanStopTimerRef.current = null;
+      }
+      setIsScanning(false);
+      setActiveDeviceId(null);
+      setLiveModeEnabled(false);
+      setConnectionStates(prev => {
+        let changed = false;
+        const next = Object.fromEntries(
+          Object.entries(prev).map(([deviceId, currentState]) => {
+            if (
+              currentState === 'connected' ||
+              currentState === 'connecting' ||
+              currentState === 'disconnecting'
+            ) {
+              changed = true;
+              return [deviceId, 'disconnected' as V8ConnectionState];
+            }
+            return [deviceId, currentState];
+          }),
+        );
+        return changed ? next : prev;
+      });
+    };
+
+    if (!v8Native?.getBluetoothState) {
+      setBleState('Unsupported');
+      settleBluetoothOffUi('Unsupported');
+      return 'Unsupported';
+    }
+    try {
+      const state = normalizeBluetoothState(await v8Native.getBluetoothState());
+      setBleState(prev => (prev === state ? prev : state));
+      settleBluetoothOffUi(state);
+      return state;
+    } catch {
+      setBleState(prev => (prev === 'Unknown' ? prev : 'Unknown'));
+      settleBluetoothOffUi('Unknown');
+      return 'Unknown';
+    }
+  }, []);
+
+  const openBluetoothSettings = useCallback(async () => {
+    if (!v8Native?.openBluetoothSettings) {
+      throw new Error('Bluetooth settings are unavailable on this platform.');
+    }
+    await v8Native.openBluetoothSettings();
+    await refreshBluetoothState();
+  }, [refreshBluetoothState]);
+
   useEffect(
     () => () => {
       if (scanStopTimerRef.current) {
@@ -293,8 +384,41 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   );
 
   useEffect(() => {
+    let active = true;
+    let appIsActive = AppState.currentState === 'active';
+    const checkBluetoothState = () => {
+      if (active && appIsActive) {
+        refreshBluetoothState().catch(() => {});
+      }
+    };
+
+    checkBluetoothState();
+    const interval = setInterval(checkBluetoothState, 3_000);
+    const appStateSubscription = AppState.addEventListener(
+      'change',
+      nextState => {
+        appIsActive = nextState === 'active';
+        if (appIsActive) {
+          checkBluetoothState();
+        }
+      },
+    );
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+      appStateSubscription.remove();
+    };
+  }, [refreshBluetoothState]);
+
+  useEffect(() => {
     historyByTypeRef.current = historyByType;
   }, [historyByType]);
+
+  useEffect(() => {
+    if (bleState !== 'PoweredOn') return;
+    setScanError(prev => (isBluetoothAvailabilityError(prev) ? null : prev));
+  }, [bleState]);
 
   useEffect(() => {
     ecgSessionRef.current = ecgSession;
@@ -818,6 +942,19 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       scanStopTimerRef.current = null;
     }
     try {
+      const currentBluetoothState = await refreshBluetoothState();
+      if (currentBluetoothState !== 'PoweredOn') {
+        setScanError(
+          currentBluetoothState === 'Unauthorized'
+            ? 'Bluetooth permission is not granted.'
+            : currentBluetoothState === 'Unsupported'
+              ? 'Bluetooth is unsupported on this device.'
+              : currentBluetoothState === 'Resetting'
+                ? 'Bluetooth is resetting. Try again in a moment.'
+                : 'Bluetooth is off.',
+        );
+        return;
+      }
       logV8Debug('Starting scan', {
         filters: ['v8', 'jstyle', 'band'],
         startedAt: new Date().toISOString(),
@@ -833,6 +970,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       }, 12000);
     } catch (error) {
       logV8Debug('Scan failed', error);
+      await refreshBluetoothState();
       setIsScanning(false);
       setScanError(
         error instanceof Error
@@ -840,7 +978,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           : 'Failed to scan for V8 devices.',
       );
     }
-  }, []);
+  }, [refreshBluetoothState]);
 
   const stopScan = useCallback(async () => {
     logV8Debug('Stopping scan manually');
@@ -909,6 +1047,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       try {
         await v8Native.connect(deviceId);
       } catch (error) {
+        await refreshBluetoothState();
         setConnectionStates(prev => ({
           ...prev,
           [normalizedTargetId]: 'error',
@@ -916,13 +1055,18 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         throw error;
       }
     },
-    [activeDeviceId, selectedSeniorHandBandMacs],
+    [activeDeviceId, refreshBluetoothState, selectedSeniorHandBandMacs],
   );
 
   const disconnect = useCallback(
     async (deviceId: string) => {
       if (!v8Native) return;
       const normalizedTargetId = normalizeId(deviceId);
+      setSuppressAutoConnectUntil(Date.now() + 60_000);
+      setLastConnectedDeviceId(null);
+      Keychain.resetGenericPassword({ service: V8_SESSION_SERVICE }).catch(
+        () => {},
+      );
       setConnectionStates(prev => ({
         ...prev,
         [normalizedTargetId]: 'disconnecting',
@@ -937,7 +1081,6 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         if (activeDeviceId === normalizedTargetId) {
           setActiveDeviceId(null);
         }
-        setSuppressAutoConnectUntil(Date.now() + 15000);
       }
     },
     [activeDeviceId],
@@ -2093,6 +2236,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   const ensureAutoConnect = useCallback(async () => {
     if (Date.now() < suppressAutoConnectUntil) return;
     if (!v8Native || !lastConnectedDeviceId) return;
+    if (bleState !== 'PoweredOn') return;
     if (isScanning) return;
     const rememberedMac = resolveConnectedHandBandMac(
       deviceInfo.mac,
@@ -2115,6 +2259,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     }
   }, [
     connect,
+    bleState,
     connectionStates,
     deviceInfo.mac,
     isScanning,
@@ -2142,6 +2287,17 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         nextSyncAt: null,
         error: null,
       });
+      return;
+    }
+
+    if (bleState !== 'PoweredOn') {
+      setAutoSyncStatus(prev => ({
+        ...prev,
+        enabled: true,
+        phase: 'waiting',
+        nextSyncAt: null,
+        error: null,
+      }));
       return;
     }
 
@@ -2239,6 +2395,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     }
   }, [
     activeDeviceId,
+    bleState,
     buildDailyVitalsRange,
     connectionStates,
     deviceInfo.mac,
@@ -2303,7 +2460,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   const devices = useMemo(() => Object.values(devicesById), [devicesById]);
 
   return {
-    bleState: isV8NativeAvailable ? 'PoweredOn' : 'Unsupported',
+    bleState,
     devices,
     isScanning,
     scanError,
@@ -2316,6 +2473,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     liveModeEnabled,
     ecgSession,
     autoSyncStatus,
+    openBluetoothSettings,
     startScan,
     stopScan,
     connect,

@@ -15,7 +15,9 @@ import android.bluetooth.le.ScanRecord
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.Intent
 import android.os.Build
+import android.provider.Settings
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.jstyle.blesdkv8.Util.BleSDK
@@ -55,6 +57,29 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
   private val cccUuid = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
   override fun getName(): String = "V8BleModule"
+
+  @ReactMethod
+  fun getBluetoothState(promise: Promise) {
+    val adapter = bluetoothAdapter
+    val state = when {
+      adapter == null -> "Unsupported"
+      adapter.isEnabled -> "PoweredOn"
+      else -> "PoweredOff"
+    }
+    promise.resolve(state)
+  }
+
+  @ReactMethod
+  fun openBluetoothSettings(promise: Promise) {
+    try {
+      val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      reactContext.startActivity(intent)
+      promise.resolve(true)
+    } catch (e: Exception) {
+      promise.reject("OPEN_BLUETOOTH_SETTINGS_FAILED", e.message, e)
+    }
+  }
 
   private fun emit(event: String, data: WritableMap) {
     reactContext

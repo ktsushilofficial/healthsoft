@@ -1,6 +1,7 @@
 #import "V8BleModule.h"
 #import <TargetConditionals.h>
 #import <CoreBluetooth/CoreBluetooth.h>
+#import <UIKit/UIKit.h>
 #if !TARGET_OS_SIMULATOR
 #import <V8SDK/BleSDK_V8.h>
 #import <V8SDK/DeviceData_V8.h>
@@ -79,6 +80,58 @@ RCT_EXPORT_MODULE();
     [NSString stringWithFormat:@"%@ is unavailable on iOS Simulator. Use a physical iPhone for V8 BLE commands.", method],
     nil
   );
+}
+
+RCT_REMAP_METHOD(getBluetoothState,
+                 getBluetoothStateWithResolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject) {
+  switch (self.central.state) {
+    case CBManagerStatePoweredOn:
+      resolve(@"PoweredOn");
+      break;
+    case CBManagerStatePoweredOff:
+      resolve(@"PoweredOff");
+      break;
+    case CBManagerStateUnauthorized:
+      resolve(@"Unauthorized");
+      break;
+    case CBManagerStateUnsupported:
+      resolve(@"Unsupported");
+      break;
+    case CBManagerStateResetting:
+      resolve(@"Resetting");
+      break;
+    case CBManagerStateUnknown:
+    default:
+      resolve(@"Unknown");
+      break;
+  }
+}
+
+RCT_REMAP_METHOD(openBluetoothSettings,
+                 openBluetoothSettingsWithResolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject) {
+  NSURL *settingsURL = [NSURL URLWithString:UIApplicationOpenSettingsURLString];
+  if (!settingsURL) {
+    reject(@"OPEN_BLUETOOTH_SETTINGS_FAILED", @"Unable to build settings URL", nil);
+    return;
+  }
+  dispatch_async(dispatch_get_main_queue(), ^{
+    UIApplication *application = [UIApplication sharedApplication];
+    if (![application canOpenURL:settingsURL]) {
+      reject(@"OPEN_BLUETOOTH_SETTINGS_FAILED", @"Unable to open Settings", nil);
+      return;
+    }
+    [application openURL:settingsURL
+                 options:@{}
+       completionHandler:^(BOOL success) {
+         if (success) {
+           resolve(@YES);
+         } else {
+           reject(@"OPEN_BLUETOOTH_SETTINGS_FAILED", @"Unable to open Settings", nil);
+         }
+       }];
+  });
 }
 
 RCT_REMAP_METHOD(startScan,

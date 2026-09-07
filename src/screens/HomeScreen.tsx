@@ -32,6 +32,8 @@ import {
 import {
   isMacAddressLike,
   isPillDispenserAssignedDevice,
+  normalizeMacAddress,
+  resolveConnectedHandBandMac,
   type SeniorAssignedDevice,
 } from '../utils/deviceAssignments';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
@@ -54,6 +56,8 @@ const CARETAKER_ROLE = 'CARE_TAKER';
 const GUARDIAN_ROLE = 'GUARDIAN';
 const NA = 'NA';
 const DASHBOARD_AUTO_REFRESH_MS = 30_000;
+
+const normalizeDeviceId = (id?: string | null) => (id ?? '').trim().toLowerCase();
 
 function displayStr(value: string | null | undefined): string {
   if (value == null || String(value).trim() === '') {
@@ -482,6 +486,36 @@ function batteryIconFor(
   return 'battery-dead';
 }
 
+function formatV8BluetoothState(state: string): string {
+  switch (state) {
+    case 'PoweredOn':
+      return 'On';
+    case 'PoweredOff':
+      return 'Off';
+    case 'Unauthorized':
+      return 'Permission needed';
+    case 'Resetting':
+      return 'Resetting';
+    case 'Unsupported':
+      return 'Unsupported';
+    default:
+      return 'Checking';
+  }
+}
+
+function isV8BluetoothAvailabilityMessage(message: string | null): boolean {
+  if (!message) return false;
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('bluetooth is off') ||
+    normalized.includes('bluetooth permission') ||
+    normalized.includes('bluetooth is unsupported') ||
+    normalized.includes('bluetooth is resetting') ||
+    normalized.includes('bluetooth state is unknown') ||
+    normalized.includes('bluetooth is unavailable')
+  );
+}
+
 function formatDeviceActivityStatus(record: SeniorDashboardDeviceRecord | null): string {
   if (!record) return NA;
 
@@ -525,10 +559,21 @@ const HomeScreen = () => {
   const navigation = useNavigation<any>();
   const {
     autoSyncStatus,
+    bleState: v8BleState,
+    devices: v8Devices,
+    isScanning: v8IsScanning,
+    scanError: v8ScanError,
     connectionStates: v8ConnectionStates,
+    connect: connectV8Device,
+    disconnect: disconnectV8Device,
     buildDailyVitalsRange,
     syncDailyVitalsToBackend,
+    startScan: startV8Scan,
+    stopScan: stopV8Scan,
+    clearSavedSession: clearV8SavedSession,
     ensureAutoConnect,
+    deviceInfo: v8DeviceInfo,
+    openBluetoothSettings: openV8BluetoothSettings,
   } = useV8DeviceManager();
   const {
     user,
@@ -559,6 +604,9 @@ const HomeScreen = () => {
   const [guardianDeviceAlarms, setGuardianDeviceAlarms] = useState<SeniorDashboardDeviceRecord[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [manualVitalsSyncing, setManualVitalsSyncing] = useState(false);
+  const [homeBandPreparingScan, setHomeBandPreparingScan] = useState(false);
+  const [homeBandConnectingDeviceId, setHomeBandConnectingDeviceId] = useState<string | null>(null);
+  const [homeBandDisconnectingDeviceId, setHomeBandDisconnectingDeviceId] = useState<string | null>(null);
   const [guardianWelcomeVisible, setGuardianWelcomeVisible] = useState(false);
   const shownGuardianWelcomeForUser = useRef<string | null>(null);
   const pendingSeniorPickerOpenRef = useRef(false);
@@ -1349,6 +1397,7 @@ const HomeScreen = () => {
     user?.role === SENIOR_ROLE &&
     !!activeDashboardSeniorId &&
     selectedSeniorHandBandMacs.length > 0;
+  const showHomeHandBandPairing = user?.role === SENIOR_ROLE && selectedSeniorHandBandMacs.length > 0;
   const automaticSyncTitle = autoSyncStatus.phase === 'syncing'
     ? 'Syncing health data…'
     : autoSyncStatus.phase === 'waiting'
@@ -1359,6 +1408,130 @@ const HomeScreen = () => {
   const automaticSyncDetail = `${formatSyncAge(autoSyncStatus.lastSyncedAt, nowTick)} · Every 15 minutes`;
   const handBandConnected = Object.values(v8ConnectionStates).some(state => state === 'connected');
   const syncNowBusy = manualVitalsSyncing || autoSyncStatus.phase === 'syncing';
+  const homeBandScanError =
+    v8BleState === 'PoweredOn' && isV8BluetoothAvailabilityMessage(v8ScanError)
+      ? null
+      : v8ScanError;
+  const assignedHandBandMacSet = useMemo(
+    () =>
+      new Set(
+        selectedSeniorHandBandMacs
+          .map(value => normalizeMacAddress(value))
+          .filter((value): value is string => !!value),
+      ),
+    [selectedSeniorHandBandMacs],
+  );
+  const homeMatchedHandBandIds = useMemo(() => {
+    const matched = new Set<string>();
+    v8Devices.forEach(device => {
+      const scannedMac = normalizeMacAddress(device.id);
+      if (scannedMac && assignedHandBandMacSet.has(scannedMac)) {
+        matched.add(device.id);
+      }
+    });
+
+    const connectedDevice = v8Devices.find(
+      device => v8ConnectionStates[normalizeDeviceId(device.id)] === 'connected',
+    );
+    const connectedMac = resolveConnectedHandBandMac(
+      v8DeviceInfo.mac,
+      connectedDevice?.id,
+    );
+    if (connectedMac && assignedHandBandMacSet.has(connectedMac) && connectedDevice) {
+      matched.add(connectedDevice.id);
+    }
+
+    return matched;
+  }, [assignedHandBandMacSet, v8ConnectionStates, v8DeviceInfo.mac, v8Devices]);
+  const homeAssignedHandBandDevices = useMemo(
+    () => v8Devices.filter(device => homeMatchedHandBandIds.has(device.id)),
+    [homeMatchedHandBandIds, v8Devices],
+  );
+
+  const handleHomeHandBandScan = useCallback(async () => {
+    if (homeBandPreparingScan) return;
+    if (v8IsScanning) {
+      await stopV8Scan();
+      return;
+    }
+
+    if (v8BleState !== 'PoweredOn') {
+      try {
+        await openV8BluetoothSettings();
+      } catch (error) {
+        Alert.alert(
+          'Open Bluetooth settings failed',
+          error instanceof Error ? error.message : 'Please open Bluetooth settings and turn Bluetooth on.',
+        );
+      }
+      return;
+    }
+
+    setHomeBandPreparingScan(true);
+    try {
+      await clearV8SavedSession();
+      await startV8Scan();
+    } catch (error) {
+      Alert.alert(
+        'Hand band scan failed',
+        error instanceof Error ? error.message : 'Unable to scan hand band devices right now.',
+      );
+    } finally {
+      setHomeBandPreparingScan(false);
+    }
+  }, [
+    clearV8SavedSession,
+    homeBandPreparingScan,
+    openV8BluetoothSettings,
+    startV8Scan,
+    stopV8Scan,
+    v8BleState,
+    v8IsScanning,
+  ]);
+
+  const handleHomeHandBandManage = useCallback(
+    async (device: (typeof v8Devices)[number]) => {
+      const deviceName = device.name ?? device.localName ?? 'Hand Band';
+      const state = v8ConnectionStates[normalizeDeviceId(device.id)] ?? 'disconnected';
+      if (state !== 'connected') {
+        setHomeBandConnectingDeviceId(device.id);
+        try {
+          await connectV8Device(device.id);
+        } catch (error) {
+          Alert.alert(
+            'Connection failed',
+            error instanceof Error ? error.message : 'Unable to connect the assigned hand band.',
+          );
+          return;
+        } finally {
+          setHomeBandConnectingDeviceId(null);
+        }
+      }
+
+      navigation.navigate('V8DeviceManage', {
+        deviceId: device.id,
+        deviceName,
+      });
+    },
+    [connectV8Device, navigation, v8ConnectionStates],
+  );
+
+  const handleHomeHandBandDisconnect = useCallback(
+    async (deviceId: string) => {
+      setHomeBandDisconnectingDeviceId(deviceId);
+      try {
+        await disconnectV8Device(deviceId);
+      } catch (error) {
+        Alert.alert(
+          'Disconnect failed',
+          error instanceof Error ? error.message : 'Unable to disconnect the hand band.',
+        );
+      } finally {
+        setHomeBandDisconnectingDeviceId(null);
+      }
+    },
+    [disconnectV8Device],
+  );
 
   const handleSyncVitalsNow = useCallback(async () => {
     if (manualVitalsSyncing || autoSyncStatus.phase === 'syncing') return;
@@ -1602,6 +1775,142 @@ const HomeScreen = () => {
                 )}
               </TouchableOpacity>
             </View>
+          </View>
+        )}
+
+        {showHomeHandBandPairing && (
+          <View style={styles.homeHandBandCard}>
+            <View style={styles.homeHandBandHeader}>
+              <View style={styles.homeHandBandIconWrap}>
+                <Icon name="watch-outline" size={20} color="#2563EB" />
+              </View>
+              <View style={styles.homeHandBandTitleCol}>
+                <Text style={styles.homeHandBandTitle}>Pair hand band</Text>
+                <Text style={styles.homeHandBandDetail}>
+                  {homeAssignedHandBandDevices.length > 0
+                    ? `${homeAssignedHandBandDevices.length} assigned device found`
+                    : v8IsScanning
+                      ? 'Finding assigned hand band nearby'
+                      : `${selectedSeniorHandBandMacs.length} assigned · scan to refresh`}
+                </Text>
+              </View>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={v8IsScanning ? 'Stop hand band scan' : 'Scan assigned hand band'}
+                activeOpacity={0.75}
+                disabled={homeBandPreparingScan}
+                onPress={handleHomeHandBandScan}
+                style={[styles.homeBandScanButton, homeBandPreparingScan && styles.homeBandButtonDisabled]}
+              >
+                {homeBandPreparingScan ? (
+                  <ActivityIndicator size="small" color="#1D4ED8" />
+                ) : (
+                  <>
+                    <Icon
+                      name={v8IsScanning ? 'stop' : v8BleState === 'PoweredOn' ? 'scan' : 'bluetooth'}
+                      size={13}
+                      color="#1D4ED8"
+                    />
+                    <Text style={styles.homeBandScanButtonText}>
+                      {v8IsScanning ? 'Stop' : v8BleState === 'PoweredOn' ? 'Scan' : 'Enable'}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.homeBandBluetoothStatus}>
+              <View
+                style={[
+                  styles.homeBandBluetoothDot,
+                  v8BleState === 'PoweredOn'
+                    ? styles.homeBandBluetoothDotOn
+                    : styles.homeBandBluetoothDotOff,
+                ]}
+              />
+              <Icon
+                name="bluetooth"
+                size={13}
+                color={v8BleState === 'PoweredOn' ? '#0B8A5B' : '#B45309'}
+              />
+              <Text
+                style={[
+                  styles.homeBandBluetoothText,
+                  v8BleState === 'PoweredOn'
+                    ? styles.homeBandBluetoothTextOn
+                    : styles.homeBandBluetoothTextOff,
+                ]}
+              >
+                Bluetooth {formatV8BluetoothState(v8BleState)}
+              </Text>
+            </View>
+
+            {homeBandScanError ? <Text style={styles.homeBandWarningText}>{homeBandScanError}</Text> : null}
+
+            {homeAssignedHandBandDevices.map(device => {
+              const state = v8ConnectionStates[normalizeDeviceId(device.id)] ?? 'disconnected';
+              const isConnecting = homeBandConnectingDeviceId === device.id || state === 'connecting';
+              const isDisconnecting = homeBandDisconnectingDeviceId === device.id || state === 'disconnecting';
+              const isConnected = state === 'connected';
+              const rowBusy = isConnecting || isDisconnecting;
+              return (
+                <View
+                  key={`home-hand-band-${device.id}`}
+                  style={[styles.homeBandDeviceRow, rowBusy && styles.homeBandButtonDisabled]}
+                >
+                  <View style={styles.homeBandDeviceTextCol}>
+                    <Text style={styles.homeBandDeviceName}>
+                      {device.name ?? device.localName ?? 'Hand Band'}
+                    </Text>
+                    <Text style={styles.homeBandDeviceMeta}>
+                      {isDisconnecting ? 'Disconnecting' : isConnected ? 'Connected' : 'Assigned to you'} · {device.id}
+                    </Text>
+                  </View>
+                  <View style={styles.homeBandDeviceActions}>
+                    {isConnected ? (
+                      <TouchableOpacity
+                        accessibilityRole="button"
+                        accessibilityLabel="Disconnect assigned hand band"
+                        activeOpacity={0.75}
+                        disabled={rowBusy}
+                        style={styles.homeBandDisconnectButton}
+                        onPress={() => {
+                          handleHomeHandBandDisconnect(device.id).catch(() => undefined);
+                        }}
+                      >
+                        {isDisconnecting ? (
+                          <ActivityIndicator size="small" color="#B42318" />
+                        ) : (
+                          <>
+                            <Icon name="close-circle-outline" size={14} color="#B42318" />
+                            <Text style={styles.homeBandDisconnectButtonText}>Disconnect</Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    ) : null}
+                    <TouchableOpacity
+                      accessibilityRole="button"
+                      accessibilityLabel="Open assigned hand band manager"
+                      activeOpacity={0.75}
+                      disabled={rowBusy}
+                      style={styles.homeBandManageButton}
+                      onPress={() => {
+                        handleHomeHandBandManage(device).catch(() => undefined);
+                      }}
+                    >
+                      {isConnecting ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <>
+                          <Text style={styles.homeBandManageButtonText}>Manage</Text>
+                          <Icon name="chevron-forward" size={14} color="#FFFFFF" />
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              );
+            })}
           </View>
         )}
 
@@ -1945,6 +2254,176 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
     color: '#0B8A5B',
+  },
+  homeHandBandCard: {
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 16,
+    marginTop: 4,
+    marginBottom: 8,
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderWidth: 1,
+    borderColor: '#DCEAFE',
+  },
+  homeHandBandHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  homeHandBandIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#EFF6FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  homeHandBandTitleCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  homeHandBandTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#1B2A4A',
+  },
+  homeHandBandDetail: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#8F8276',
+    marginTop: 3,
+  },
+  homeBandScanButton: {
+    minWidth: 76,
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    backgroundColor: '#F8FBFF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    marginLeft: 8,
+  },
+  homeBandButtonDisabled: {
+    opacity: 0.65,
+  },
+  homeBandScanButtonText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#1D4ED8',
+  },
+  homeBandBluetoothStatus: {
+    alignSelf: 'flex-start',
+    marginTop: 12,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#F8FBFF',
+    borderWidth: 1,
+    borderColor: '#E0ECFF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  homeBandBluetoothDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  homeBandBluetoothDotOn: {
+    backgroundColor: '#10B981',
+  },
+  homeBandBluetoothDotOff: {
+    backgroundColor: '#F59E0B',
+  },
+  homeBandBluetoothText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  homeBandBluetoothTextOn: {
+    color: '#0B8A5B',
+  },
+  homeBandBluetoothTextOff: {
+    color: '#B45309',
+  },
+  homeBandWarningText: {
+    color: '#B45309',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 10,
+  },
+  homeBandDeviceRow: {
+    marginTop: 12,
+    borderRadius: 16,
+    backgroundColor: '#F8FBFF',
+    borderWidth: 1,
+    borderColor: '#E0ECFF',
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  },
+  homeBandDeviceTextCol: {
+    flex: 1,
+    minWidth: 180,
+    marginRight: 10,
+  },
+  homeBandDeviceName: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#1B2A4A',
+  },
+  homeBandDeviceMeta: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#64748B',
+    marginTop: 2,
+    lineHeight: 17,
+  },
+  homeBandDeviceActions: {
+    alignItems: 'flex-end',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 8,
+  },
+  homeBandDisconnectButton: {
+    minWidth: 106,
+    minHeight: 32,
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: '#F7C7C2',
+    backgroundColor: '#FFF7F6',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  homeBandDisconnectButtonText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#B42318',
+  },
+  homeBandManageButton: {
+    minWidth: 86,
+    minHeight: 34,
+    borderRadius: 17,
+    paddingHorizontal: 12,
+    backgroundColor: '#2563EB',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  homeBandManageButtonText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
   ecgHomeCard: {
     backgroundColor: '#FFFFFF',

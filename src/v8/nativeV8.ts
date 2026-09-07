@@ -1,6 +1,8 @@
 import { NativeEventEmitter, NativeModules } from 'react-native';
 
 type NativeV8Module = {
+  getBluetoothState(): Promise<string>;
+  openBluetoothSettings(): Promise<boolean>;
   startScan(nameFilters: string[]): Promise<boolean>;
   stopScan(): Promise<boolean>;
   connect(deviceId: string): Promise<boolean>;
