@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -34,6 +34,7 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
     disconnect,
     clearSavedSession,
     ensureAutoConnect,
+    requestDeviceMac,
     deviceInfo,
   } = useV8DeviceManager();
   const [clearingSession, setClearingSession] = useState(false);
@@ -100,12 +101,16 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
     const connected = state === 'connected';
     const matchesSelectedSenior = matchedDeviceIds.has(device.id);
     const canVerifyMac = selectedSeniorHandBandMacs.length > 0;
+    const reportedMac = connected ? compactMac(deviceInfo.mac) : null;
+    const scannedMac = compactMac(device.id);
+    const idLabel = Platform.OS === 'ios' && !scannedMac ? 'iOS ID' : 'ID';
     return (
       <View key={device.id} style={styles.deviceRow}>
         <View style={styles.deviceInfo}>
           <Text style={styles.deviceName}>{device.name ?? device.localName ?? 'Hand Band'}</Text>
           <Text style={styles.deviceMeta}>{typeof device.rssi === 'number' ? `RSSI: ${device.rssi}` : 'Available'}</Text>
-          <Text style={styles.deviceMeta}>ID: {device.id}</Text>
+          <Text style={styles.deviceMeta}>{idLabel}: {device.id}</Text>
+          {reportedMac ? <Text style={styles.deviceMeta}>Reported MAC: {reportedMac}</Text> : null}
           {matchesSelectedSenior ? (
             <Text style={styles.matchChip}>Assigned to selected senior</Text>
           ) : null}
@@ -123,6 +128,7 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
               return;
             }
             await connect(device.id);
+            requestDeviceMac().catch(() => undefined);
             if (!matchesSelectedSenior) {
               return;
             }

@@ -14,6 +14,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Alert,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -573,6 +574,7 @@ const HomeScreen = () => {
     clearSavedSession: clearV8SavedSession,
     ensureAutoConnect,
     deviceInfo: v8DeviceInfo,
+    requestDeviceMac: requestV8DeviceMac,
     openBluetoothSettings: openV8BluetoothSettings,
   } = useV8DeviceManager();
   const {
@@ -1447,6 +1449,13 @@ const HomeScreen = () => {
     () => v8Devices.filter(device => homeMatchedHandBandIds.has(device.id)),
     [homeMatchedHandBandIds, v8Devices],
   );
+  const homeUnverifiedHandBandDevices = useMemo(
+    () =>
+      Platform.OS === 'ios'
+        ? v8Devices.filter(device => !homeMatchedHandBandIds.has(device.id))
+        : [],
+    [homeMatchedHandBandIds, v8Devices],
+  );
 
   const handleHomeHandBandScan = useCallback(async () => {
     if (homeBandPreparingScan) return;
@@ -1514,6 +1523,29 @@ const HomeScreen = () => {
       });
     },
     [connectV8Device, navigation, v8ConnectionStates],
+  );
+
+  const handleHomeHandBandVerify = useCallback(
+    async (device: (typeof v8Devices)[number]) => {
+      const state = v8ConnectionStates[normalizeDeviceId(device.id)] ?? 'disconnected';
+      if (state !== 'connected') {
+        setHomeBandConnectingDeviceId(device.id);
+        try {
+          await connectV8Device(device.id);
+        } catch (error) {
+          Alert.alert(
+            'Connection failed',
+            error instanceof Error ? error.message : 'Unable to connect the hand band for verification.',
+          );
+          return;
+        } finally {
+          setHomeBandConnectingDeviceId(null);
+        }
+      }
+
+      requestV8DeviceMac().catch(() => undefined);
+    },
+    [connectV8Device, requestV8DeviceMac, v8ConnectionStates],
   );
 
   const handleHomeHandBandDisconnect = useCallback(
@@ -1789,6 +1821,8 @@ const HomeScreen = () => {
                 <Text style={styles.homeHandBandDetail}>
                   {homeAssignedHandBandDevices.length > 0
                     ? `${homeAssignedHandBandDevices.length} assigned device found`
+                    : homeUnverifiedHandBandDevices.length > 0
+                      ? `${homeUnverifiedHandBandDevices.length} nearby · tap Verify`
                     : v8IsScanning
                       ? 'Finding assigned hand band nearby'
                       : `${selectedSeniorHandBandMacs.length} assigned · scan to refresh`}
@@ -1853,6 +1887,8 @@ const HomeScreen = () => {
               const isDisconnecting = homeBandDisconnectingDeviceId === device.id || state === 'disconnecting';
               const isConnected = state === 'connected';
               const rowBusy = isConnecting || isDisconnecting;
+              const reportedMac = isConnected ? normalizeMacAddress(v8DeviceInfo.mac) : null;
+              const reportedMacAssigned = !!reportedMac && assignedHandBandMacSet.has(reportedMac);
               return (
                 <View
                   key={`home-hand-band-${device.id}`}
@@ -1863,7 +1899,10 @@ const HomeScreen = () => {
                       {device.name ?? device.localName ?? 'Hand Band'}
                     </Text>
                     <Text style={styles.homeBandDeviceMeta}>
-                      {isDisconnecting ? 'Disconnecting' : isConnected ? 'Connected' : 'Assigned to you'} · {device.id}
+                      {isDisconnecting ? 'Disconnecting' : isConnected ? 'Connected' : 'Assigned to you'}
+                    </Text>
+                    <Text style={styles.homeBandDeviceMeta}>
+                      {reportedMac ? `MAC ${reportedMac}` : `ID ${device.id}`}
                     </Text>
                   </View>
                   <View style={styles.homeBandDeviceActions}>
@@ -1904,6 +1943,84 @@ const HomeScreen = () => {
                         <>
                           <Text style={styles.homeBandManageButtonText}>Manage</Text>
                           <Icon name="chevron-forward" size={14} color="#FFFFFF" />
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              );
+            })}
+
+            {homeUnverifiedHandBandDevices.map(device => {
+              const state = v8ConnectionStates[normalizeDeviceId(device.id)] ?? 'disconnected';
+              const isConnecting = homeBandConnectingDeviceId === device.id || state === 'connecting';
+              const isDisconnecting = homeBandDisconnectingDeviceId === device.id || state === 'disconnecting';
+              const isConnected = state === 'connected';
+              const rowBusy = isConnecting || isDisconnecting;
+              const reportedMac = isConnected ? normalizeMacAddress(v8DeviceInfo.mac) : null;
+              const reportedMacAssigned = !!reportedMac && assignedHandBandMacSet.has(reportedMac);
+              return (
+                <View
+                  key={`home-unverified-hand-band-${device.id}`}
+                  style={[styles.homeBandDeviceRow, rowBusy && styles.homeBandButtonDisabled]}
+                >
+                  <View style={styles.homeBandDeviceTextCol}>
+                    <Text style={styles.homeBandDeviceName}>
+                      {device.name ?? device.localName ?? 'Hand Band'}
+                    </Text>
+                    <Text style={styles.homeBandDeviceMeta}>
+                      {isDisconnecting
+                        ? 'Disconnecting'
+                        : reportedMacAssigned
+                          ? 'Assigned hand band'
+                          : reportedMac
+                            ? 'MAC not assigned here'
+                            : isConnected
+                              ? 'Checking MAC'
+                              : 'Nearby hand band'}
+                    </Text>
+                    <Text style={styles.homeBandDeviceMeta}>
+                      {reportedMac ? `Reported MAC ${reportedMac}` : `iOS ID ${device.id}`}
+                    </Text>
+                  </View>
+                  <View style={styles.homeBandDeviceActions}>
+                    {isConnected ? (
+                      <TouchableOpacity
+                        accessibilityRole="button"
+                        accessibilityLabel="Disconnect hand band"
+                        activeOpacity={0.75}
+                        disabled={rowBusy}
+                        style={styles.homeBandDisconnectButton}
+                        onPress={() => {
+                          handleHomeHandBandDisconnect(device.id).catch(() => undefined);
+                        }}
+                      >
+                        {isDisconnecting ? (
+                          <ActivityIndicator size="small" color="#B42318" />
+                        ) : (
+                          <>
+                            <Icon name="close-circle-outline" size={14} color="#B42318" />
+                            <Text style={styles.homeBandDisconnectButtonText}>Disconnect</Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    ) : null}
+                    <TouchableOpacity
+                      accessibilityRole="button"
+                      accessibilityLabel="Verify hand band MAC"
+                      activeOpacity={0.75}
+                      disabled={rowBusy}
+                      style={styles.homeBandManageButton}
+                      onPress={() => {
+                        handleHomeHandBandVerify(device).catch(() => undefined);
+                      }}
+                    >
+                      {isConnecting ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <>
+                          <Text style={styles.homeBandManageButtonText}>Verify</Text>
+                          <Icon name="checkmark-circle-outline" size={14} color="#FFFFFF" />
                         </>
                       )}
                     </TouchableOpacity>
