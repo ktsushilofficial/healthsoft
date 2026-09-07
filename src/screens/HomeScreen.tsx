@@ -1779,15 +1779,11 @@ const HomeScreen = () => {
             activeOpacity={0.9}
             onPress={() => navigation.navigate('Activity')}
           >
-            {/* Pill and updated time */}
             <View style={styles.healthCardHeader}>
               <View style={styles.activeNowBadge}>
                 <View style={styles.greenDot} />
                 <Text style={styles.activeNowText}>{healthCardStatus.toUpperCase()}</Text>
               </View>
-              <Text style={styles.updatedTimeText}>
-                {liveSnapshot.lastUpdatedLabel || NA}
-              </Text>
             </View>
 
             {/* Senior Name and Location */}
@@ -2705,11 +2701,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#10B981',
     letterSpacing: 0.5,
-  },
-  updatedTimeText: {
-    fontSize: 13,
-    color: '#AF9F92',
-    fontWeight: '500',
   },
   healthSeniorName: {
     fontSize: 26,
