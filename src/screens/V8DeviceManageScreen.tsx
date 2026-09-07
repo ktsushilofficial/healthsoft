@@ -19,6 +19,7 @@ import { useAuth } from '../context/AuthContext';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import type { V8DailyVitalSummary } from '../v8/models';
 import { todayVitalsDayKey } from '../utils/vitalsDay';
+import DailyVitalsTable from '../components/DailyVitalsTable';
 
 type RouteParams = {
   deviceId: string;
@@ -730,47 +731,7 @@ const V8DeviceManageScreen = () => {
               <Text style={s.emptyText}>No fetched vitals rows yet</Text>
             </View>
           ) : (
-            <View style={s.vitalsTableWrap}>
-              <Text style={s.vitalsTableTitle}>Daily Vitals Table</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                <View>
-                  <View style={s.vitalsHeaderRow}>
-                    <Text style={[s.vitalsHeaderCell, { minWidth: 94 }]}>Date</Text>
-                    <Text style={s.vitalsHeaderCell}>Steps</Text>
-                    <Text style={s.vitalsHeaderCell}>Dist</Text>
-                    <Text style={s.vitalsHeaderCell}>Kcal</Text>
-                    <Text style={s.vitalsHeaderCell}>HR Avg</Text>
-                    <Text style={s.vitalsHeaderCell}>HR Min</Text>
-                    <Text style={s.vitalsHeaderCell}>HR Max</Text>
-                    <Text style={s.vitalsHeaderCell}>SpO2 Avg</Text>
-                    <Text style={s.vitalsHeaderCell}>HRV Avg</Text>
-                    <Text style={s.vitalsHeaderCell}>BP Avg</Text>
-                    <Text style={s.vitalsHeaderCell}>Temp Avg</Text>
-                    <Text style={s.vitalsHeaderCell}>Stress Avg</Text>
-                  </View>
-                  {vitalsRowsForTable.map(row => (
-                    <View key={row.date} style={s.vitalsDataRow}>
-                      <Text style={[s.vitalsDataCell, { minWidth: 94 }]}>{row.date}</Text>
-                      <Text style={s.vitalsDataCell}>{fmtNum(row.steps, 0)}</Text>
-                      <Text style={s.vitalsDataCell}>{fmtNum(row.distanceKm, 2)}</Text>
-                      <Text style={s.vitalsDataCell}>{fmtNum(row.caloriesKcal, 0)}</Text>
-                      <Text style={s.vitalsDataCell}>{fmtNum(row.heartRateAvg, 0)}</Text>
-                      <Text style={s.vitalsDataCell}>{fmtNum(row.heartRateMin, 0)}</Text>
-                      <Text style={s.vitalsDataCell}>{fmtNum(row.heartRateMax, 0)}</Text>
-                      <Text style={s.vitalsDataCell}>{fmtNum(row.spo2Avg, 0)}</Text>
-                      <Text style={s.vitalsDataCell}>{fmtNum(row.hrvAvg, 0)}</Text>
-                      <Text style={s.vitalsDataCell}>
-                        {row.systolicBpAvg != null && row.diastolicBpAvg != null
-                          ? `${row.systolicBpAvg}/${row.diastolicBpAvg}`
-                          : '—'}
-                      </Text>
-                      <Text style={s.vitalsDataCell}>{fmtNum(row.temperatureAvgC, 1)}</Text>
-                      <Text style={s.vitalsDataCell}>{fmtNum(row.stressAvg, 0)}</Text>
-                    </View>
-                  ))}
-                </View>
-              </ScrollView>
-            </View>
+            <DailyVitalsTable rows={vitalsRowsForTable} sortDescending={false} />
           )}
         </View>
 
@@ -1007,52 +968,6 @@ const s = StyleSheet.create({
     textAlign: 'center',
   },
   iosDatePicker: { backgroundColor: '#FFFFFF' },
-  vitalsTableWrap: {
-    borderWidth: 1,
-    borderColor: '#E9E4DD',
-    borderRadius: 12,
-    marginTop: 12,
-    backgroundColor: '#FFFDFA',
-    paddingVertical: 8,
-  },
-  vitalsTableTitle: {
-    fontSize: 12,
-    color: '#5A524B',
-    fontWeight: '700',
-    marginHorizontal: 10,
-    marginBottom: 8,
-  },
-  vitalsHeaderRow: {
-    flexDirection: 'row',
-    backgroundColor: '#F7F2EA',
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: '#EEE5DA',
-    paddingVertical: 7,
-    paddingHorizontal: 6,
-  },
-  vitalsHeaderCell: {
-    minWidth: 72,
-    fontSize: 10,
-    color: '#7B5835',
-    fontWeight: '700',
-    textAlign: 'center',
-    paddingHorizontal: 4,
-  },
-  vitalsDataRow: {
-    flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3ECE3',
-    paddingVertical: 7,
-    paddingHorizontal: 6,
-  },
-  vitalsDataCell: {
-    minWidth: 72,
-    fontSize: 11,
-    color: '#2E2A27',
-    textAlign: 'center',
-    paddingHorizontal: 4,
-  },
   statusBanner: {
     marginHorizontal: 16,
     marginBottom: 12,

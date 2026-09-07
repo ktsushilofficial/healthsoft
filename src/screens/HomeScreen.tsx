@@ -21,6 +21,8 @@ import Icon from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
 import { useAuth } from '../context/AuthContext';
 import { todayVitalsDayKey } from '../utils/vitalsDay';
+import DailyVitalsTable from '../components/DailyVitalsTable';
+import type { V8DailyVitalSummary } from '../v8/models';
 import SeniorSelectionModal from '../components/SeniorSelectionModal';
 import GuardianWelcomeModal from '../components/GuardianWelcomeModal';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -644,6 +646,8 @@ const HomeScreen = () => {
   const [guardianDeviceAlarms, setGuardianDeviceAlarms] = useState<SeniorDashboardDeviceRecord[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [manualVitalsSyncing, setManualVitalsSyncing] = useState(false);
+  // Rows from the last manual sync, shown in the same table the Manage screen uses.
+  const [syncedVitalsRows, setSyncedVitalsRows] = useState<V8DailyVitalSummary[]>([]);
   const [homeBandPreparingScan, setHomeBandPreparingScan] = useState(false);
   const [homeBandConnectingDeviceId, setHomeBandConnectingDeviceId] = useState<string | null>(null);
   const [homeBandDisconnectingDeviceId, setHomeBandDisconnectingDeviceId] = useState<string | null>(null);
@@ -1655,6 +1659,7 @@ const HomeScreen = () => {
       }
 
       await syncDailyVitalsToBackend(today, today, rowsToSync);
+      setSyncedVitalsRows(rowsToSync);
       Alert.alert('Sync complete', 'Today\'s hand band health data is up to date.');
     } catch (error) {
       Alert.alert(
@@ -1854,7 +1859,8 @@ const HomeScreen = () => {
         )}
 
         {showAutomaticHandBandSync && (
-          <View style={styles.autoSyncCard}>
+          <>
+            <View style={styles.autoSyncCard}>
             <View style={styles.autoSyncIconWrap}>
               {autoSyncStatus.phase === 'syncing' ? (
                 <ActivityIndicator size="small" color="#10B981" />
@@ -1892,8 +1898,18 @@ const HomeScreen = () => {
                   </>
                 )}
               </TouchableOpacity>
+              </View>
             </View>
-          </View>
+
+            {syncedVitalsRows.length > 0 ? (
+              <View style={styles.syncedVitalsCard}>
+                <DailyVitalsTable
+                  rows={syncedVitalsRows}
+                  title="Last synced to backend"
+                />
+              </View>
+            ) : null}
+          </>
         )}
 
         {showHomeHandBandPairing && (
@@ -2384,6 +2400,16 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     flexDirection: 'row',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#DDF3E8',
+  },
+  syncedVitalsCard: {
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 16,
+    marginBottom: 8,
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingBottom: 12,
     borderWidth: 1,
     borderColor: '#DDF3E8',
   },
