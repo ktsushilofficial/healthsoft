@@ -11,7 +11,10 @@ const COLUMNS: Array<{
   wide?: boolean;
   value: (row: V8DailyVitalSummary) => string;
 }> = [
-  { key: 'date', label: 'Date', wide: true, value: row => row.date },
+  // Labelled UTC because that is genuinely the day these rows are filed under -
+  // see src/utils/vitalsDay.ts. Without it the date reads as a day behind for
+  // anyone east of Greenwich in their early morning.
+  { key: 'date', label: 'Date (UTC)', wide: true, value: row => row.date },
   { key: 'steps', label: 'Steps', value: row => fmtNum(row.steps, 0) },
   { key: 'dist', label: 'Dist', value: row => fmtNum(row.distanceKm, 2) },
   { key: 'kcal', label: 'Kcal', value: row => fmtNum(row.caloriesKcal, 0) },
