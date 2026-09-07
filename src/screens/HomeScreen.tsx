@@ -371,10 +371,16 @@ type VitalsSummaryRow = {
   recordDate: string;
   steps: number | null;
   hrAvg: number | null;
+  hrMin: number | null;
+  hrMax: number | null;
   spo2Avg: number | null;
   tempAvg: number | null;
   systolicBpAvg: number | null;
   diastolicBpAvg: number | null;
+  systolicBpMin: number | null;
+  systolicBpMax: number | null;
+  diastolicBpMin: number | null;
+  diastolicBpMax: number | null;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -386,6 +392,14 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function asNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+// Rows already stored by the backend can carry 0 for a vital, which is the band
+// reporting "not on the wrist" rather than a real reading. Treat those as
+// missing so the card never shows a low of 0 bpm.
+function asVital(value: unknown): number | null {
+  const parsed = asNumber(value);
+  return parsed != null && parsed > 0 ? parsed : null;
 }
 
 function asString(value: unknown): string | null {
@@ -432,11 +446,17 @@ function normalizeSummaryRows(payload: unknown): VitalsSummaryRow[] {
       return {
         recordDate,
         steps: asNumber(row.steps),
-        hrAvg: asNumber(row.hrAvg) ?? asNumber(row.heartRateAvg),
-        spo2Avg: asNumber(row.spo2Avg),
-        tempAvg: asNumber(row.tempAvg) ?? asNumber(row.temperatureAvgC),
-        systolicBpAvg: asNumber(row.systolicBpAvg),
-        diastolicBpAvg: asNumber(row.diastolicBpAvg),
+        hrAvg: asVital(row.hrAvg) ?? asVital(row.heartRateAvg),
+        hrMin: asVital(row.hrMin) ?? asVital(row.heartRateMin),
+        hrMax: asVital(row.hrMax) ?? asVital(row.heartRateMax),
+        spo2Avg: asVital(row.spo2Avg),
+        tempAvg: asVital(row.tempAvg) ?? asVital(row.temperatureAvgC),
+        systolicBpAvg: asVital(row.systolicBpAvg),
+        diastolicBpAvg: asVital(row.diastolicBpAvg),
+        systolicBpMin: asVital(row.systolicBpMin),
+        systolicBpMax: asVital(row.systolicBpMax),
+        diastolicBpMin: asVital(row.diastolicBpMin),
+        diastolicBpMax: asVital(row.diastolicBpMax),
       };
     })
     .filter((row): row is VitalsSummaryRow => row !== null)
@@ -459,16 +479,40 @@ function formatHomeMetric(value: number | null | undefined): string {
   return `${Math.round(value)}`;
 }
 
-function formatHomeBp(row: VitalsSummaryRow | null): string {
+function formatHomeBpPair(
+  systolic: number | null | undefined,
+  diastolic: number | null | undefined,
+): string {
   if (
-    row?.systolicBpAvg == null ||
-    row?.diastolicBpAvg == null ||
-    Number.isNaN(row.systolicBpAvg) ||
-    Number.isNaN(row.diastolicBpAvg)
+    systolic == null ||
+    diastolic == null ||
+    Number.isNaN(systolic) ||
+    Number.isNaN(diastolic)
   ) {
     return NA;
   }
-  return `${Math.round(row.systolicBpAvg)}/${Math.round(row.diastolicBpAvg)}`;
+  return `${Math.round(systolic)}/${Math.round(diastolic)}`;
+}
+
+// The home card reports the day's extremes rather than an average, so a spike or
+// dip is visible at a glance. There is deliberately no fall back to the average
+// here: /api/v1/vitals/summary always returns min/max, so a missing one means
+// the day has no usable reading, and labelling an average as "H"/"L" would
+// misreport it.
+function formatHomeHeartHigh(row: VitalsSummaryRow | null): string {
+  return formatHomeMetric(row?.hrMax);
+}
+
+function formatHomeHeartLow(row: VitalsSummaryRow | null): string {
+  return formatHomeMetric(row?.hrMin);
+}
+
+function formatHomeBpHigh(row: VitalsSummaryRow | null): string {
+  return formatHomeBpPair(row?.systolicBpMax, row?.diastolicBpMax);
+}
+
+function formatHomeBpLow(row: VitalsSummaryRow | null): string {
+  return formatHomeBpPair(row?.systolicBpMin, row?.diastolicBpMin);
 }
 
 function formatBatteryPercent(value: number | null | undefined): string {
@@ -574,7 +618,7 @@ const HomeScreen = () => {
     clearSavedSession: clearV8SavedSession,
     ensureAutoConnect,
     deviceInfo: v8DeviceInfo,
-    requestDeviceMac: requestV8DeviceMac,
+    ensureDeviceMac: ensureV8DeviceMac,
     openBluetoothSettings: openV8BluetoothSettings,
   } = useV8DeviceManager();
   const {
@@ -1390,9 +1434,11 @@ const HomeScreen = () => {
       target: caretakerHeaderSenior.firstName || 'your loved one',
     };
   }, [caretakerHeaderSenior.firstName, user?.first_name, user?.role]);
-  const homeHeartValue = formatHomeMetric(todayVitals?.hrAvg);
+  const homeHeartHigh = formatHomeHeartHigh(todayVitals);
+  const homeHeartLow = formatHomeHeartLow(todayVitals);
   const homeStepsValue = formatHomeSteps(todayVitals?.steps);
-  const homeBpValue = formatHomeBp(todayVitals);
+  const homeBpHigh = formatHomeBpHigh(todayVitals);
+  const homeBpLow = formatHomeBpLow(todayVitals);
   const healthCardStatus = formatDeviceActivityStatus(activeDeviceRecord);
   const showAutomaticHandBandSync = user?.role === SENIOR_ROLE && selectedSeniorHandBandMacs.length > 0;
   const showHandBandEcg =
@@ -1465,6 +1511,24 @@ const HomeScreen = () => {
     }
 
     if (v8BleState !== 'PoweredOn') {
+      // iOS has no public deep link to Settings > Bluetooth; opening Settings
+      // lands on this app's permission page, which cannot switch the radio on.
+      // Only send the user there when the app's permission is what is missing.
+      if (Platform.OS === 'ios' && v8BleState !== 'Unauthorized') {
+        if (v8BleState === 'Unsupported') {
+          Alert.alert(
+            'Bluetooth unavailable',
+            'This device does not support Bluetooth, so the hand band cannot be paired here.',
+          );
+        } else {
+          Alert.alert(
+            'Turn on Bluetooth',
+            'Bluetooth is off. Open Control Center and tap the Bluetooth icon, or turn it on in Settings > Bluetooth, then tap Scan again.',
+          );
+        }
+        return;
+      }
+
       try {
         await openV8BluetoothSettings();
       } catch (error) {
@@ -1543,9 +1607,19 @@ const HomeScreen = () => {
         }
       }
 
-      requestV8DeviceMac().catch(() => undefined);
+      // iOS cannot read a MAC from CoreBluetooth, and the native connect()
+      // resolves as soon as the connection is requested - not when the band is
+      // ready for commands. Poll for the MAC instead of firing one request that
+      // silently fails against a peripheral that is not writable yet.
+      const mac = await ensureV8DeviceMac();
+      if (!mac) {
+        Alert.alert(
+          'Could not read hand band',
+          'Connected, but the hand band did not report its MAC address. Keep it close to the phone and tap Verify again.',
+        );
+      }
     },
-    [connectV8Device, requestV8DeviceMac, v8ConnectionStates],
+    [connectV8Device, ensureV8DeviceMac, v8ConnectionStates],
   );
 
   const handleHomeHandBandDisconnect = useCallback(
@@ -1734,11 +1808,19 @@ const HomeScreen = () => {
                 <View style={[styles.vitalColIconWrap, styles.vitalIconHeartBg]}>
                   <Icon name="heart" size={20} color="#EF4444" />
                 </View>
-                <Text style={styles.vitalColVal}>
-                  {homeHeartValue}
-                  {homeHeartValue !== NA ? <Text style={styles.vitalColUnit}> bpm</Text> : null}
-                </Text>
-                <Text style={styles.vitalColLabel}>HEART</Text>
+                <View style={styles.vitalColValBlock}>
+                  <Text style={styles.vitalColVal}>
+                    {homeHeartHigh !== NA ? <Text style={styles.vitalColRangeTag}>H </Text> : null}
+                    {homeHeartHigh}
+                  </Text>
+                  {homeHeartLow !== NA ? (
+                    <Text style={styles.vitalColSubVal}>
+                      <Text style={styles.vitalColRangeTag}>L </Text>
+                      {homeHeartLow}
+                    </Text>
+                  ) : null}
+                </View>
+                <Text style={styles.vitalColLabel}>HEART BPM</Text>
               </View>
 
               {/* STEPS COLUMN */}
@@ -1746,9 +1828,11 @@ const HomeScreen = () => {
                 <View style={[styles.vitalColIconWrap, styles.vitalIconStepsBg]}>
                   <Icon name="walk" size={20} color="#10B981" />
                 </View>
-                <Text style={styles.vitalColVal}>
-                  {homeStepsValue}
-                </Text>
+                <View style={styles.vitalColValBlock}>
+                  <Text style={styles.vitalColVal}>
+                    {homeStepsValue}
+                  </Text>
+                </View>
                 <Text style={styles.vitalColLabel}>STEPS</Text>
               </View>
 
@@ -1757,11 +1841,19 @@ const HomeScreen = () => {
                 <View style={[styles.vitalColIconWrap, styles.vitalIconDoseBg]}>
                   <Icon name="fitness" size={20} color="#3B82F6" />
                 </View>
-                <Text style={styles.vitalColVal}>
-                  {homeBpValue}
-                  {homeBpValue !== NA ? <Text style={styles.vitalColUnit}> mmHg</Text> : null}
-                </Text>
-                <Text style={styles.vitalColLabel}>BP</Text>
+                <View style={styles.vitalColValBlock}>
+                  <Text style={styles.vitalColVal}>
+                    {homeBpHigh !== NA ? <Text style={styles.vitalColRangeTag}>H </Text> : null}
+                    {homeBpHigh}
+                  </Text>
+                  {homeBpLow !== NA ? (
+                    <Text style={styles.vitalColSubVal}>
+                      <Text style={styles.vitalColRangeTag}>L </Text>
+                      {homeBpLow}
+                    </Text>
+                  ) : null}
+                </View>
+                <Text style={styles.vitalColLabel}>BP MMHG</Text>
               </View>
             </View>
           </TouchableOpacity>
@@ -2640,15 +2732,26 @@ const styles = StyleSheet.create({
   vitalIconDoseBg: {
     backgroundColor: '#EFF6FF',
   },
+  vitalColValBlock: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+  },
   vitalColVal: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '800',
     color: '#1B2A4A',
   },
-  vitalColUnit: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#8F8276',
+  vitalColSubVal: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#6B7A99',
+    marginTop: 2,
+  },
+  vitalColRangeTag: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#AF9F92',
   },
   vitalColLabel: {
     fontSize: 10,

@@ -85,6 +85,7 @@ type V8BleContextValue = {
   requestDeviceVersion: () => Promise<void>;
   requestBattery: () => Promise<void>;
   requestDeviceMac: () => Promise<void>;
+  ensureDeviceMac: (timeoutMs?: number) => Promise<string | null>;
   requestDeviceName: () => Promise<void>;
   requestDeviceTime: () => Promise<void>;
   syncDeviceTime: () => Promise<void>;
@@ -244,6 +245,72 @@ const diffDaysYmdUtc = (fromYmd: string, toYmd: string): number => {
   return Math.max(0, Math.floor((toMs - fromMs) / (24 * 60 * 60 * 1000)));
 };
 
+const todayYmdUtc = (): string => new Date().toISOString().slice(0, 10);
+
+// The band reports 0 for heart rate, SpO2, blood pressure and temperature while
+// it is off the wrist. Those are "no reading", not measurements, and counting
+// them sinks the day's min and average (a real day came back as hrMin 0 /
+// hrAvg 15 against an hrMax of 58).
+const isPositiveVital = (value: number | null | undefined): value is number =>
+  value != null && Number.isFinite(value) && value > 0;
+
+// The band replies to one command at a time; anything written while it is still
+// answering is dropped without an error.
+const DEVICE_COMMAND_SPACING_MS = 400;
+// iOS never exposes a peripheral's MAC through CoreBluetooth, so it has to be
+// read back over the vendor protocol. native connect() resolves as soon as the
+// connection is *requested*, so an immediate request lands before the write
+// characteristic exists and is rejected as NOT_CONNECTED.
+const DEVICE_MAC_ATTEMPT_WINDOW_MS = 1500;
+
+// Today's row must never reach the backend with nulls: fall back to the latest
+// live sample for any gap the history aggregation left open, then to 0.
+const fillTodayVitalSummaryGaps = (
+  summary: V8WebVitalSummary,
+  live: V8VitalSample | null,
+): V8WebVitalSummary => {
+  const pick = (value: number | null, liveValue: number | null | undefined) =>
+    value ?? liveValue ?? 0;
+
+  return {
+    recordDate: summary.recordDate,
+    steps: pick(summary.steps, live?.steps),
+    distanceKm: pick(summary.distanceKm, live?.distanceKm),
+    caloriesKcal: pick(summary.caloriesKcal, live?.caloriesKcal),
+    exerciseMinutes: pick(summary.exerciseMinutes, live?.exerciseMinutes),
+    activeMinutes: pick(summary.activeMinutes, live?.activeMinutes),
+    goalPercent: pick(summary.goalPercent, live?.goalPercent),
+    hrMin: pick(summary.hrMin, live?.heartRate),
+    hrMax: pick(summary.hrMax, live?.heartRate),
+    hrAvg: pick(summary.hrAvg, live?.heartRate),
+    hrLatest: pick(summary.hrLatest, live?.heartRate),
+    spo2Min: pick(summary.spo2Min, live?.spo2),
+    spo2Max: pick(summary.spo2Max, live?.spo2),
+    spo2Avg: pick(summary.spo2Avg, live?.spo2),
+    spo2Latest: pick(summary.spo2Latest, live?.spo2),
+    hrvMin: pick(summary.hrvMin, live?.hrv),
+    hrvMax: pick(summary.hrvMax, live?.hrv),
+    hrvAvg: pick(summary.hrvAvg, live?.hrv),
+    hrvLatest: pick(summary.hrvLatest, live?.hrv),
+    systolicBpMin: pick(summary.systolicBpMin, live?.systolicBp),
+    systolicBpMax: pick(summary.systolicBpMax, live?.systolicBp),
+    systolicBpAvg: pick(summary.systolicBpAvg, live?.systolicBp),
+    systolicBpLatest: pick(summary.systolicBpLatest, live?.systolicBp),
+    diastolicBpMin: pick(summary.diastolicBpMin, live?.diastolicBp),
+    diastolicBpMax: pick(summary.diastolicBpMax, live?.diastolicBp),
+    diastolicBpAvg: pick(summary.diastolicBpAvg, live?.diastolicBp),
+    diastolicBpLatest: pick(summary.diastolicBpLatest, live?.diastolicBp),
+    tempMin: pick(summary.tempMin, live?.temperatureC),
+    tempMax: pick(summary.tempMax, live?.temperatureC),
+    tempAvg: pick(summary.tempAvg, live?.temperatureC),
+    tempLatest: pick(summary.tempLatest, live?.temperatureC),
+    stressMin: pick(summary.stressMin, live?.stress),
+    stressMax: pick(summary.stressMax, live?.stress),
+    stressAvg: pick(summary.stressAvg, live?.stress),
+    stressLatest: pick(summary.stressLatest, live?.stress),
+  };
+};
+
 const useV8BleManagerInternal = (): V8BleContextValue => {
   const {
     user,
@@ -269,6 +336,8 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     Record<string, V8HistoryBucket>
   >({});
   const historyByTypeRef = useRef<Record<string, V8HistoryBucket>>({});
+  const latestLiveDataRef = useRef<V8VitalSample | null>(null);
+  const deviceInfoRef = useRef<V8DeviceInfo | null>(null);
   const [deviceInfo, setDeviceInfo] = useState<V8DeviceInfo>({
     imei: null,
     deviceName: null,
@@ -414,6 +483,14 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   useEffect(() => {
     historyByTypeRef.current = historyByType;
   }, [historyByType]);
+
+  useEffect(() => {
+    latestLiveDataRef.current = latestLiveData;
+  }, [latestLiveData]);
+
+  useEffect(() => {
+    deviceInfoRef.current = deviceInfo;
+  }, [deviceInfo]);
 
   useEffect(() => {
     if (bleState !== 'PoweredOn') return;
@@ -621,13 +698,28 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
             accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
           },
         ).catch(() => {});
-        // Prime visible device info after successful connection.
-        v8Native?.requestBattery().catch(() => {});
-        v8Native?.requestDeviceVersion().catch(() => {});
-        v8Native?.requestDeviceMac().catch(() => {});
-        v8Native?.requestDeviceName().catch(() => {});
-        v8Native?.requestDeviceTime().catch(() => {});
-        v8Native?.requestPersonalInfo().catch(() => {});
+        // Prime visible device info after successful connection. The band
+        // answers one command at a time and silently drops anything that
+        // arrives while it is still replying, so these must be spaced out
+        // rather than fired as a burst - the MAC used to be lost this way.
+        const primeDeviceInfo = async () => {
+          const native = v8Native;
+          if (!native) return;
+          const primers: Array<() => Promise<unknown>> = [
+            () => native.requestDeviceMac(),
+            () => native.requestBattery(),
+            () => native.requestDeviceVersion(),
+            () => native.requestDeviceTime(),
+            () => native.requestPersonalInfo(),
+          ];
+          for (const primer of primers) {
+            await primer().catch(() => {});
+            await new Promise<void>(resolve =>
+              setTimeout(resolve, DEVICE_COMMAND_SPACING_MS),
+            );
+          }
+        };
+        primeDeviceInfo().catch(() => {});
       }
     });
 
@@ -1148,6 +1240,37 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     if (!v8Native) return;
     await v8Native.requestDeviceMac();
   }, []);
+  // Ask for the MAC and wait for the reply packet, retrying until the timeout.
+  // Covers both failure modes: the request being sent before the peripheral is
+  // writable, and the band dropping a command it was too busy to answer.
+  const ensureDeviceMac = useCallback(
+    async (timeoutMs = 10000): Promise<string | null> => {
+      if (!v8Native) return null;
+      const readMac = () =>
+        normalizeMacAddress(deviceInfoRef.current?.mac ?? null);
+
+      const deadline = Date.now() + timeoutMs;
+      let existing = readMac();
+      while (!existing && Date.now() < deadline) {
+        try {
+          await v8Native.requestDeviceMac();
+        } catch {
+          // Not writable yet (or the band is busy) - wait and try again.
+        }
+        const attemptDeadline = Math.min(
+          deadline,
+          Date.now() + DEVICE_MAC_ATTEMPT_WINDOW_MS,
+        );
+        while (Date.now() < attemptDeadline) {
+          existing = readMac();
+          if (existing) break;
+          await new Promise<void>(resolve => setTimeout(resolve, 100));
+        }
+      }
+      return existing;
+    },
+    [],
+  );
   const requestDeviceName = useCallback(async () => {
     if (!v8Native) return;
     await v8Native.requestDeviceName();
@@ -1772,7 +1895,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           const agg = ensure(day);
           const sampleTs = sample.receivedAt ?? 0;
 
-          if (sample.heartRate != null) {
+          if (isPositiveVital(sample.heartRate)) {
             agg.hrSum += sample.heartRate;
             agg.hrCount += 1;
             agg.hrMin =
@@ -1788,7 +1911,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
               agg.hrLatest = sample.heartRate;
             }
           }
-          if (sample.spo2 != null) {
+          if (isPositiveVital(sample.spo2)) {
             agg.spo2Sum += sample.spo2;
             agg.spo2Count += 1;
             agg.spo2Min =
@@ -1804,7 +1927,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
               agg.spo2Latest = sample.spo2;
             }
           }
-          if (sample.hrv != null) {
+          if (isPositiveVital(sample.hrv)) {
             agg.hrvSum += sample.hrv;
             agg.hrvCount += 1;
             agg.hrvMin =
@@ -1820,7 +1943,10 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
               agg.hrvLatest = sample.hrv;
             }
           }
-          if (sample.systolicBp != null && sample.diastolicBp != null) {
+          if (
+            isPositiveVital(sample.systolicBp) &&
+            isPositiveVital(sample.diastolicBp)
+          ) {
             agg.sysSum += sample.systolicBp;
             agg.diaSum += sample.diastolicBp;
             agg.bpCount += 1;
@@ -1846,7 +1972,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
               agg.diaLatest = sample.diastolicBp;
             }
           }
-          if (sample.temperatureC != null) {
+          if (isPositiveVital(sample.temperatureC)) {
             agg.tempSum += sample.temperatureC;
             agg.tempCount += 1;
             agg.tempMin =
@@ -1862,7 +1988,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
               agg.tempLatest = sample.temperatureC;
             }
           }
-          if (sample.stress != null) {
+          if (isPositiveVital(sample.stress)) {
             agg.stressSum += sample.stress;
             agg.stressCount += 1;
             agg.stressMin =
@@ -1979,13 +2105,15 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       if (!seniorId) {
         throw new Error('Senior ID is required before syncing vitals.');
       }
-      const connectedMac = resolveConnectedHandBandMac(
-        deviceInfo.mac,
-        activeDeviceId,
-      );
+      // On iOS activeDeviceId is a CoreBluetooth UUID, never a MAC, so the MAC
+      // has to come back over the vendor protocol. Ask for it rather than
+      // failing the sync outright when it has not arrived yet.
+      const connectedMac =
+        resolveConnectedHandBandMac(deviceInfo.mac, activeDeviceId) ??
+        (await ensureDeviceMac().catch(() => null));
       if (!connectedMac) {
         throw new Error(
-          'Connected Hand Band MAC is unavailable. Open Manage and refresh device info.',
+          'Connected Hand Band MAC is unavailable. Keep the band close to the phone and try again.',
         );
       }
 
@@ -2117,12 +2245,23 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         },
       );
 
+      // Today's row is still being filled in as the day progresses, so any gap
+      // left by the history aggregation is backfilled from the latest live
+      // sample, and anything still missing is sent as 0 rather than null.
+      const today = todayYmdUtc();
+      const liveFallback = latestLiveDataRef.current;
+      const normalizedSummaries = effectiveSummaries.map(summary =>
+        summary.recordDate === today
+          ? fillTodayVitalSummaryGaps(summary, liveFallback)
+          : summary,
+      );
+
       const webPayload: V8WebVitalsSyncPayload = {
         deviceUUID,
         syncDays,
         syncFrom: syncFromComputed,
         syncTo: toDate,
-        vitalSummaries: effectiveSummaries,
+        vitalSummaries: normalizedSummaries,
       };
 
       console.log('[V8 Sync Debug] Sync request info:', {
@@ -2166,6 +2305,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     [
       activeDeviceId,
       deviceInfo.mac,
+      ensureDeviceMac,
       getAssignedDevicesForSenior,
       selectedSeniorHandBandMacs,
       syncV8VitalsByDevice,
@@ -2481,6 +2621,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     requestDeviceVersion,
     requestBattery,
     requestDeviceMac,
+    ensureDeviceMac,
     requestDeviceName,
     requestDeviceTime,
     syncDeviceTime,
