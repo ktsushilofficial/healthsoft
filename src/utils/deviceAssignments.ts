@@ -76,6 +76,36 @@ export function resolveConnectedHandBandMac(
   return normalizeMac(reportedMac) ?? normalizeMac(bleDeviceId);
 }
 
+/**
+ * These bands advertise the last three bytes of their own MAC in the BLE name -
+ * "JCV8 0E09F6" for C4:14:D5:0E:09:F6. iOS never exposes a peripheral's MAC
+ * through CoreBluetooth, and this band does not answer GetDeviceMacAddress, so
+ * the advertised name is the only identity available on iOS.
+ *
+ * Rather than reconstruct a MAC from three bytes, this picks which of the
+ * senior's *already assigned* MACs the advertised name belongs to. If the
+ * suffix is ambiguous across two assigned bands it returns null instead of
+ * guessing, so an ambiguous match can never be treated as verified.
+ */
+export function resolveAssignedMacFromAdvertisedName(
+  advertisedName: string | null | undefined,
+  assignedMacs: readonly (string | null | undefined)[],
+): string | null {
+  const haystack = (advertisedName ?? '')
+    .toUpperCase()
+    .replace(/[^0-9A-F]/g, '');
+  if (haystack.length < 6) return null;
+
+  const matches = new Set(
+    assignedMacs
+      .map(value => normalizeMac(value))
+      .filter((value): value is string => !!value)
+      .filter(mac => haystack.includes(mac.slice(-6))),
+  );
+
+  return matches.size === 1 ? [...matches][0] : null;
+}
+
 export function isMacAddressLike(value?: string | null): boolean {
   return normalizeMac(value) !== null;
 }

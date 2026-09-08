@@ -34,6 +34,7 @@ import {
 import {
   getAssignedHandBandMacAddress,
   normalizeMacAddress,
+  resolveAssignedMacFromAdvertisedName,
   resolveConnectedHandBandMac,
 } from '../utils/deviceAssignments';
 import {
@@ -339,6 +340,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   const historyByTypeRef = useRef<Record<string, V8HistoryBucket>>({});
   const latestLiveDataRef = useRef<V8VitalSample | null>(null);
   const deviceInfoRef = useRef<V8DeviceInfo | null>(null);
+  const devicesByIdRef = useRef<Record<string, V8Device>>({});
   const [deviceInfo, setDeviceInfo] = useState<V8DeviceInfo>({
     imei: null,
     deviceName: null,
@@ -492,6 +494,10 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   useEffect(() => {
     deviceInfoRef.current = deviceInfo;
   }, [deviceInfo]);
+
+  useEffect(() => {
+    devicesByIdRef.current = devicesById;
+  }, [devicesById]);
 
   useEffect(() => {
     if (bleState !== 'PoweredOn') return;
@@ -2120,9 +2126,22 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       // On iOS activeDeviceId is a CoreBluetooth UUID, never a MAC, so the MAC
       // has to come back over the vendor protocol. Ask for it rather than
       // failing the sync outright when it has not arrived yet.
+      const connectedDeviceName = activeDeviceId
+        ? (() => {
+            const entry = devicesByIdRef.current[normalizeId(activeDeviceId)];
+            return entry?.name ?? entry?.localName ?? null;
+          })()
+        : null;
       const connectedMac =
         resolveConnectedHandBandMac(deviceInfo.mac, activeDeviceId) ??
-        (await ensureDeviceMac().catch(() => null));
+        (await ensureDeviceMac().catch(() => null)) ??
+        // Last resort on iOS: this band advertises its MAC suffix in its name,
+        // which identifies which of the senior's assigned bands this is even
+        // when it never answers GetDeviceMacAddress.
+        resolveAssignedMacFromAdvertisedName(
+          connectedDeviceName,
+          selectedSeniorHandBandMacs,
+        );
       if (!connectedMac) {
         throw new Error(
           'Connected Hand Band MAC is unavailable. Keep the band close to the phone and try again.',

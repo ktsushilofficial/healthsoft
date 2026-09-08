@@ -37,6 +37,7 @@ import {
   isMacAddressLike,
   isPillDispenserAssignedDevice,
   normalizeMacAddress,
+  resolveAssignedMacFromAdvertisedName,
   resolveConnectedHandBandMac,
   type SeniorAssignedDevice,
 } from '../utils/deviceAssignments';
@@ -1470,7 +1471,15 @@ const HomeScreen = () => {
   const homeMatchedHandBandIds = useMemo(() => {
     const matched = new Set<string>();
     v8Devices.forEach(device => {
-      const scannedMac = normalizeMacAddress(device.id);
+      // Android scans expose the MAC as the device id. iOS gives a CoreBluetooth
+      // UUID instead, so fall back to the MAC suffix the band advertises in its
+      // name - that identifies it without needing a connection at all.
+      const scannedMac =
+        normalizeMacAddress(device.id) ??
+        resolveAssignedMacFromAdvertisedName(
+          device.name ?? device.localName,
+          selectedSeniorHandBandMacs,
+        );
       if (scannedMac && assignedHandBandMacSet.has(scannedMac)) {
         matched.add(device.id);
       }
@@ -1488,7 +1497,7 @@ const HomeScreen = () => {
     }
 
     return matched;
-  }, [assignedHandBandMacSet, v8ConnectionStates, v8DeviceInfo.mac, v8Devices]);
+  }, [assignedHandBandMacSet, selectedSeniorHandBandMacs, v8ConnectionStates, v8DeviceInfo.mac, v8Devices]);
   const homeAssignedHandBandDevices = useMemo(
     () => v8Devices.filter(device => homeMatchedHandBandIds.has(device.id)),
     [homeMatchedHandBandIds, v8Devices],
