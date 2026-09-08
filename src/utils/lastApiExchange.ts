@@ -17,6 +17,8 @@ export type ApiExchange = {
   responseBody: unknown;
   errorMessage: string | null;
   durationMs: number | null;
+  /** False when the attempt failed locally and no request was ever sent. */
+  reachedServer: boolean;
 };
 
 const CAPTURED_PATHS = [/\/api\/v1\/vitals\//i];
@@ -43,6 +45,25 @@ export function recordApiExchange(exchange: ApiExchange): void {
 
 export function getLastApiExchange(): ApiExchange | null {
   return lastExchange;
+}
+
+/**
+ * A sync that failed before reaching the network - no band data to send, or the
+ * band's identity could not be resolved. Recorded so the inspector explains
+ * where the attempt stopped rather than looking as though nothing happened.
+ */
+export function recordSyncAbort(path: string, reason: string): void {
+  recordApiExchange({
+    at: Date.now(),
+    method: 'POST',
+    url: buildRequestUrl(path),
+    requestBody: undefined,
+    status: null,
+    responseBody: undefined,
+    errorMessage: reason,
+    durationMs: null,
+    reachedServer: false,
+  });
 }
 
 export function subscribeToApiExchange(listener: () => void): () => void {

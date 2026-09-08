@@ -544,6 +544,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           responseBody: response.data,
           errorMessage: null,
           durationMs: Date.now() - startedAt,
+          reachedServer: true,
         });
       }
       return response.data;
@@ -562,6 +563,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           errorMessage:
             error instanceof Error ? error.message : String(error),
           durationMs: Date.now() - startedAt,
+          reachedServer: true,
         });
       }
       throw error;

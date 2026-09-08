@@ -3,6 +3,7 @@ import {
   getLastApiExchange,
   isCapturablePath,
   recordApiExchange,
+  recordSyncAbort,
   subscribeToApiExchange,
 } from '../src/utils/lastApiExchange';
 
@@ -15,6 +16,7 @@ const exchange = (url: string) => ({
   responseBody: 'Sync successful for 1 days.',
   errorMessage: null,
   durationMs: 42,
+  reachedServer: true,
 });
 
 describe('capture filter', () => {
@@ -54,6 +56,16 @@ describe('subscribers', () => {
       recordApiExchange(exchange('https://api.healthsoft.in/api/v1/vitals/sync')),
     ).not.toThrow();
     stop();
+  });
+});
+
+describe('local aborts', () => {
+  it('records a sync that never reached the network', () => {
+    recordSyncAbort('/api/v1/vitals/sync', 'No current hand band health data is available yet.');
+    const last = getLastApiExchange();
+    expect(last?.reachedServer).toBe(false);
+    expect(last?.status).toBeNull();
+    expect(last?.errorMessage).toContain('No current hand band health data');
   });
 });
 

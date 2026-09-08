@@ -25,6 +25,7 @@ import DailyVitalsTable from '../components/DailyVitalsTable';
 import {
   formatExchangeBody,
   getLastApiExchange,
+  recordSyncAbort,
   subscribeToApiExchange,
   type ApiExchange,
 } from '../utils/lastApiExchange';
@@ -1675,6 +1676,7 @@ const HomeScreen = () => {
     if (manualVitalsSyncing || autoSyncStatus.phase === 'syncing') return;
 
     setManualVitalsSyncing(true);
+    const syncStartedAt = Date.now();
     try {
       if (!handBandConnected) {
         await ensureAutoConnect();
@@ -1696,10 +1698,16 @@ const HomeScreen = () => {
       setSyncedVitalsRows(rowsToSync);
       Alert.alert('Sync complete', 'Today\'s hand band health data is up to date.');
     } catch (error) {
-      Alert.alert(
-        'Sync failed',
-        error instanceof Error ? error.message : 'Unable to sync hand band health data right now.',
-      );
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Unable to sync hand band health data right now.';
+      // A failure here means the sync stopped before the request was built, so
+      // there is no exchange to inspect unless we record why it stopped.
+      if (!getLastApiExchange() || getLastApiExchange()?.at !== syncStartedAt) {
+        recordSyncAbort('/api/v1/vitals/sync', message);
+      }
+      Alert.alert('Sync failed', message);
     } finally {
       setManualVitalsSyncing(false);
     }
@@ -2364,9 +2372,17 @@ const HomeScreen = () => {
                     lastExchange.errorMessage ? styles.apiValueBad : styles.apiValueOk,
                   ]}
                 >
-                  {lastExchange.status ?? '—'}
-                  {lastExchange.errorMessage ? ` · ${lastExchange.errorMessage}` : ' · OK'}
-                  {lastExchange.durationMs != null ? ` · ${lastExchange.durationMs} ms` : ''}
+                  {lastExchange.reachedServer
+                    ? `${lastExchange.status ?? '—'}${
+                        lastExchange.errorMessage
+                          ? ` · ${lastExchange.errorMessage}`
+                          : ' · OK'
+                      }${
+                        lastExchange.durationMs != null
+                          ? ` · ${lastExchange.durationMs} ms`
+                          : ''
+                      }`
+                    : `Stopped before sending · ${lastExchange.errorMessage ?? ''}`}
                 </Text>
 
                 <Text style={styles.apiLabel}>WHEN</Text>
