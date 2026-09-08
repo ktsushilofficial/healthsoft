@@ -1609,11 +1609,20 @@ const HomeScreen = () => {
       // resolves as soon as the connection is requested - not when the band is
       // ready for commands. Poll for the MAC instead of firing one request that
       // silently fails against a peripheral that is not writable yet.
-      const mac = await ensureV8DeviceMac();
-      if (!mac) {
+      try {
+        const mac = await ensureV8DeviceMac();
+        if (!mac) {
+          Alert.alert(
+            'Hand band did not answer',
+            'The request for the hand band\'s MAC address was sent but it never replied. Keep the band close to the phone, make sure it is awake, and tap Verify again.',
+          );
+        }
+      } catch (error) {
         Alert.alert(
-          'Could not read hand band',
-          'Connected, but the hand band did not report its MAC address. Keep it close to the phone and tap Verify again.',
+          'Could not ask the hand band',
+          `The MAC address request could not be sent to the band.\n\n${
+            error instanceof Error ? error.message : String(error)
+          }`,
         );
       }
     },

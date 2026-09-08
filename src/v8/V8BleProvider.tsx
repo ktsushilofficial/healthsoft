@@ -1252,11 +1252,19 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
 
       const deadline = Date.now() + timeoutMs;
       let existing = readMac();
+      // Distinguish the two failures: the command never reaching the band, and
+      // the band never answering it. They need different fixes, so the caller
+      // gets a real error for the first and null for the second.
+      let sendError: Error | null = null;
+      let everSent = false;
       while (!existing && Date.now() < deadline) {
         try {
           await v8Native.requestDeviceMac();
-        } catch {
-          // Not writable yet (or the band is busy) - wait and try again.
+          everSent = true;
+          sendError = null;
+        } catch (error) {
+          sendError =
+            error instanceof Error ? error : new Error(String(error));
         }
         const attemptDeadline = Math.min(
           deadline,
@@ -1267,6 +1275,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           if (existing) break;
           await new Promise<void>(resolve => setTimeout(resolve, 100));
         }
+      }
+      if (!existing && !everSent && sendError) {
+        throw sendError;
       }
       return existing;
     },
