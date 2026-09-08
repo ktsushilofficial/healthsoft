@@ -3,8 +3,6 @@ import {
   ActivityIndicator,
   InteractionManager,
   Alert,
-  Modal,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -14,11 +12,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
-import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useAuth } from '../context/AuthContext';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import type { V8DailyVitalSummary } from '../v8/models';
-import { toLocalDayKey, todayLocalDayKey, todayVitalsDayKey } from '../utils/vitalsDay';
+import { todayLocalDayKey } from '../utils/vitalsDay';
+import { sampleDayKey } from '../utils/sampleDay';
 import DailyVitalsTable from '../components/DailyVitalsTable';
 
 type RouteParams = {
@@ -32,49 +30,6 @@ const fmt = (v: unknown, suffix = '') =>
   v != null && v !== '' ? `${v}${suffix}` : '—';
 const fmtNum = (v: number | null | undefined, decimals = 0, suffix = '') =>
   v != null && !Number.isNaN(v) ? `${Number(v).toFixed(decimals)}${suffix}` : '—';
-const MAX_RANGE_DAYS = 31;
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-// Date pickers show the senior's own calendar, matching how the band is read.
-const toYmd = (date: Date) => toLocalDayKey(date);
-const parseYmdDate = (value: string): Date | null => {
-  const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return null;
-  const parsed = new Date(`${match[1]}-${match[2]}-${match[3]}T00:00:00`);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-};
-const startOfDayMs = (date: Date) => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
-const addDays = (date: Date, days: number) => new Date(startOfDayMs(date) + (days * MS_PER_DAY));
-const clampDate = (value: Date, min?: Date, max?: Date) => {
-  const time = startOfDayMs(value);
-  const minTime = min ? startOfDayMs(min) : null;
-  const maxTime = max ? startOfDayMs(max) : null;
-  if (minTime != null && time < minTime) return min;
-  if (maxTime != null && time > maxTime) return max;
-  return value;
-};
-const rangeDaysBetween = (from: Date, to: Date) =>
-  Math.round((startOfDayMs(to) - startOfDayMs(from)) / MS_PER_DAY);
-
-const sampleDayKey = (sample: { timestamp: string | null; receivedAt: number | null }): string | null => {
-  const raw = sample.timestamp?.trim();
-  if (raw) {
-    if (/^\d{10,13}$/.test(raw)) {
-      const epoch = raw.length === 13 ? Number(raw) : Number(raw) * 1000;
-      if (Number.isFinite(epoch)) return new Date(epoch).toISOString().slice(0, 10);
-    }
-    const normalized = raw.replace(/\//g, '-').replace(/\./g, '-');
-    const direct = normalized.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
-    if (direct) return `${direct[1]}-${direct[2]}-${direct[3]}`;
-    const parsed = new Date(normalized);
-    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
-    if (Platform.OS === 'ios' && sample.receivedAt != null) {
-      return new Date(sample.receivedAt).toISOString().slice(0, 10);
-    }
-    return null;
-  }
-  if (sample.receivedAt != null) return new Date(sample.receivedAt).toISOString().slice(0, 10);
-  return null;
-};
 
 /* ── tiny reusable pieces ──────────────────────────────── */
 
@@ -131,7 +86,7 @@ const V8DeviceManageScreen = () => {
     connectionStates, disconnect,
     requestBattery, requestDeviceMac, requestPersonalInfo,
     requestLiveSnapshot,
-    buildDailyVitalsRange, syncDailyVitalsToBackend,
+    buildTodayVitals, syncTodayVitalsToBackend,
     latestLiveData, historyByType, deviceInfo,
   } = useV8DeviceManager();
 
@@ -141,95 +96,16 @@ const V8DeviceManageScreen = () => {
   const canUseEcg = isSeniorUser && selectedSeniorHandBandMacs.length > 0;
 
   const [refreshingLive, setRefreshingLive] = useState(false);
-  const [rangeVitalsFetching, setRangeVitalsFetching] = useState(false);
-  const [backendSyncing, setBackendSyncing] = useState(false);
+  const [todayFetching, setTodayFetching] = useState(false);
   const [todaySyncing, setTodaySyncing] = useState(false);
-  const [fromDate, setFromDate] = useState(() => {
-    const d = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000);
-    return toYmd(d);
-  });
-  const [toDate, setToDate] = useState(() => toYmd(new Date()));
-  const [pickerTarget, setPickerTarget] = useState<'from' | 'to' | null>(null);
-  const [iosPickerValue, setIosPickerValue] = useState<Date>(new Date());
   const [fetchedVitalsRows, setFetchedVitalsRows] = useState<V8DailyVitalSummary[]>([]);
-  const [fetchedVitalsRangeKey, setFetchedVitalsRangeKey] = useState<string | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const deviceInfoRef = useRef(deviceInfo);
   const syncLatestPromptKeyRef = useRef<string | null>(null);
-  const currentRangeKey = `${fromDate}|${toDate}`;
-
-  const fromDateValue = useMemo(() => parseYmdDate(fromDate) ?? new Date(), [fromDate]);
-  const toDateValue = useMemo(() => parseYmdDate(toDate) ?? new Date(), [toDate]);
-  const fromPickerMinDate = useMemo(
-    () => addDays(toDateValue, -MAX_RANGE_DAYS),
-    [toDateValue],
-  );
-  const toPickerMaxDate = useMemo(
-    () => addDays(fromDateValue, MAX_RANGE_DAYS),
-    [fromDateValue],
-  );
-  const isRangeWithinOneMonth = useMemo(
-    () => {
-      const diffDays = rangeDaysBetween(fromDateValue, toDateValue);
-      return diffDays >= 0 && diffDays <= MAX_RANGE_DAYS;
-    },
-    [fromDateValue, toDateValue],
-  );
-
-  const applyPickedDate = useCallback((target: 'from' | 'to', value: Date) => {
-    if (target === 'from') {
-      const maxFrom = toDateValue;
-      const minFrom = addDays(maxFrom, -MAX_RANGE_DAYS);
-      const nextFromValue = clampDate(value, minFrom, maxFrom) ?? value;
-      const wasClamped = startOfDayMs(nextFromValue) !== startOfDayMs(value);
-
-      setFromDate(toYmd(nextFromValue));
-      if (wasClamped) {
-        setActionStatus('Date range is limited to one month.');
-      }
-      return;
-    }
-
-    const minTo = fromDateValue;
-    const maxTo = addDays(minTo, MAX_RANGE_DAYS);
-    const nextToValue = clampDate(value, minTo, maxTo) ?? value;
-    const wasClamped = startOfDayMs(nextToValue) !== startOfDayMs(value);
-
-    setToDate(toYmd(nextToValue));
-    if (wasClamped) {
-      setActionStatus('Date range is limited to one month.');
-    }
-  }, [fromDateValue, toDateValue]);
-
-  const openDatePicker = useCallback((target: 'from' | 'to') => {
-    setPickerTarget(target);
-    setIosPickerValue(target === 'from' ? fromDateValue : toDateValue);
-  }, [fromDateValue, toDateValue]);
-
-  const handleDatePickerChange = useCallback((event: DateTimePickerEvent, value?: Date) => {
-    if (!pickerTarget) return;
-    if (Platform.OS === 'ios') {
-      if (value) {
-        setIosPickerValue(value);
-      }
-      return;
-    }
-    if (event.type === 'dismissed' || !value) {
-      setPickerTarget(null);
-      return;
-    }
-    applyPickedDate(pickerTarget, value);
-    setPickerTarget(null);
-  }, [applyPickedDate, pickerTarget]);
 
   useEffect(() => {
     deviceInfoRef.current = deviceInfo;
   }, [deviceInfo]);
-
-  useEffect(() => {
-    setFetchedVitalsRows([]);
-    setFetchedVitalsRangeKey(null);
-  }, [currentRangeKey]);
 
   // Auto-fetch visible device info when this screen gains focus and band is connected.
   useFocusEffect(
@@ -258,57 +134,32 @@ const V8DeviceManageScreen = () => {
     setRefreshingLive(false);
   }, [requestBattery, requestDeviceMac, requestLiveSnapshot, requestPersonalInfo]);
 
-  const handleSyncVitalsToBackend = useCallback(async () => {
+  const handleFetchTodayVitals = useCallback(async () => {
     if (!isSeniorUser) {
-      setActionStatus('Only senior users can sync wrist band data.');
+      setActionStatus('Only senior users can fetch wrist band data.');
       return;
     }
-    if (!isRangeWithinOneMonth) {
-      setActionStatus('Please select a date range within one month to sync.');
+    if (!connected) {
+      setActionStatus('Connect the hand band before fetching today data.');
       return;
     }
-    if (fetchedVitalsRangeKey !== currentRangeKey) {
-      setActionStatus('Fetch vitals for selected date range first, then sync.');
-      return;
-    }
-    if (fetchedVitalsRows.length === 0) {
-      setActionStatus('No vitals rows available to sync for this range.');
-      return;
-    }
-    setBackendSyncing(true);
+    setTodayFetching(true);
     setActionStatus(null);
     try {
-      const result = await syncDailyVitalsToBackend(fromDate, toDate, fetchedVitalsRows);
-      setActionStatus(`Vitals synced to backend for ${result.days} day(s)`);
-    } catch (error) {
-      setActionStatus(error instanceof Error ? error.message : 'Failed to sync vitals to backend');
-    } finally {
-      setBackendSyncing(false);
-    }
-  }, [currentRangeKey, fetchedVitalsRangeKey, fetchedVitalsRows, fromDate, isRangeWithinOneMonth, isSeniorUser, syncDailyVitalsToBackend, toDate]);
-
-  const handleFetchVitalsRange = useCallback(async () => {
-    if (!isSeniorUser) {
-      setActionStatus('Only senior users can sync wrist band data.');
-      return;
-    }
-    if (!isRangeWithinOneMonth) {
-      setActionStatus('Please select a date range within one month to fetch vitals.');
-      return;
-    }
-    setRangeVitalsFetching(true);
-    setActionStatus(null);
-    try {
-      const rows = await buildDailyVitalsRange(fromDate, toDate);
+      const bandDay = todayLocalDayKey();
+      const rows = await buildTodayVitals(bandDay);
       setFetchedVitalsRows(rows);
-      setFetchedVitalsRangeKey(currentRangeKey);
-      setActionStatus(`Fetched ${rows.length} vitals day row(s) for review`);
+      setActionStatus(
+        rows.length > 0
+          ? `Fetched today's vitals (${bandDay}) for review`
+          : 'No vitals recorded on the band for today yet',
+      );
     } catch (error) {
-      setActionStatus(error instanceof Error ? error.message : 'Failed to fetch vitals range');
+      setActionStatus(error instanceof Error ? error.message : 'Failed to fetch today vitals');
     } finally {
-      setRangeVitalsFetching(false);
+      setTodayFetching(false);
     }
-  }, [buildDailyVitalsRange, currentRangeKey, fromDate, isRangeWithinOneMonth, isSeniorUser, toDate]);
+  }, [buildTodayVitals, connected, isSeniorUser]);
 
   const handleFetchAndSyncToday = useCallback(async () => {
     if (!isSeniorUser) {
@@ -321,34 +172,24 @@ const V8DeviceManageScreen = () => {
     }
 
     const bandDay = todayLocalDayKey();
-    const today = todayVitalsDayKey();
     setTodaySyncing(true);
     setActionStatus(null);
 
     try {
-      setFromDate(bandDay);
-      setToDate(bandDay);
-
-      const todayRows = await buildDailyVitalsRange(bandDay, bandDay);
+      const todayRows = await buildTodayVitals(bandDay);
       setFetchedVitalsRows(todayRows);
-      setFetchedVitalsRangeKey(`${bandDay}|${bandDay}`);
 
       const exactTodayRows = todayRows.filter(row => row.date === bandDay);
       const bandRows = exactTodayRows.length > 0 ? exactTodayRows : todayRows;
-      if (bandRows.length === 0) {
-        throw new Error('No today vitals data available to sync.');
-      }
-
-      // Band rows carry the senior's day; the backend needs its own.
-      const rowsToSync = bandRows.map(row => ({ ...row, date: today }));
-      const result = await syncDailyVitalsToBackend(today, today, rowsToSync);
+      // An empty read still syncs - live sample first, then zeros.
+      const result = await syncTodayVitalsToBackend(bandDay, bandRows);
       setActionStatus(`Today vitals synced to backend for ${result.days} day(s)`);
     } catch (error) {
       setActionStatus(error instanceof Error ? error.message : 'Failed to fetch and sync today vitals');
     } finally {
       setTodaySyncing(false);
     }
-  }, [buildDailyVitalsRange, connected, isSeniorUser, syncDailyVitalsToBackend]);
+  }, [buildTodayVitals, connected, isSeniorUser, syncTodayVitalsToBackend]);
 
   useEffect(() => {
     if (!isSeniorUser || !route.params || !(route.params as RouteParams).showSyncLatestPrompt) {
@@ -376,11 +217,6 @@ const V8DeviceManageScreen = () => {
     () => [...fetchedVitalsRows].sort((a, b) => b.date.localeCompare(a.date)),
     [fetchedVitalsRows],
   );
-  const hasFetchedVitalsForCurrentRange =
-    fetchedVitalsRangeKey === currentRangeKey;
-  const canSyncFetchedVitals =
-    isSeniorUser && connected && hasFetchedVitalsForCurrentRange && fetchedVitalsRows.length > 0 && !backendSyncing;
-
   const batteryIcon = useMemo(() => {
     const pct = deviceInfo.batteryPercent;
     if (pct == null) return 'battery-dead-outline';
@@ -587,153 +423,60 @@ const V8DeviceManageScreen = () => {
           </TouchableOpacity>
         </View>
 
-        {/* ── Vitals Range ── */}
+        {/* ── Today's Vitals ── */}
         <View style={s.card}>
           <View style={s.sectionHeaderRow}>
             <View style={s.sectionTitleRow}>
-              <Icon name="calendar-outline" size={16} color="#F28C28" />
-              <Text style={s.sectionTitle}>Vitals Range</Text>
+              <Icon name="today-outline" size={16} color="#F28C28" />
+              <Text style={s.sectionTitle}>Today's Vitals</Text>
             </View>
-            <Text style={s.sectionMeta}>{vitalsRowsForTable.length} days</Text>
+            <Text style={s.sectionMeta}>{todayLocalDayKey()}</Text>
           </View>
           <Text style={s.sectionDescription}>
-            Select date range, fetch daily vitals table, review rows, then sync.
+            Read today's readings off the band to review them, or sync them
+            straight to the backend.
           </Text>
-          <Text style={s.sectionMeta}>Maximum selectable range is one month.</Text>
-
-          <View style={s.rangeInputRow}>
-            <View style={s.rangeInputWrap}>
-              <Text style={s.rangeInputLabel}>From</Text>
-              <TouchableOpacity
-                style={s.datePickerBtn}
-                onPress={() => openDatePicker('from')}
-                activeOpacity={0.75}
-              >
-                <Icon name="calendar-outline" size={16} color="#7A726A" />
-                <Text style={s.datePickerText}>{fromDate}</Text>
-              </TouchableOpacity>
-            </View>
-            <View style={s.rangeInputWrap}>
-              <Text style={s.rangeInputLabel}>To</Text>
-              <TouchableOpacity
-                style={s.datePickerBtn}
-                onPress={() => openDatePicker('to')}
-                activeOpacity={0.75}
-              >
-                <Icon name="calendar-outline" size={16} color="#7A726A" />
-                <Text style={s.datePickerText}>{toDate}</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {Platform.OS === 'ios' ? (
-            <Modal
-              visible={pickerTarget !== null}
-              animationType="slide"
-              transparent
-              onRequestClose={() => setPickerTarget(null)}
-            >
-              <View style={s.dateModalOverlay}>
-                <View style={s.dateModalCard}>
-                  <View style={s.dateModalHeader}>
-                    <TouchableOpacity
-                      onPress={() => setPickerTarget(null)}
-                      style={s.dateModalActionBtn}
-                    >
-                      <Text style={s.dateModalActionText}>Cancel</Text>
-                    </TouchableOpacity>
-                    <Text style={s.dateModalTitle}>{pickerTarget === 'from' ? 'Select From Date' : 'Select To Date'}</Text>
-                    <TouchableOpacity
-                      onPress={() => {
-                        if (!pickerTarget) return;
-                        applyPickedDate(pickerTarget, iosPickerValue);
-                        setPickerTarget(null);
-                      }}
-                      style={s.dateModalActionBtn}
-                    >
-                      <Text style={[s.dateModalActionText, s.dateModalDoneText]}>Done</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <DateTimePicker
-                    value={iosPickerValue}
-                    mode="date"
-                    display="inline"
-                    themeVariant="light"
-                    accentColor="#2F8A66"
-                    textColor="#1F1F1F"
-                    maximumDate={pickerTarget === 'from' ? toDateValue : toPickerMaxDate}
-                    minimumDate={pickerTarget === 'to' ? fromDateValue : fromPickerMinDate}
-                    onChange={handleDatePickerChange}
-                    style={s.iosDatePicker}
-                  />
-                </View>
-              </View>
-            </Modal>
-          ) : null}
-
-          {Platform.OS === 'android' && pickerTarget ? (
-            <DateTimePicker
-              value={pickerTarget === 'from' ? fromDateValue : toDateValue}
-              mode="date"
-              display="default"
-              maximumDate={pickerTarget === 'from' ? toDateValue : toPickerMaxDate}
-              minimumDate={pickerTarget === 'to' ? fromDateValue : fromPickerMinDate}
-              onChange={handleDatePickerChange}
-            />
-          ) : null}
 
           <TouchableOpacity
-            style={[s.fetchVitalsBtn, (!isSeniorUser || !connected || rangeVitalsFetching) ? s.disabled : null]}
-            disabled={!isSeniorUser || !connected || rangeVitalsFetching}
-            onPress={handleFetchVitalsRange}
+            style={[s.fetchTodayBtn, (!isSeniorUser || !connected || todayFetching || todaySyncing) ? s.disabled : null]}
+            disabled={!isSeniorUser || !connected || todayFetching || todaySyncing}
+            onPress={handleFetchTodayVitals}
             activeOpacity={0.7}
           >
-            {rangeVitalsFetching
+            {todayFetching
               ? <ActivityIndicator size="small" color="#fff" />
               : <Icon name="pulse-outline" size={18} color="#fff" />}
-            <Text style={s.syncBtnText}>{rangeVitalsFetching ? 'Fetching Vitals...' : 'Fetch Vitals Table'}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[s.backendSyncBtn, !canSyncFetchedVitals ? s.disabled : null]}
-            disabled={!canSyncFetchedVitals}
-            onPress={handleSyncVitalsToBackend}
-            activeOpacity={0.7}
-          >
-            {backendSyncing
-              ? <ActivityIndicator size="small" color="#fff" />
-              : <Icon name="cloud-upload-outline" size={18} color="#fff" />}
             <Text style={s.syncBtnText}>
-              {backendSyncing ? 'Uploading...' : 'Sync Fetched Vitals to Backend'}
+              {todayFetching ? 'Fetching Today...' : 'Fetch Today Vitals'}
             </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[s.todaySyncBtn, (!isSeniorUser || !connected || todaySyncing || rangeVitalsFetching || backendSyncing) ? s.disabled : null]}
-            disabled={!isSeniorUser || !connected || todaySyncing || rangeVitalsFetching || backendSyncing}
+            style={[s.todaySyncBtn, (!isSeniorUser || !connected || todaySyncing || todayFetching) ? s.disabled : null]}
+            disabled={!isSeniorUser || !connected || todaySyncing || todayFetching}
             onPress={handleFetchAndSyncToday}
             activeOpacity={0.7}
           >
             {todaySyncing
               ? <ActivityIndicator size="small" color="#fff" />
-              : <Icon name="flash-outline" size={18} color="#fff" />}
+              : <Icon name="cloud-upload-outline" size={18} color="#fff" />}
             <Text style={s.syncBtnText}>
-              {todaySyncing ? 'Syncing Today...' : 'Fetch + Sync Today Data'}
+              {todaySyncing ? 'Syncing Today...' : 'Sync Today Data'}
             </Text>
           </TouchableOpacity>
 
-          <Text style={s.rangeHintText}>
+          <Text style={s.hintText}>
             {!isSeniorUser
               ? 'Only senior users can fetch and sync wrist band data.'
-              : hasFetchedVitalsForCurrentRange
-              ? `Fetched vitals rows: ${fetchedVitalsRows.length}. Review table below, then sync.`
-              : 'Fetch vitals table first for this date range, then sync to backend.'}
+              : !connected
+              ? 'Connect the hand band to fetch or sync today\'s data.'
+              : 'Sync reads the band again, so it is always up to date.'}
           </Text>
 
           {vitalsRowsForTable.length === 0 ? (
             <View style={s.emptyState}>
               <Icon name="pulse-outline" size={28} color="#D0C8BF" />
-              <Text style={s.emptyText}>No fetched vitals rows yet</Text>
+              <Text style={s.emptyText}>No vitals fetched yet</Text>
             </View>
           ) : (
             <DailyVitalsTable rows={vitalsRowsForTable} sortDescending={false} />
@@ -898,13 +641,8 @@ const s = StyleSheet.create({
   },
   actionBtnText: { fontSize: 11, fontWeight: '600', color: '#5C4A3A', marginTop: 4 },
 
-  backendSyncBtn: {
+  fetchTodayBtn: {
     marginTop: 8, backgroundColor: '#3E7CB1', borderRadius: 16,
-    paddingVertical: 12, alignItems: 'center',
-    flexDirection: 'row', justifyContent: 'center',
-  },
-  fetchVitalsBtn: {
-    marginTop: 8, backgroundColor: '#2F8A66', borderRadius: 16,
     paddingVertical: 12, alignItems: 'center',
     flexDirection: 'row', justifyContent: 'center',
   },
@@ -914,65 +652,7 @@ const s = StyleSheet.create({
     flexDirection: 'row', justifyContent: 'center',
   },
   syncBtnText: { color: '#fff', fontWeight: '700', fontSize: 14, marginLeft: 8 },
-  rangeHintText: { fontSize: 12, color: '#7B6E61', marginTop: 10 },
-  rangeInputRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
-  rangeInputWrap: { flex: 1 },
-  rangeInputLabel: { fontSize: 11, color: '#8A8078', marginBottom: 4 },
-  datePickerBtn: {
-    borderWidth: 1,
-    borderColor: '#E9DFD5',
-    borderRadius: 10,
-    backgroundColor: '#FAF8F5',
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  datePickerText: {
-    color: '#2E2A27',
-    fontSize: 13,
-    marginLeft: 8,
-    fontWeight: '600',
-  },
-  dateModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.28)',
-    justifyContent: 'flex-end',
-  },
-  dateModalCard: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 24,
-  },
-  dateModalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  dateModalActionBtn: {
-    minWidth: 60,
-    paddingVertical: 6,
-  },
-  dateModalActionText: {
-    fontSize: 14,
-    color: '#7A726A',
-    fontWeight: '600',
-  },
-  dateModalDoneText: {
-    textAlign: 'right',
-    color: '#2F8A66',
-  },
-  dateModalTitle: {
-    fontSize: 15,
-    color: '#2E2A27',
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  iosDatePicker: { backgroundColor: '#FFFFFF' },
+  hintText: { fontSize: 12, color: '#7B6E61', marginTop: 10 },
   statusBanner: {
     marginHorizontal: 16,
     marginBottom: 12,

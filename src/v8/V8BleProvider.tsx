@@ -23,11 +23,12 @@ import type {
   V8WebVitalsSyncPayload,
 } from './models';
 import { parseV8Payload } from './parser';
+import { toLocalDayKey, todayLocalDayKey } from '../utils/vitalsDay';
+import { sampleDayKey } from '../utils/sampleDay';
 import {
-  toLocalDayKey,
-  todayLocalDayKey,
-  todayVitalsDayKey,
-} from '../utils/vitalsDay';
+  emptyVitalSummary,
+  fillTodayVitalSummaryGaps,
+} from './todayVitalsRow';
 import {
   ECG_RECORDING_DURATION_MS,
   analyzeWaveformHeartRate,
@@ -104,23 +105,10 @@ type V8BleContextValue = {
   finishEcgMeasurement: () => Promise<void>;
   cancelEcgMeasurement: () => Promise<void>;
   resetEcgMeasurement: () => void;
-  requestHistoryBundle: () => Promise<void>;
-  requestTotalActivityRange: (
-    fromDate: string,
-    toDate: string,
-  ) => Promise<void>;
-  buildDailyVitalsRange: (
-    fromDate: string,
-    toDate: string,
-  ) => Promise<V8DailyVitalSummary[]>;
-  syncDailyVitalsToBackend: (
-    fromDate: string,
-    toDate: string,
+  buildTodayVitals: (bandDay: string) => Promise<V8DailyVitalSummary[]>;
+  syncTodayVitalsToBackend: (
+    bandDay: string,
     days: V8DailyVitalSummary[],
-  ) => Promise<{ days: number }>;
-  syncVitalsRangeToBackend: (
-    fromDate: string,
-    toDate: string,
   ) => Promise<{ days: number }>;
   requestLiveSnapshot: () => Promise<void>;
   clearSavedData: () => Promise<void>;
@@ -177,79 +165,6 @@ const logV8Debug = (label: string, value?: unknown) => {
   console.log(`[V8 Debug] ${label}`, value);
 };
 
-const sampleDayKey = (sample: V8VitalSample): string | null => {
-  const raw = sample.timestamp?.trim();
-  if (raw) {
-    if (/^\d{10,13}$/.test(raw)) {
-      const epoch = raw.length === 13 ? Number(raw) : Number(raw) * 1000;
-      if (Number.isFinite(epoch)) return toLocalDayKey(new Date(epoch));
-    }
-    const normalized = raw.replace(/\//g, '-').replace(/\./g, '-');
-    const direct = normalized.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
-    if (direct) {
-      const y = direct[1];
-      const m = direct[2].padStart(2, '0');
-      const d = direct[3].padStart(2, '0');
-      return `${y}-${m}-${d}`;
-    }
-    const parsed = new Date(normalized);
-    if (!Number.isNaN(parsed.getTime())) return toLocalDayKey(parsed);
-    if (Platform.OS === 'ios' && sample.receivedAt != null) {
-      return toLocalDayKey(new Date(sample.receivedAt));
-    }
-    return null;
-  }
-  if (sample.receivedAt != null) return toLocalDayKey(new Date(sample.receivedAt));
-  return null;
-};
-
-const subtractDaysYmdUtc = (ymd: string, days: number): string => {
-  const match = ymd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return ymd;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const utcMs = Date.UTC(year, month - 1, day);
-  const shifted = new Date(utcMs - days * 24 * 60 * 60 * 1000);
-  const y = shifted.getUTCFullYear();
-  const m = String(shifted.getUTCMonth() + 1).padStart(2, '0');
-  const d = String(shifted.getUTCDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-};
-
-const addDaysYmdUtc = (ymd: string, days: number): string => {
-  const match = ymd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return ymd;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const utcMs = Date.UTC(year, month - 1, day);
-  const shifted = new Date(utcMs + days * 24 * 60 * 60 * 1000);
-  const y = shifted.getUTCFullYear();
-  const m = String(shifted.getUTCMonth() + 1).padStart(2, '0');
-  const d = String(shifted.getUTCDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-};
-
-const diffDaysYmdUtc = (fromYmd: string, toYmd: string): number => {
-  const fromMatch = fromYmd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  const toMatch = toYmd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!fromMatch || !toMatch) return 0;
-  const fromMs = Date.UTC(
-    Number(fromMatch[1]),
-    Number(fromMatch[2]) - 1,
-    Number(fromMatch[3]),
-  );
-  const toMs = Date.UTC(
-    Number(toMatch[1]),
-    Number(toMatch[2]) - 1,
-    Number(toMatch[3]),
-  );
-  return Math.max(0, Math.floor((toMs - fromMs) / (24 * 60 * 60 * 1000)));
-};
-
-const todayYmdUtc = (): string => new Date().toISOString().slice(0, 10);
-
 // The band reports 0 for heart rate, SpO2, blood pressure and temperature while
 // it is off the wrist. Those are "no reading", not measurements, and counting
 // them sinks the day's min and average (a real day came back as hrMin 0 /
@@ -268,52 +183,6 @@ const DEVICE_MAC_ATTEMPT_WINDOW_MS = 1500;
 
 // Today's row must never reach the backend with nulls: fall back to the latest
 // live sample for any gap the history aggregation left open, then to 0.
-const fillTodayVitalSummaryGaps = (
-  summary: V8WebVitalSummary,
-  live: V8VitalSample | null,
-): V8WebVitalSummary => {
-  const pick = (value: number | null, liveValue: number | null | undefined) =>
-    value ?? liveValue ?? 0;
-
-  return {
-    recordDate: summary.recordDate,
-    steps: pick(summary.steps, live?.steps),
-    distanceKm: pick(summary.distanceKm, live?.distanceKm),
-    caloriesKcal: pick(summary.caloriesKcal, live?.caloriesKcal),
-    exerciseMinutes: pick(summary.exerciseMinutes, live?.exerciseMinutes),
-    activeMinutes: pick(summary.activeMinutes, live?.activeMinutes),
-    goalPercent: pick(summary.goalPercent, live?.goalPercent),
-    hrMin: pick(summary.hrMin, live?.heartRate),
-    hrMax: pick(summary.hrMax, live?.heartRate),
-    hrAvg: pick(summary.hrAvg, live?.heartRate),
-    hrLatest: pick(summary.hrLatest, live?.heartRate),
-    spo2Min: pick(summary.spo2Min, live?.spo2),
-    spo2Max: pick(summary.spo2Max, live?.spo2),
-    spo2Avg: pick(summary.spo2Avg, live?.spo2),
-    spo2Latest: pick(summary.spo2Latest, live?.spo2),
-    hrvMin: pick(summary.hrvMin, live?.hrv),
-    hrvMax: pick(summary.hrvMax, live?.hrv),
-    hrvAvg: pick(summary.hrvAvg, live?.hrv),
-    hrvLatest: pick(summary.hrvLatest, live?.hrv),
-    systolicBpMin: pick(summary.systolicBpMin, live?.systolicBp),
-    systolicBpMax: pick(summary.systolicBpMax, live?.systolicBp),
-    systolicBpAvg: pick(summary.systolicBpAvg, live?.systolicBp),
-    systolicBpLatest: pick(summary.systolicBpLatest, live?.systolicBp),
-    diastolicBpMin: pick(summary.diastolicBpMin, live?.diastolicBp),
-    diastolicBpMax: pick(summary.diastolicBpMax, live?.diastolicBp),
-    diastolicBpAvg: pick(summary.diastolicBpAvg, live?.diastolicBp),
-    diastolicBpLatest: pick(summary.diastolicBpLatest, live?.diastolicBp),
-    tempMin: pick(summary.tempMin, live?.temperatureC),
-    tempMax: pick(summary.tempMax, live?.temperatureC),
-    tempAvg: pick(summary.tempAvg, live?.temperatureC),
-    tempLatest: pick(summary.tempLatest, live?.temperatureC),
-    stressMin: pick(summary.stressMin, live?.stress),
-    stressMax: pick(summary.stressMax, live?.stress),
-    stressAvg: pick(summary.stressAvg, live?.stress),
-    stressLatest: pick(summary.stressLatest, live?.stress),
-  };
-};
-
 const useV8BleManagerInternal = (): V8BleContextValue => {
   const {
     user,
@@ -1577,38 +1446,6 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     Keychain.resetGenericPassword({ service: V8_ECG_SERVICE }).catch(() => {});
   }, []);
 
-  const requestHistoryBundle = useCallback(async () => {
-    const native = v8Native;
-    if (!native) return;
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    sevenDaysAgo.setHours(0, 0, 0, 0);
-    const start =
-      Platform.OS === 'ios'
-        ? sevenDaysAgo.getTime()
-        : `${sevenDaysAgo.toISOString().slice(0, 10)} 00:00:00`;
-
-    const requestPage = async (mode: number) =>
-      Promise.all([
-        native.requestTotalActivity(mode, start),
-        native.requestDetailActivity(mode, start),
-        native.requestSleep(mode, start),
-        native.requestDynamicHR(mode, start),
-        native.requestStaticHR(mode, start),
-        native.requestHRV(mode, start),
-        native.requestSpo2
-          ? native.requestSpo2(mode, start)
-          : Promise.resolve(true),
-        native.requestTemperature
-          ? native.requestTemperature(mode, start)
-          : Promise.resolve(true),
-      ]);
-
-    // Fetch latest page first, then next page for better 7-day coverage on bands
-    // that chunk history in vendor-defined pages.
-    await requestPage(0);
-    await new Promise<void>(resolve => setTimeout(resolve, 400));
-    await requestPage(2);
-  }, []);
 
   const requestLiveSnapshot = useCallback(async () => {
     if (!v8Native) return;
@@ -1622,7 +1459,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       const start =
         Platform.OS === 'ios'
           ? oneDayAgo.getTime()
-          : `${oneDayAgo.toISOString().slice(0, 10)} ${oneDayAgo
+          : `${toLocalDayKey(oneDayAgo)} ${oneDayAgo
               .toTimeString()
               .slice(0, 8)}`;
 
@@ -1654,68 +1491,20 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     }
   }, []);
 
-  const requestTotalActivityRange = useCallback(
-    async (fromDate: string, toDate: string) => {
-      if (!v8Native) return;
-      const parseYmd = (value: string): Date | null => {
-        const trimmed = value.trim();
-        const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-        if (!match) return null;
-        const date = new Date(`${match[1]}-${match[2]}-${match[3]}T00:00:00`);
-        return Number.isNaN(date.getTime()) ? null : date;
-      };
-      const from = parseYmd(fromDate);
-      const to = parseYmd(toDate);
-      if (!from || !to) {
+
+  // Reads the band for one day only - the day it is filling in now. The band
+  // is asked for samples since that day's local midnight and nothing earlier.
+  const buildTodayVitals = useCallback(
+    async (bandDay: string): Promise<V8DailyVitalSummary[]> => {
+      const dayStart = new Date(`${bandDay}T00:00:00`);
+      if (Number.isNaN(dayStart.getTime())) {
         throw new Error('Use YYYY-MM-DD date format.');
-      }
-      if (from.getTime() > to.getTime()) {
-        throw new Error('From date must be before To date.');
-      }
-
-      const start =
-        Platform.OS === 'ios' ? from.getTime() : `${fromDate} 00:00:00`;
-
-      const syncStartedAt = Date.now();
-      const maxPages = 12;
-      for (let page = 0; page < maxPages; page += 1) {
-        const mode = page === 0 ? 0 : 2;
-        await v8Native.requestTotalActivity(mode, start);
-        await new Promise<void>(resolve => setTimeout(resolve, 350));
-        const totalBucket = historyByTypeRef.current.totalActivity;
-        if (totalBucket?.completed && totalBucket.updatedAt >= syncStartedAt) {
-          break;
-        }
-      }
-    },
-    [],
-  );
-
-  const buildDailyVitalsRange = useCallback(
-    async (
-      fromDate: string,
-      toDate: string,
-    ): Promise<V8DailyVitalSummary[]> => {
-      const parseYmd = (value: string): Date | null => {
-        const trimmed = value.trim();
-        const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-        if (!match) return null;
-        const date = new Date(`${match[1]}-${match[2]}-${match[3]}T00:00:00`);
-        return Number.isNaN(date.getTime()) ? null : date;
-      };
-      const from = parseYmd(fromDate);
-      const to = parseYmd(toDate);
-      if (!from || !to) {
-        throw new Error('Use YYYY-MM-DD date format.');
-      }
-      if (from.getTime() > to.getTime()) {
-        throw new Error('From date must be before To date.');
       }
       const native = v8Native;
       if (!native) return [];
 
       const start =
-        Platform.OS === 'ios' ? from.getTime() : `${fromDate} 00:00:00`;
+        Platform.OS === 'ios' ? dayStart.getTime() : `${bandDay} 00:00:00`;
 
       const initialUpdatedAt: Record<string, number> = Object.fromEntries(
         Object.entries(historyByTypeRef.current).map(([k, b]) => [
@@ -1845,8 +1634,8 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         stressLatestTs: number;
       };
 
-      const fromTs = new Date(`${fromDate}T00:00:00`).getTime();
-      const toTs = new Date(`${toDate}T23:59:59`).getTime();
+      const fromTs = dayStart.getTime();
+      const toTs = new Date(`${bandDay}T23:59:59`).getTime();
       const aggs = new Map<string, Agg>();
       const ensure = (day: string): Agg => {
         const current = aggs.get(day);
@@ -2111,10 +1900,12 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     [],
   );
 
-  const syncDailyVitalsToBackend = useCallback(
+  // The app only ever syncs the day the band is filling in now. There is no
+  // backfill path: a missed day stays missed rather than being reconstructed
+  // from a history read the band may no longer hold.
+  const syncTodayVitalsToBackend = useCallback(
     async (
-      fromDate: string,
-      toDate: string,
+      bandDay: string,
       days: V8DailyVitalSummary[],
     ): Promise<{ days: number }> => {
       if (user?.role !== 'SENIOR') {
@@ -2219,80 +2010,31 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         stressLatest: day.stressLatest ?? null,
       }));
 
-      // Sync window should be inclusive of both fromDate and toDate.
-      const requestedSyncDays = Math.max(
-        1,
-        diffDaysYmdUtc(fromDate, toDate) + 1,
-      );
-      const syncDays = requestedSyncDays;
-      const syncFromComputed = subtractDaysYmdUtc(toDate, syncDays - 1);
-      const byRecordDate = new Map(
-        allVitalSummaries.map(summary => [summary.recordDate, summary]),
-      );
-      const effectiveSummaries: V8WebVitalSummary[] = Array.from(
-        { length: syncDays },
-        (_, i) => {
-          const date = addDaysYmdUtc(syncFromComputed, i);
-          const row = byRecordDate.get(date);
-          if (row) {
-            return row;
-          }
-          return {
-            recordDate: date,
-            steps: null,
-            distanceKm: null,
-            caloriesKcal: null,
-            exerciseMinutes: null,
-            activeMinutes: null,
-            goalPercent: null,
-            hrMin: null,
-            hrMax: null,
-            hrAvg: null,
-            hrLatest: null,
-            spo2Min: null,
-            spo2Max: null,
-            spo2Avg: null,
-            spo2Latest: null,
-            hrvMin: null,
-            hrvMax: null,
-            hrvAvg: null,
-            hrvLatest: null,
-            systolicBpMin: null,
-            systolicBpMax: null,
-            systolicBpAvg: null,
-            systolicBpLatest: null,
-            diastolicBpMin: null,
-            diastolicBpMax: null,
-            diastolicBpAvg: null,
-            diastolicBpLatest: null,
-            tempMin: null,
-            tempMax: null,
-            tempAvg: null,
-            tempLatest: null,
-            stressMin: null,
-            stressMax: null,
-            stressAvg: null,
-            stressLatest: null,
-          };
-        },
-      );
-
-      // Today's row is still being filled in as the day progresses, so any gap
-      // left by the history aggregation is backfilled from the latest live
-      // sample, and anything still missing is sent as 0 rather than null.
-      const today = todayYmdUtc();
+      // Today's row is still being filled in as the day progresses, so a sync
+      // never refuses to send: whatever the history aggregation leaves out is
+      // taken from the latest live sample, and anything still missing after
+      // that goes as 0. A day the band recorded nothing on is sent as a row of
+      // zeros rather than skipped, so every day is present on the backend.
+      const aggregatedRow =
+        allVitalSummaries.find(summary => summary.recordDate === bandDay) ??
+        allVitalSummaries[0];
       const liveFallback = latestLiveDataRef.current;
-      const normalizedSummaries = effectiveSummaries.map(summary =>
-        summary.recordDate === today
-          ? fillTodayVitalSummaryGaps(summary, liveFallback)
-          : summary,
-      );
+      const normalizedSummaries = [
+        fillTodayVitalSummaryGaps(
+          // Relabelled rather than dropped: a row the aggregation dated
+          // differently still holds the band's readings for this sync.
+          { ...(aggregatedRow ?? emptyVitalSummary(bandDay)), recordDate: bandDay },
+          liveFallback,
+        ),
+      ];
 
+      // syncFrom/syncTo/syncDays describe a one-day window because that is the
+      // only window there is; the backend still requires all three.
       const webPayload: V8WebVitalsSyncPayload = {
         deviceUUID,
-        syncDays,
-        syncFrom: syncFromComputed,
-        syncTo: toDate,
+        syncDays: 1,
+        syncFrom: bandDay,
+        syncTo: bandDay,
         vitalSummaries: normalizedSummaries,
       };
 
@@ -2305,11 +2047,12 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         syncDays: webPayload.syncDays,
         syncFrom: webPayload.syncFrom,
         syncTo: webPayload.syncTo,
-        rows: webPayload.vitalSummaries.length,
-        firstRecordDate: webPayload.vitalSummaries[0]?.recordDate ?? null,
-        lastRecordDate:
-          webPayload.vitalSummaries[webPayload.vitalSummaries.length - 1]
-            ?.recordDate ?? null,
+        recordDate: webPayload.vitalSummaries[0]?.recordDate ?? null,
+        source: aggregatedRow
+          ? 'band history'
+          : liveFallback
+          ? 'live sample only'
+          : 'zeros - band recorded nothing today',
       });
 
       await syncV8VitalsByDevice(webPayload);
@@ -2332,7 +2075,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           error: null,
         });
       }
-      return { days: days.length };
+      return { days: 1 };
     },
     [
       activeDeviceId,
@@ -2346,13 +2089,6 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     ],
   );
 
-  const syncVitalsRangeToBackend = useCallback(
-    async (fromDate: string, toDate: string): Promise<{ days: number }> => {
-      const days = await buildDailyVitalsRange(fromDate, toDate);
-      return syncDailyVitalsToBackend(fromDate, toDate, days);
-    },
-    [buildDailyVitalsRange, syncDailyVitalsToBackend],
-  );
 
   const clearSavedData = useCallback(async () => {
     setHistoryByType({});
@@ -2542,17 +2278,13 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         nextSyncAt: null,
         error: null,
       });
-      // Read the band in the senior's own day, then file the row under the
-      // day the backend accepts - see src/utils/vitalsDay.ts.
+      // The band's own day is the day the row is stored under, start to end.
       const bandDay = todayLocalDayKey();
-      const apiDay = todayVitalsDayKey();
-      const todayRows = await buildDailyVitalsRange(bandDay, bandDay);
+      const todayRows = await buildTodayVitals(bandDay);
       const bandRows = todayRows.filter(row => row.date === bandDay);
-      if (bandRows.length === 0) {
-        throw new Error('No current hand band health data is available yet.');
-      }
-      const rowsToSync = bandRows.map(row => ({ ...row, date: apiDay }));
-      await syncDailyVitalsToBackend(apiDay, apiDay, rowsToSync);
+      // No rows is not a failure - the sync falls back to the live sample and
+      // then to zeros, so the day is still recorded.
+      await syncTodayVitalsToBackend(bandDay, bandRows);
     } catch (error) {
       const retryAt = Date.now() + 60_000;
       nextAutomaticSyncAttemptAtRef.current = retryAt;
@@ -2572,13 +2304,13 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   }, [
     activeDeviceId,
     bleState,
-    buildDailyVitalsRange,
+    buildTodayVitals,
     connectionStates,
     deviceInfo.mac,
     ensureAutoConnect,
     requestDeviceMac,
     selectedSeniorHandBandMacs.length,
-    syncDailyVitalsToBackend,
+    syncTodayVitalsToBackend,
     user?.role,
     user?.user_id,
   ]);
@@ -2667,11 +2399,8 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     finishEcgMeasurement,
     cancelEcgMeasurement,
     resetEcgMeasurement,
-    requestHistoryBundle,
-    requestTotalActivityRange,
-    buildDailyVitalsRange,
-    syncDailyVitalsToBackend,
-    syncVitalsRangeToBackend,
+    buildTodayVitals,
+    syncTodayVitalsToBackend,
     requestLiveSnapshot,
     clearSavedData,
     clearSavedSession,

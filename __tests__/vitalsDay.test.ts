@@ -1,49 +1,58 @@
 import {
   addVitalsDays,
   startOfVitalsDay,
-  todayVitalsDayKey,
-  vitalsDayKey,
+  todayLocalDayKey,
+  toLocalDayKey,
   vitalsDayStart,
 } from '../src/utils/vitalsDay';
 
+// jest.setup.js pins TZ=Asia/Kolkata (UTC+05:30, no DST).
 describe('vitals day key', () => {
-  // 00:48 IST on 8 Sep is 19:18 UTC on 7 Sep. The backend files the row under
-  // 2026-09-07, so the UI must look up 2026-09-07 or it finds nothing.
-  const insideSkewWindow = new Date('2026-09-08T00:48:00+05:30');
+  // The window that used to lose data: 02:00 IST on 8 Sep is still 7 Sep in
+  // UTC, so a UTC-keyed row filed the senior's morning under the day before.
+  const preDawn = new Date('2026-09-08T02:00:00+05:30');
 
-  it('matches the day the backend files the row under', () => {
-    expect(vitalsDayKey(insideSkewWindow)).toBe('2026-09-07');
+  it('keeps an early-morning reading on the day the band recorded it', () => {
+    expect(toLocalDayKey(preDawn)).toBe('2026-09-08');
   });
 
-  it('agrees with what the sync path sends', () => {
-    expect(vitalsDayKey(insideSkewWindow)).toBe(
-      insideSkewWindow.toISOString().slice(0, 10),
-    );
+  it('does not follow the UTC date', () => {
+    // Same instant, and this is precisely what the old key returned.
+    expect(preDawn.toISOString().slice(0, 10)).toBe('2026-09-07');
+    expect(toLocalDayKey(preDawn)).not.toBe(preDawn.toISOString().slice(0, 10));
   });
 
-  it('is stable regardless of the device timezone', () => {
-    // Same instant, so the same row, whichever zone the viewer's phone is in.
-    expect(vitalsDayKey(new Date('2026-09-07T19:18:00Z'))).toBe('2026-09-07');
+  it('rolls over at the senior\'s midnight, not at 05:30', () => {
+    expect(toLocalDayKey(new Date('2026-09-07T23:59:00+05:30'))).toBe('2026-09-07');
+    expect(toLocalDayKey(new Date('2026-09-08T00:00:00+05:30'))).toBe('2026-09-08');
+    expect(toLocalDayKey(new Date('2026-09-08T05:30:00+05:30'))).toBe('2026-09-08');
   });
 
-  it('rolls over at 00:00 UTC, which is 05:30 IST', () => {
-    expect(vitalsDayKey(new Date('2026-09-08T05:29:00+05:30'))).toBe('2026-09-07');
-    expect(vitalsDayKey(new Date('2026-09-08T05:30:00+05:30'))).toBe('2026-09-08');
+  it('puts the whole local day in one bucket', () => {
+    const first = new Date('2026-09-08T00:01:00+05:30');
+    const last = new Date('2026-09-08T23:59:00+05:30');
+    expect(toLocalDayKey(first)).toBe(toLocalDayKey(last));
   });
 
   it('puts day starts and row dates on one timeline', () => {
-    const today = startOfVitalsDay(insideSkewWindow);
-    expect(vitalsDayStart('2026-09-07')!.getTime()).toBe(today.getTime());
-    expect(vitalsDayStart('2026-09-06')!.getTime()).toBe(
+    const today = startOfVitalsDay(preDawn);
+    expect(vitalsDayStart('2026-09-08')!.getTime()).toBe(today.getTime());
+    expect(vitalsDayStart('2026-09-07')!.getTime()).toBe(
       addVitalsDays(today, -1).getTime(),
     );
+  });
+
+  it('steps the calendar across a month boundary', () => {
+    const first = vitalsDayStart('2026-09-01')!;
+    expect(toLocalDayKey(addVitalsDays(first, -1))).toBe('2026-08-31');
+    expect(toLocalDayKey(addVitalsDays(first, 30))).toBe('2026-10-01');
   });
 
   it('rejects malformed dates', () => {
     expect(vitalsDayStart('not-a-date')).toBeNull();
   });
 
-  it('todayVitalsDayKey agrees with vitalsDayKey for now', () => {
-    expect(todayVitalsDayKey()).toBe(vitalsDayKey(new Date()));
+  it('todayLocalDayKey agrees with toLocalDayKey for now', () => {
+    expect(todayLocalDayKey()).toBe(toLocalDayKey(new Date()));
   });
 });

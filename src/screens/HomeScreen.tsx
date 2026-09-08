@@ -20,7 +20,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
 import { useAuth } from '../context/AuthContext';
-import { todayLocalDayKey, todayVitalsDayKey } from '../utils/vitalsDay';
+import { todayLocalDayKey } from '../utils/vitalsDay';
 import DailyVitalsTable from '../components/DailyVitalsTable';
 import {
   formatExchangeBody,
@@ -468,7 +468,7 @@ function normalizeSummaryRows(payload: unknown): VitalsSummaryRow[] {
 }
 
 function findTodaySummaryRow(rows: VitalsSummaryRow[]): VitalsSummaryRow | null {
-  const todayKey = todayVitalsDayKey();
+  const todayKey = todayLocalDayKey();
   return rows.find(row => normalizeRecordDateKey(row.recordDate) === todayKey) ?? null;
 }
 
@@ -615,8 +615,8 @@ const HomeScreen = () => {
     connectionStates: v8ConnectionStates,
     connect: connectV8Device,
     disconnect: disconnectV8Device,
-    buildDailyVitalsRange,
-    syncDailyVitalsToBackend,
+    buildTodayVitals,
+    syncTodayVitalsToBackend,
     startScan: startV8Scan,
     stopScan: stopV8Scan,
     clearSavedSession: clearV8SavedSession,
@@ -1687,20 +1687,14 @@ const HomeScreen = () => {
         return;
       }
 
-      // The band is read in the senior's own day so nothing before the UTC
-      // rollover is lost; the row is then filed under the day the backend
-      // accepts. See src/utils/vitalsDay.ts.
+      // The band is read and stored in the senior's own day - the day its
+      // clock recorded. See src/utils/vitalsDay.ts.
       const bandDay = todayLocalDayKey();
-      const apiDay = todayVitalsDayKey();
-      const todayRows = await buildDailyVitalsRange(bandDay, bandDay);
+      const todayRows = await buildTodayVitals(bandDay);
       const bandRows = todayRows.filter(row => row.date === bandDay);
-      if (bandRows.length === 0) {
-        throw new Error('No current hand band health data is available yet.');
-      }
-
-      const rowsToSync = bandRows.map(row => ({ ...row, date: apiDay }));
-      await syncDailyVitalsToBackend(apiDay, apiDay, rowsToSync);
-      setSyncedVitalsRows(rowsToSync);
+      // An empty read still syncs - live sample first, then zeros.
+      await syncTodayVitalsToBackend(bandDay, bandRows);
+      setSyncedVitalsRows(bandRows);
       Alert.alert('Sync complete', 'Today\'s hand band health data is up to date.');
     } catch (error) {
       const message =
@@ -1718,11 +1712,11 @@ const HomeScreen = () => {
     }
   }, [
     autoSyncStatus.phase,
-    buildDailyVitalsRange,
+    buildTodayVitals,
     ensureAutoConnect,
     handBandConnected,
     manualVitalsSyncing,
-    syncDailyVitalsToBackend,
+    syncTodayVitalsToBackend,
   ]);
 
   const openLastPositionMap = useCallback(() => {

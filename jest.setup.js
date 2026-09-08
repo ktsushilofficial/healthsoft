@@ -1,5 +1,9 @@
 /* eslint-env jest */
 
+// Vitals rows are keyed on the senior's local day, so a test asserting a
+// day string is only meaningful against a fixed zone. India has no DST.
+process.env.TZ = 'Asia/Kolkata';
+
 jest.mock('react-native-safe-area-context', () => ({
   SafeAreaProvider: ({ children }) => children,
   SafeAreaView: ({ children }) => children,
