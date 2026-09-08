@@ -23,6 +23,11 @@ import {
   parseSseEventBlock,
 } from '../utils/devicePositionStream';
 import type { V8DailyVitalsSyncPayload, V8WebVitalsSyncPayload } from '../v8/models';
+import {
+  buildRequestUrl,
+  isCapturablePath,
+  recordApiExchange,
+} from '../utils/lastApiExchange';
 
 const TOKEN_STORAGE_SERVICE = 'healthsoft.auth.tokens';
 const TOKEN_STORAGE_USERNAME = 'healthsoft-auth';
@@ -515,6 +520,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
     logApiRequest(method, path, headers, data);
 
+    // Recorded for the home screen's request inspector. Vitals paths only -
+    // see src/utils/lastApiExchange.ts - and never the Authorization header.
+    const capture = isCapturablePath(path);
+    const startedAt = Date.now();
+
     try {
       const response = await apiClient.request<T>({
         url: path,
@@ -524,9 +534,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       });
 
       logApiResponse(method, path, response.status, response.headers, response.data);
+      if (capture) {
+        recordApiExchange({
+          at: startedAt,
+          method,
+          url: buildRequestUrl(path),
+          requestBody: data,
+          status: response.status,
+          responseBody: response.data,
+          errorMessage: null,
+          durationMs: Date.now() - startedAt,
+        });
+      }
       return response.data;
     } catch (error) {
       logApiError(method, path, headers, data, error);
+      if (capture) {
+        const response = (error as { response?: { status?: number; data?: unknown } })
+          ?.response;
+        recordApiExchange({
+          at: startedAt,
+          method,
+          url: buildRequestUrl(path),
+          requestBody: data,
+          status: response?.status ?? null,
+          responseBody: response?.data,
+          errorMessage:
+            error instanceof Error ? error.message : String(error),
+          durationMs: Date.now() - startedAt,
+        });
+      }
       throw error;
     }
   };

@@ -22,6 +22,12 @@ import LinearGradient from 'react-native-linear-gradient';
 import { useAuth } from '../context/AuthContext';
 import { todayVitalsDayKey } from '../utils/vitalsDay';
 import DailyVitalsTable from '../components/DailyVitalsTable';
+import {
+  formatExchangeBody,
+  getLastApiExchange,
+  subscribeToApiExchange,
+  type ApiExchange,
+} from '../utils/lastApiExchange';
 import type { V8DailyVitalSummary } from '../v8/models';
 import SeniorSelectionModal from '../components/SeniorSelectionModal';
 import GuardianWelcomeModal from '../components/GuardianWelcomeModal';
@@ -649,6 +655,10 @@ const HomeScreen = () => {
   const [manualVitalsSyncing, setManualVitalsSyncing] = useState(false);
   // Rows from the last manual sync, shown in the same table the Manage screen uses.
   const [syncedVitalsRows, setSyncedVitalsRows] = useState<V8DailyVitalSummary[]>([]);
+  const [apiInspectorVisible, setApiInspectorVisible] = useState(false);
+  const [lastExchange, setLastExchange] = useState<ApiExchange | null>(
+    getLastApiExchange(),
+  );
   const [homeBandPreparingScan, setHomeBandPreparingScan] = useState(false);
   const [homeBandConnectingDeviceId, setHomeBandConnectingDeviceId] = useState<string | null>(null);
   const [homeBandDisconnectingDeviceId, setHomeBandDisconnectingDeviceId] = useState<string | null>(null);
@@ -703,6 +713,12 @@ const HomeScreen = () => {
     }
     return buildDisplayName(user.first_name, user.last_name, user.email);
   }, [user]);
+
+  useEffect(
+    () =>
+      subscribeToApiExchange(() => setLastExchange(getLastApiExchange())),
+    [],
+  );
 
   useEffect(() => {
     return () => {
@@ -1894,6 +1910,20 @@ const HomeScreen = () => {
               <View style={styles.autoSyncLiveBadge}>
                 <View style={styles.autoSyncLiveDot} />
                 <Text style={styles.autoSyncLiveText}>AUTO</Text>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="Show the last sync request and response"
+                  activeOpacity={0.7}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  onPress={() => setApiInspectorVisible(true)}
+                  style={styles.apiInfoButton}
+                >
+                  <Icon
+                    name="information-circle-outline"
+                    size={15}
+                    color={lastExchange ? '#0B8A5B' : '#9AA6A0'}
+                  />
+                </TouchableOpacity>
               </View>
               <TouchableOpacity
                 accessibilityRole="button"
@@ -2300,6 +2330,75 @@ const HomeScreen = () => {
           )}
         </View>
       </ScrollView>
+      <Modal
+        visible={apiInspectorVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setApiInspectorVisible(false)}
+      >
+        <View style={styles.apiModalBackdrop}>
+          <View style={styles.apiModalCard}>
+            <View style={styles.apiModalHeader}>
+              <Text style={styles.apiModalTitle}>Last vitals API call</Text>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+                onPress={() => setApiInspectorVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Icon name="close" size={22} color="#5A524B" />
+              </TouchableOpacity>
+            </View>
+
+            {lastExchange ? (
+              <ScrollView style={styles.apiModalBody}>
+                <Text style={styles.apiLabel}>ENDPOINT</Text>
+                <Text style={styles.apiValue}>
+                  {lastExchange.method.toUpperCase()} {lastExchange.url}
+                </Text>
+
+                <Text style={styles.apiLabel}>RESULT</Text>
+                <Text
+                  style={[
+                    styles.apiValue,
+                    lastExchange.errorMessage ? styles.apiValueBad : styles.apiValueOk,
+                  ]}
+                >
+                  {lastExchange.status ?? '—'}
+                  {lastExchange.errorMessage ? ` · ${lastExchange.errorMessage}` : ' · OK'}
+                  {lastExchange.durationMs != null ? ` · ${lastExchange.durationMs} ms` : ''}
+                </Text>
+
+                <Text style={styles.apiLabel}>WHEN</Text>
+                <Text style={styles.apiValue}>
+                  {new Date(lastExchange.at).toLocaleString()}
+                </Text>
+
+                <Text style={styles.apiLabel}>REQUEST BODY</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                  <Text style={styles.apiJson} selectable>
+                    {formatExchangeBody(lastExchange.requestBody)}
+                  </Text>
+                </ScrollView>
+
+                <Text style={styles.apiLabel}>RESPONSE BODY</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                  <Text style={styles.apiJson} selectable>
+                    {formatExchangeBody(lastExchange.responseBody)}
+                  </Text>
+                </ScrollView>
+              </ScrollView>
+            ) : (
+              <View style={styles.apiEmpty}>
+                <Icon name="cloud-offline-outline" size={26} color="#B6ADA4" />
+                <Text style={styles.apiEmptyText}>
+                  No vitals sync or fetch has run yet in this session.
+                </Text>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -2426,6 +2525,79 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     borderWidth: 1,
     borderColor: '#DDF3E8',
+  },
+  apiInfoButton: {
+    marginLeft: 5,
+  },
+  apiModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(20, 18, 16, 0.55)',
+    justifyContent: 'flex-end',
+  },
+  apiModalCard: {
+    backgroundColor: '#FFFDFA',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    maxHeight: '86%',
+    paddingBottom: 24,
+  },
+  apiModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EFE8DF',
+  },
+  apiModalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#2E2A27',
+  },
+  apiModalBody: {
+    paddingHorizontal: 20,
+    paddingTop: 14,
+  },
+  apiLabel: {
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+    color: '#8B8078',
+    marginTop: 14,
+    marginBottom: 5,
+  },
+  apiValue: {
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 12,
+    color: '#2E2A27',
+    lineHeight: 18,
+  },
+  apiValueOk: { color: '#0B7A50' },
+  apiValueBad: { color: '#B4442C' },
+  apiJson: {
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 11,
+    lineHeight: 17,
+    color: '#2E2A27',
+    backgroundColor: '#F6F2EC',
+    borderWidth: 1,
+    borderColor: '#EAE2D8',
+    borderRadius: 8,
+    padding: 10,
+  },
+  apiEmpty: {
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 44,
+    paddingHorizontal: 30,
+  },
+  apiEmptyText: {
+    fontSize: 13.5,
+    color: '#8B8078',
+    textAlign: 'center',
   },
   autoSyncIconWrap: {
     width: 40,
