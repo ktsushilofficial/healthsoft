@@ -23,7 +23,11 @@ import type {
   V8WebVitalsSyncPayload,
 } from './models';
 import { parseV8Payload } from './parser';
-import { todayVitalsDayKey } from '../utils/vitalsDay';
+import {
+  toLocalDayKey,
+  todayLocalDayKey,
+  todayVitalsDayKey,
+} from '../utils/vitalsDay';
 import {
   ECG_RECORDING_DURATION_MS,
   analyzeWaveformHeartRate,
@@ -178,8 +182,7 @@ const sampleDayKey = (sample: V8VitalSample): string | null => {
   if (raw) {
     if (/^\d{10,13}$/.test(raw)) {
       const epoch = raw.length === 13 ? Number(raw) : Number(raw) * 1000;
-      if (Number.isFinite(epoch))
-        return new Date(epoch).toISOString().slice(0, 10);
+      if (Number.isFinite(epoch)) return toLocalDayKey(new Date(epoch));
     }
     const normalized = raw.replace(/\//g, '-').replace(/\./g, '-');
     const direct = normalized.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
@@ -190,15 +193,13 @@ const sampleDayKey = (sample: V8VitalSample): string | null => {
       return `${y}-${m}-${d}`;
     }
     const parsed = new Date(normalized);
-    if (!Number.isNaN(parsed.getTime()))
-      return parsed.toISOString().slice(0, 10);
+    if (!Number.isNaN(parsed.getTime())) return toLocalDayKey(parsed);
     if (Platform.OS === 'ios' && sample.receivedAt != null) {
-      return new Date(sample.receivedAt).toISOString().slice(0, 10);
+      return toLocalDayKey(new Date(sample.receivedAt));
     }
     return null;
   }
-  if (sample.receivedAt != null)
-    return new Date(sample.receivedAt).toISOString().slice(0, 10);
+  if (sample.receivedAt != null) return toLocalDayKey(new Date(sample.receivedAt));
   return null;
 };
 
@@ -2541,13 +2542,17 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         nextSyncAt: null,
         error: null,
       });
-      const today = todayVitalsDayKey();
-      const todayRows = await buildDailyVitalsRange(today, today);
-      const rowsToSync = todayRows.filter(row => row.date === today);
-      if (rowsToSync.length === 0) {
+      // Read the band in the senior's own day, then file the row under the
+      // day the backend accepts - see src/utils/vitalsDay.ts.
+      const bandDay = todayLocalDayKey();
+      const apiDay = todayVitalsDayKey();
+      const todayRows = await buildDailyVitalsRange(bandDay, bandDay);
+      const bandRows = todayRows.filter(row => row.date === bandDay);
+      if (bandRows.length === 0) {
         throw new Error('No current hand band health data is available yet.');
       }
-      await syncDailyVitalsToBackend(today, today, rowsToSync);
+      const rowsToSync = bandRows.map(row => ({ ...row, date: apiDay }));
+      await syncDailyVitalsToBackend(apiDay, apiDay, rowsToSync);
     } catch (error) {
       const retryAt = Date.now() + 60_000;
       nextAutomaticSyncAttemptAtRef.current = retryAt;

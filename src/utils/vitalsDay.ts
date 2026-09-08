@@ -48,6 +48,26 @@ export function vitalsDayStart(ymd: string): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+// --- The senior's own calendar day -------------------------------------
+//
+// Distinct from the API day above, and deliberately so. The band records
+// against the wall clock on the wearer's wrist, so its data must be bucketed by
+// the local day or a sync at 10:00 IST silently discards everything the senior
+// did before 05:30 - it belonged to the previous UTC day. The sync layer
+// relabels these rows to the API day on the way out.
+
+/** The calendar day the band itself recorded against. */
+export function toLocalDayKey(date: Date): string {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
+    date.getDate(),
+  )}`;
+}
+
+/** Today in the senior's timezone - the day the band is filling in now. */
+export function todayLocalDayKey(): string {
+  return toLocalDayKey(new Date());
+}
+
 /** Start of the day that `date` falls in, on the same timeline. */
 export function startOfVitalsDay(date: Date): Date {
   return new Date(

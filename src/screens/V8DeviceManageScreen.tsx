@@ -18,7 +18,7 @@ import DateTimePicker, { type DateTimePickerEvent } from '@react-native-communit
 import { useAuth } from '../context/AuthContext';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import type { V8DailyVitalSummary } from '../v8/models';
-import { todayVitalsDayKey } from '../utils/vitalsDay';
+import { toLocalDayKey, todayLocalDayKey, todayVitalsDayKey } from '../utils/vitalsDay';
 import DailyVitalsTable from '../components/DailyVitalsTable';
 
 type RouteParams = {
@@ -34,7 +34,8 @@ const fmtNum = (v: number | null | undefined, decimals = 0, suffix = '') =>
   v != null && !Number.isNaN(v) ? `${Number(v).toFixed(decimals)}${suffix}` : '—';
 const MAX_RANGE_DAYS = 31;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const toYmd = (date: Date) => date.toISOString().slice(0, 10);
+// Date pickers show the senior's own calendar, matching how the band is read.
+const toYmd = (date: Date) => toLocalDayKey(date);
 const parseYmdDate = (value: string): Date | null => {
   const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) return null;
@@ -319,24 +320,27 @@ const V8DeviceManageScreen = () => {
       return;
     }
 
-    const today = toYmd(new Date());
+    const bandDay = todayLocalDayKey();
+    const today = todayVitalsDayKey();
     setTodaySyncing(true);
     setActionStatus(null);
 
     try {
-      setFromDate(today);
-      setToDate(today);
+      setFromDate(bandDay);
+      setToDate(bandDay);
 
-      const todayRows = await buildDailyVitalsRange(today, today);
+      const todayRows = await buildDailyVitalsRange(bandDay, bandDay);
       setFetchedVitalsRows(todayRows);
-      setFetchedVitalsRangeKey(`${today}|${today}`);
+      setFetchedVitalsRangeKey(`${bandDay}|${bandDay}`);
 
-      const exactTodayRows = todayRows.filter(row => row.date === today);
-      const rowsToSync = exactTodayRows.length > 0 ? exactTodayRows : todayRows;
-      if (rowsToSync.length === 0) {
+      const exactTodayRows = todayRows.filter(row => row.date === bandDay);
+      const bandRows = exactTodayRows.length > 0 ? exactTodayRows : todayRows;
+      if (bandRows.length === 0) {
         throw new Error('No today vitals data available to sync.');
       }
 
+      // Band rows carry the senior's day; the backend needs its own.
+      const rowsToSync = bandRows.map(row => ({ ...row, date: today }));
       const result = await syncDailyVitalsToBackend(today, today, rowsToSync);
       setActionStatus(`Today vitals synced to backend for ${result.days} day(s)`);
     } catch (error) {
@@ -394,7 +398,8 @@ const V8DeviceManageScreen = () => {
   }, [deviceInfo.batteryPercent]);
 
   const todayMotionFallback = useMemo(() => {
-    const today = todayVitalsDayKey();
+    // sampleDayKey buckets by the senior's local day, so compare against it.
+    const today = todayLocalDayKey();
     const all = Object.values(historyByType).flatMap(bucket => bucket.entries);
     const todayEntries = all.filter(entry => sampleDayKey(entry) === today);
     let steps: number | null = null;
@@ -448,7 +453,7 @@ const V8DeviceManageScreen = () => {
 
   const latestIsToday = useMemo(() => {
     if (!latestLiveData) return false;
-    return sampleDayKey(latestLiveData) === todayVitalsDayKey();
+    return sampleDayKey(latestLiveData) === todayLocalDayKey();
   }, [latestLiveData]);
 
   const displaySteps = latestIsToday

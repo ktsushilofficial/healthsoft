@@ -20,7 +20,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
 import { useAuth } from '../context/AuthContext';
-import { todayVitalsDayKey } from '../utils/vitalsDay';
+import { todayLocalDayKey, todayVitalsDayKey } from '../utils/vitalsDay';
 import DailyVitalsTable from '../components/DailyVitalsTable';
 import {
   formatExchangeBody,
@@ -1687,14 +1687,19 @@ const HomeScreen = () => {
         return;
       }
 
-      const today = todayVitalsDayKey();
-      const todayRows = await buildDailyVitalsRange(today, today);
-      const rowsToSync = todayRows.filter(row => row.date === today);
-      if (rowsToSync.length === 0) {
+      // The band is read in the senior's own day so nothing before the UTC
+      // rollover is lost; the row is then filed under the day the backend
+      // accepts. See src/utils/vitalsDay.ts.
+      const bandDay = todayLocalDayKey();
+      const apiDay = todayVitalsDayKey();
+      const todayRows = await buildDailyVitalsRange(bandDay, bandDay);
+      const bandRows = todayRows.filter(row => row.date === bandDay);
+      if (bandRows.length === 0) {
         throw new Error('No current hand band health data is available yet.');
       }
 
-      await syncDailyVitalsToBackend(today, today, rowsToSync);
+      const rowsToSync = bandRows.map(row => ({ ...row, date: apiDay }));
+      await syncDailyVitalsToBackend(apiDay, apiDay, rowsToSync);
       setSyncedVitalsRows(rowsToSync);
       Alert.alert('Sync complete', 'Today\'s hand band health data is up to date.');
     } catch (error) {
