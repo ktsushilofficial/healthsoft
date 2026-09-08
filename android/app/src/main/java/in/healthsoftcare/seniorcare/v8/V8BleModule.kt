@@ -1,5 +1,8 @@
 package `in`.healthsoftcare.seniorcare.v8
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -63,6 +66,9 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
     val adapter = bluetoothAdapter
     val state = when {
       adapter == null -> "Unsupported"
+      Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        (ContextCompat.checkSelfPermission(reactContext, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED ||
+          ContextCompat.checkSelfPermission(reactContext, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) -> "Unauthorized"
       adapter.isEnabled -> "PoweredOn"
       else -> "PoweredOff"
     }
@@ -94,12 +100,12 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
     emit("V8ConnectionState", map)
   }
 
-  private fun emitScanCandidate(device: BluetoothDevice?, rssi: Int? = null) {
+  private fun emitScanCandidate(device: BluetoothDevice?, rssi: Int? = null, localName: String? = null) {
     if (device == null) return
     val map = Arguments.createMap()
     map.putString("id", device.address)
     map.putString("name", device.name)
-    map.putString("localName", device.name)
+    map.putString("localName", localName ?: device.name)
     if (rssi != null) {
       map.putInt("rssi", rssi)
     }
@@ -232,6 +238,8 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
       emitConnection("connecting", deviceId)
       val device = adapter.getRemoteDevice(deviceId)
       bluetoothGatt?.close()
+      writeCharacteristic = null
+      notifyCharacteristic = null
       activeDeviceId = deviceId
       bluetoothGatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
         device.connectGatt(reactContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
@@ -474,8 +482,8 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
   }
 
   private fun looksLikeHandBand(device: BluetoothDevice?, record: ScanRecord?): Boolean {
-    val name = (device?.name ?: "").lowercase()
-    if (name.contains("v8") || name.contains("jstyle") || name.contains("band")) {
+    val names = listOfNotNull(device?.name, record?.deviceName).map { it.lowercase() }
+    if (names.any { name -> name.contains("v8") || name.contains("jstyle") || name.contains("band") }) {
       return true
     }
 
@@ -490,16 +498,16 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
     override fun onScanResult(callbackType: Int, result: ScanResult) {
       val device = result.device ?: return
       if (!looksLikeHandBand(device, result.scanRecord)) return
-      emitScanCandidate(device, result.rssi)
+      emitScanCandidate(device, result.rssi, result.scanRecord?.deviceName)
     }
   }
 
   private val gattCallback = object : BluetoothGattCallback() {
     override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+      if (gatt !== bluetoothGatt) return
       when (newState) {
         BluetoothProfile.STATE_CONNECTED -> {
           activeDeviceId = gatt.device.address
-          emitConnection("connected", activeDeviceId)
           gatt.discoverServices()
         }
         BluetoothProfile.STATE_DISCONNECTED -> {
@@ -511,15 +519,34 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
     }
 
     override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+      if (gatt !== bluetoothGatt) return
       val service: BluetoothGattService? = gatt.getService(serviceUuid)
       writeCharacteristic = service?.getCharacteristic(writeUuid)
       notifyCharacteristic = service?.getCharacteristic(notifyUuid)
 
-      val notify = notifyCharacteristic ?: return
+      val notify = notifyCharacteristic
+      if (status != BluetoothGatt.GATT_SUCCESS || writeCharacteristic == null || notify == null) {
+        emitConnection("error", gatt.device.address)
+        gatt.disconnect()
+        return
+      }
       gatt.setCharacteristicNotification(notify, true)
       val descriptor: BluetoothGattDescriptor? = notify.getDescriptor(cccUuid)
       descriptor?.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-      descriptor?.let { gatt.writeDescriptor(it) }
+      if (descriptor == null || !gatt.writeDescriptor(descriptor)) {
+        emitConnection("error", gatt.device.address)
+        gatt.disconnect()
+      }
+    }
+
+    override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+      if (gatt !== bluetoothGatt || descriptor.uuid != cccUuid) return
+      if (status == BluetoothGatt.GATT_SUCCESS) {
+        emitConnection("connected", gatt.device.address)
+      } else {
+        emitConnection("error", gatt.device.address)
+        gatt.disconnect()
+      }
     }
 
     override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {

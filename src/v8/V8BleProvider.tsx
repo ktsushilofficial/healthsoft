@@ -11,6 +11,7 @@ import { AppState, Platform } from 'react-native';
 import * as Keychain from 'react-native-keychain';
 import { useAuth } from '../context/AuthContext';
 import type { V8ConnectionState, V8Device } from './types';
+import { requestHandBandPermissions } from './permissions';
 import { isV8NativeAvailable, v8Emitter, v8Native } from './nativeV8';
 import type {
   V8DailyVitalSummary,
@@ -39,7 +40,7 @@ import {
 import {
   getAssignedHandBandMacAddress,
   normalizeMacAddress,
-  resolveAssignedMacFromAdvertisedName,
+  resolveHandBandIdentity,
   resolveConnectedHandBandMac,
 } from '../utils/deviceAssignments';
 import {
@@ -149,7 +150,6 @@ const isBluetoothAvailabilityError = (message: string | null): boolean => {
   const normalized = message.toLowerCase();
   return (
     normalized.includes('bluetooth is off') ||
-    normalized.includes('bluetooth permission') ||
     normalized.includes('bluetooth is unsupported') ||
     normalized.includes('bluetooth is resetting') ||
     normalized.includes('bluetooth state is unknown') ||
@@ -189,6 +189,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     selectedSenior,
     syncV8VitalsByDevice,
     getAssignedDevicesForSenior,
+    refreshHandBandAssignments,
     selectedSeniorHandBandMacs,
   } = useAuth();
   const [bleState, setBleState] = useState<V8BleState>(
@@ -211,7 +212,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   const latestLiveDataRef = useRef<V8VitalSample | null>(null);
   const deviceInfoRef = useRef<V8DeviceInfo | null>(null);
   const devicesByIdRef = useRef<Record<string, V8Device>>({});
-  const [deviceInfo, setDeviceInfo] = useState<V8DeviceInfo>({
+  const [reportedDeviceInfo, setDeviceInfo] = useState<V8DeviceInfo>({
     imei: null,
     deviceName: null,
     mac: null,
@@ -224,6 +225,43 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     string | null
   >(null);
   const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
+  const [verifiedConnection, setVerifiedConnection] = useState<{
+    id: string;
+    mac: string;
+  } | null>(null);
+  const [lastConnectedDevice, setLastConnectedDevice] =
+    useState<V8Device | null>(null);
+  const deviceInfo = useMemo(
+    () => ({
+      ...reportedDeviceInfo,
+      // Never treat a cached identity as belonging to a new connection.
+      mac: activeDeviceId
+        ? resolveHandBandIdentity(
+            devicesById[normalizeId(activeDeviceId)] ?? { id: activeDeviceId },
+            selectedSeniorHandBandMacs,
+            reportedDeviceInfo.mac ??
+              (verifiedConnection?.id === activeDeviceId
+                ? verifiedConnection.mac
+                : null),
+          )
+        : null,
+    }),
+    [
+      activeDeviceId,
+      devicesById,
+      reportedDeviceInfo,
+      selectedSeniorHandBandMacs,
+      verifiedConnection,
+    ],
+  );
+  const connectionAttemptRef = useRef(false);
+  const pendingConnectionRef = useRef<{
+    id: string;
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+
   const [suppressAutoConnectUntil, setSuppressAutoConnectUntil] =
     useState<number>(0);
   const [liveModeEnabled, setLiveModeEnabled] = useState(false);
@@ -313,6 +351,12 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
 
   useEffect(
     () => () => {
+      const pending = pendingConnectionRef.current;
+      if (pending) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error('Hand band manager closed.'));
+        pendingConnectionRef.current = null;
+      }
       if (scanStopTimerRef.current) {
         clearTimeout(scanStopTimerRef.current);
         scanStopTimerRef.current = null;
@@ -461,7 +505,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         try {
           const parsed = JSON.parse(value.password) as {
             lastConnectedDeviceId?: string;
+            device?: V8Device;
           };
+          if (parsed.device?.id === parsed.lastConnectedDeviceId) setLastConnectedDevice(parsed.device ?? null);
           if (parsed.lastConnectedDeviceId)
             setLastConnectedDeviceId(parsed.lastConnectedDeviceId);
         } catch {
@@ -496,7 +542,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
             setLatestLiveData(parsed.latestLiveData);
           }
           if (parsed.deviceInfo && typeof parsed.deviceInfo === 'object') {
-            setDeviceInfo(prev => ({ ...prev, ...parsed.deviceInfo }));
+            setDeviceInfo(prev => ({ ...prev, ...parsed.deviceInfo, mac: null }));
           }
         } catch {
           // ignore invalid cache
@@ -566,15 +612,6 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         });
       }
       if (state === 'connected' && rawDeviceId && rawDeviceId !== 'default') {
-        setLastConnectedDeviceId(rawDeviceId);
-        Keychain.setGenericPassword(
-          V8_SESSION_USER,
-          JSON.stringify({ lastConnectedDeviceId: rawDeviceId }),
-          {
-            service: V8_SESSION_SERVICE,
-            accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-          },
-        ).catch(() => {});
         // Prime visible device info after successful connection. The band
         // answers one command at a time and silently drops anything that
         // arrives while it is still replying, so these must be spaced out
@@ -911,6 +948,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       scanStopTimerRef.current = null;
     }
     try {
+      await requestHandBandPermissions();
       const currentBluetoothState = await refreshBluetoothState();
       if (currentBluetoothState !== 'PoweredOn') {
         setScanError(
@@ -924,6 +962,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         );
         return;
       }
+      await refreshHandBandAssignments();
       logV8Debug('Starting scan', {
         filters: ['v8', 'jstyle', 'band'],
         startedAt: new Date().toISOString(),
@@ -947,7 +986,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           : 'Failed to scan for V8 devices.',
       );
     }
-  }, [refreshBluetoothState]);
+  }, [refreshBluetoothState, refreshHandBandAssignments]);
 
   const stopScan = useCallback(async () => {
     logV8Debug('Stopping scan manually');
@@ -972,56 +1011,104 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
           .map(value => normalizeMacAddress(value))
           .filter((value): value is string => !!value),
       );
+      if (connectionAttemptRef.current)
+        throw new Error('A hand band connection is already in progress.');
       if (assignedMacs.size === 0) {
         throw new Error(
           'No Hand Band MAC address is assigned to the selected senior.',
         );
       }
-      if (scanStopTimerRef.current) {
-        clearTimeout(scanStopTimerRef.current);
-        scanStopTimerRef.current = null;
+      const candidateMac = resolveHandBandIdentity(
+        devicesByIdRef.current[normalizedTargetId] ?? { id: deviceId },
+        selectedSeniorHandBandMacs,
+      );
+      if (candidateMac && !assignedMacs.has(candidateMac)) {
+        throw new Error(
+          'This hand band is not assigned to the selected senior.',
+        );
       }
-      await v8Native.stopScan().catch(() => {});
-      setIsScanning(false);
-      const currentlyActive = activeDeviceId
-        ? normalizeId(activeDeviceId)
-        : null;
-      if (currentlyActive && currentlyActive !== normalizedTargetId) {
-        try {
-          await v8Native.disconnect();
-        } catch {
-          // best effort
-        }
-        setConnectionStates(prev => ({
-          ...prev,
-          [currentlyActive]: 'disconnected',
-        }));
-        setActiveDeviceId(null);
-      }
-      setConnectionStates(prev => ({
-        ...prev,
-        [normalizedTargetId]: 'connecting',
-      }));
-      // Never carry a previously connected band's identity into verification
-      // of a newly selected scan result.
-      setDeviceInfo({
-        imei: null,
-        deviceName: null,
-        mac: null,
-        batteryPercent: null,
-        firmwareVersion: null,
-        deviceTime: null,
-        updatedAt: null,
-      });
+      connectionAttemptRef.current = true;
       try {
-        await v8Native.connect(deviceId);
-      } catch (error) {
-        await refreshBluetoothState();
+        await requestHandBandPermissions();
+        if (scanStopTimerRef.current) {
+          clearTimeout(scanStopTimerRef.current);
+          scanStopTimerRef.current = null;
+        }
+        await v8Native.stopScan().catch(() => {});
+        setIsScanning(false);
+        const currentlyActive = activeDeviceId
+          ? normalizeId(activeDeviceId)
+          : null;
+        if (currentlyActive && currentlyActive !== normalizedTargetId) {
+          try {
+            await v8Native.disconnect();
+          } catch {
+            // best effort
+          }
+          setConnectionStates(prev => ({
+            ...prev,
+            [currentlyActive]: 'disconnected',
+          }));
+          setActiveDeviceId(null);
+        }
+        setVerifiedConnection(null);
         setConnectionStates(prev => ({
           ...prev,
-          [normalizedTargetId]: 'error',
+          [normalizedTargetId]: 'connecting',
         }));
-        throw error;
+        // Never carry a previously connected band's identity into verification
+        // of a newly selected scan result.
+        setDeviceInfo({
+          imei: null,
+          deviceName: null,
+          mac: null,
+          batteryPercent: null,
+          firmwareVersion: null,
+          deviceTime: null,
+          updatedAt: null,
+        });
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              pendingConnectionRef.current = null;
+              v8Native?.disconnect().catch(() => {});
+              reject(
+                new Error(
+                  'Could not connect and identify your assigned hand band. Keep it nearby and disconnect it from other phones, then scan again.',
+                ),
+              );
+            }, 20000);
+            pendingConnectionRef.current = {
+              id: normalizedTargetId,
+              resolve,
+              reject,
+              timer,
+            };
+            v8Native!.connect(deviceId).catch(error => {
+              clearTimeout(timer);
+              pendingConnectionRef.current = null;
+              reject(error);
+            });
+          });
+        } catch (error) {
+          await v8Native.disconnect().catch(() => {});
+          setActiveDeviceId(current =>
+            current === normalizedTargetId ? null : current,
+          );
+          setScanError(
+            error instanceof Error
+              ? error.message
+              : 'Hand band connection failed.',
+          );
+          await refreshBluetoothState();
+          setConnectionStates(prev => ({
+            ...prev,
+            [normalizedTargetId]: 'error',
+          }));
+          throw error;
+        }
+      } finally {
+        connectionAttemptRef.current = false;
       }
     },
     [activeDeviceId, refreshBluetoothState, selectedSeniorHandBandMacs],
@@ -1033,6 +1120,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       const normalizedTargetId = normalizeId(deviceId);
       setSuppressAutoConnectUntil(Date.now() + 60_000);
       setLastConnectedDeviceId(null);
+      setLastConnectedDevice(null);
       Keychain.resetGenericPassword({ service: V8_SESSION_SERVICE }).catch(
         () => {},
       );
@@ -1056,20 +1144,94 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   );
 
   useEffect(() => {
+    const pending = pendingConnectionRef.current;
+    if (!pending) return;
+    const state = connectionStates[pending.id];
+    const mac = activeDeviceId === pending.id ? deviceInfo.mac : null;
+    const assigned = !!mac && selectedSeniorHandBandMacs.includes(mac);
+    if (state === 'connected' && assigned) {
+      clearTimeout(pending.timer);
+      pendingConnectionRef.current = null;
+      pending.resolve();
+    } else if (
+      state === 'error' ||
+      state === 'disconnected' ||
+      (state === 'connected' && mac && !assigned)
+    ) {
+      clearTimeout(pending.timer);
+      pendingConnectionRef.current = null;
+      pending.reject(
+        new Error(
+          mac && !assigned
+            ? 'This hand band is not assigned to the selected senior.'
+            : 'The hand band connection failed. Keep it nearby and try again.',
+        ),
+      );
+    }
+  }, [
+    activeDeviceId,
+    connectionStates,
+    deviceInfo.mac,
+    selectedSeniorHandBandMacs,
+  ]);
+
+  useEffect(() => {
+    if (
+      !activeDeviceId ||
+      connectionStates[activeDeviceId] !== 'connected' ||
+      !deviceInfo.mac ||
+      !selectedSeniorHandBandMacs.includes(deviceInfo.mac)
+    )
+      return;
+    const device = devicesById[activeDeviceId];
+    if (!device) return;
+    const mac = deviceInfo.mac;
+    setVerifiedConnection(prev =>
+      prev?.id === activeDeviceId && prev.mac === mac
+        ? prev
+        : { id: activeDeviceId, mac },
+    );
+    setLastConnectedDeviceId(device.id);
+    setLastConnectedDevice(device);
+    Keychain.setGenericPassword(
+      V8_SESSION_USER,
+      JSON.stringify({ lastConnectedDeviceId: device.id, device }),
+      {
+        service: V8_SESSION_SERVICE,
+        accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+      },
+    ).catch(() => {});
+  }, [
+    activeDeviceId,
+    connectionStates,
+    deviceInfo.mac,
+    devicesById,
+    selectedSeniorHandBandMacs,
+  ]);
+
+  useEffect(() => {
     if (!activeDeviceId || connectionStates[activeDeviceId] !== 'connected')
       return;
     const connectedMac = resolveConnectedHandBandMac(
       deviceInfo.mac,
       activeDeviceId,
     );
-    if (!connectedMac) return;
+    if (!connectedMac && selectedSeniorHandBandMacs.length > 0) {
+      const timer = setTimeout(() => {
+        setScanError(
+          'Unable to verify that this hand band belongs to the selected senior. Please scan again.',
+        );
+        v8Native?.disconnect().catch(() => {});
+      }, 10000);
+      return () => clearTimeout(timer);
+    }
 
     const assignedMacs = new Set(
       selectedSeniorHandBandMacs
         .map(value => normalizeMacAddress(value))
         .filter((value): value is string => !!value),
     );
-    if (assignedMacs.has(connectedMac)) {
+    if (connectedMac && assignedMacs.has(connectedMac)) {
       setScanError(null);
       return;
     }
@@ -1082,6 +1244,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       [activeDeviceId]: 'disconnecting',
     }));
     setLastConnectedDeviceId(null);
+    setLastConnectedDevice(null);
     Keychain.resetGenericPassword({ service: V8_SESSION_SERVICE }).catch(
       () => {},
     );
@@ -1915,25 +2078,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       if (!seniorId) {
         throw new Error('Senior ID is required before syncing vitals.');
       }
-      // On iOS activeDeviceId is a CoreBluetooth UUID, never a MAC, so the MAC
-      // has to come back over the vendor protocol. Ask for it rather than
-      // failing the sync outright when it has not arrived yet.
-      const connectedDeviceName = activeDeviceId
-        ? (() => {
-            const entry = devicesByIdRef.current[normalizeId(activeDeviceId)];
-            return entry?.name ?? entry?.localName ?? null;
-          })()
-        : null;
-      const connectedMac =
-        resolveConnectedHandBandMac(deviceInfo.mac, activeDeviceId) ??
-        (await ensureDeviceMac().catch(() => null)) ??
-        // Last resort on iOS: this band advertises its MAC suffix in its name,
-        // which identifies which of the senior's assigned bands this is even
-        // when it never answers GetDeviceMacAddress.
-        resolveAssignedMacFromAdvertisedName(
-          connectedDeviceName,
-          selectedSeniorHandBandMacs,
-        );
+      const connectedMac = deviceInfo.mac ?? (await ensureDeviceMac().catch(() => null));
       if (!connectedMac) {
         throw new Error(
           'Connected Hand Band MAC is unavailable. Keep the band close to the phone and try again.',
@@ -2078,7 +2223,6 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       return { days: 1 };
     },
     [
-      activeDeviceId,
       deviceInfo.mac,
       ensureDeviceMac,
       getAssignedDevicesForSenior,
@@ -2121,10 +2265,12 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       // ignore
     }
     setActiveDeviceId(null);
+    setVerifiedConnection(null);
     setLiveModeEnabled(false);
     setConnectionStates({});
     setDevicesById({});
     setLastConnectedDeviceId(null);
+    setLastConnectedDevice(null);
     setSuppressAutoConnectUntil(Date.now() + 60_000);
     if (scanStopTimerRef.current) {
       clearTimeout(scanStopTimerRef.current);
@@ -2145,10 +2291,10 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     if (Date.now() < suppressAutoConnectUntil) return;
     if (!v8Native || !lastConnectedDeviceId) return;
     if (bleState !== 'PoweredOn') return;
-    if (isScanning) return;
-    const rememberedMac = resolveConnectedHandBandMac(
-      deviceInfo.mac,
-      lastConnectedDeviceId,
+    if (isScanning || pendingConnectionRef.current || activeDeviceId) return;
+    const rememberedMac = resolveHandBandIdentity(
+      devicesByIdRef.current[normalizeId(lastConnectedDeviceId)] ?? lastConnectedDevice ?? { id: lastConnectedDeviceId },
+      selectedSeniorHandBandMacs,
     );
     const assignedMacs = selectedSeniorHandBandMacs
       .map(value => normalizeMacAddress(value))
@@ -2157,6 +2303,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     const state = connectionStates[normalizeId(lastConnectedDeviceId)];
     if (state === 'connected' || state === 'connecting') return;
     try {
+      if (lastConnectedDevice && !devicesByIdRef.current[normalizeId(lastConnectedDeviceId)]) {
+        setDevicesById(prev => ({ ...prev, [normalizeId(lastConnectedDeviceId)]: lastConnectedDevice }));
+      }
       await connect(lastConnectedDeviceId);
     } catch {
       try {
@@ -2169,7 +2318,8 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     connect,
     bleState,
     connectionStates,
-    deviceInfo.mac,
+    activeDeviceId,
+    lastConnectedDevice,
     isScanning,
     lastConnectedDeviceId,
     selectedSeniorHandBandMacs,

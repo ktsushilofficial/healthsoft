@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -8,7 +8,7 @@ import type { DeviceStackParamList } from '../types/navigation';
 import { useAuth } from '../context/AuthContext';
 import {
   normalizeMacAddress,
-  resolveConnectedHandBandMac,
+  resolveHandBandIdentity,
 } from '../utils/deviceAssignments';
 
 type V8DeviceTabProps = {
@@ -63,27 +63,13 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
   const matchedDeviceIds = useMemo(() => {
     const matched = new Set<string>();
     devices.forEach(device => {
-      const scannedMac = compactMac(device.id);
-      if (scannedMac && selectedSeniorMacSet.has(scannedMac)) {
-        matched.add(device.id);
-      }
+      const connected = connectionStates[normalizeId(device.id)] === 'connected';
+      const mac = resolveHandBandIdentity(device, selectedSeniorHandBandMacs, connected ? deviceInfo.mac : null);
+      if (mac && selectedSeniorMacSet.has(mac)) matched.add(device.id);
     });
 
-    const connectedDevice = devices.find(
-      device => connectionStates[normalizeId(device.id)] === 'connected',
-    );
-    const connectedDeviceMac = resolveConnectedHandBandMac(
-      deviceInfo.mac,
-      connectedDevice?.id,
-    );
-    if (connectedDeviceMac && selectedSeniorMacSet.has(connectedDeviceMac)) {
-      if (connectedDevice) {
-        matched.add(connectedDevice.id);
-      }
-    }
-
     return matched;
-  }, [connectionStates, deviceInfo.mac, devices, selectedSeniorMacSet]);
+  }, [connectionStates, deviceInfo.mac, devices, selectedSeniorHandBandMacs, selectedSeniorMacSet]);
 
   const myHandBandDevices = useMemo(
     () => devices.filter(device => matchedDeviceIds.has(device.id)),
@@ -100,7 +86,9 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
     const busy = state === 'connecting' || state === 'disconnecting';
     const connected = state === 'connected';
     const matchesSelectedSenior = matchedDeviceIds.has(device.id);
-    const canVerifyMac = selectedSeniorHandBandMacs.length > 0;
+    const candidateMac = resolveHandBandIdentity(device, selectedSeniorHandBandMacs);
+    const knownOtherBand = !!candidateMac && !selectedSeniorMacSet.has(candidateMac);
+    const canVerifyMac = selectedSeniorHandBandMacs.length > 0 && !knownOtherBand;
     const reportedMac = connected ? compactMac(deviceInfo.mac) : null;
     const scannedMac = compactMac(device.id);
     const idLabel = Platform.OS === 'ios' && !scannedMac ? 'iOS ID' : 'ID';
@@ -110,7 +98,7 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
           <Text style={styles.deviceName}>{device.name ?? device.localName ?? 'Hand Band'}</Text>
           <Text style={styles.deviceMeta}>{typeof device.rssi === 'number' ? `RSSI: ${device.rssi}` : 'Available'}</Text>
           <Text style={styles.deviceMeta}>{idLabel}: {device.id}</Text>
-          {reportedMac ? <Text style={styles.deviceMeta}>Reported MAC: {reportedMac}</Text> : null}
+          {reportedMac ? <Text style={styles.deviceMeta}>Band MAC: {reportedMac}</Text> : null}
           {matchesSelectedSenior ? (
             <Text style={styles.matchChip}>Assigned to selected senior</Text>
           ) : null}
@@ -127,7 +115,12 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
               await disconnect(device.id);
               return;
             }
-            await connect(device.id);
+            try {
+              await connect(device.id);
+            } catch (error) {
+              Alert.alert('Connection failed', error instanceof Error ? error.message : 'Unable to connect your hand band.');
+              return;
+            }
             requestDeviceMac().catch(() => undefined);
             if (!matchesSelectedSenior) {
               return;
@@ -153,7 +146,7 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
                   ? 'Connect'
                   : canVerifyMac
                     ? 'Verify MAC'
-                    : 'No Assigned MAC'}
+                    : knownOtherBand ? 'Not your band' : 'No Assigned MAC'}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -227,6 +220,7 @@ const V8DeviceTab = ({ showSyncLatestPrompt = false, promptToken = null }: V8Dev
           </Text>
         </View>
       ) : null}
+      {selectedSeniorHandBandMacs.length === 0 ? <Text style={styles.warningText}>No assigned hand band is available. Check that this senior’s band MAC is saved in their device assignment, then scan again.</Text> : null}
       {devices.length === 0 ? <Text style={styles.cardSubtitle}>No Hand Band device detected yet.</Text> : null}
 
       {myHandBandDevices.length > 0 ? (

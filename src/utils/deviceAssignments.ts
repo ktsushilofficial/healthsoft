@@ -91,19 +91,42 @@ export function resolveAssignedMacFromAdvertisedName(
   advertisedName: string | null | undefined,
   assignedMacs: readonly (string | null | undefined)[],
 ): string | null {
-  const haystack = (advertisedName ?? '')
-    .toUpperCase()
-    .replace(/[^0-9A-F]/g, '');
-  if (haystack.length < 6) return null;
+  // Match an identity token at the end, not arbitrary hex letters in a name.
+  const token = (advertisedName ?? '')
+    .trim()
+    .match(/(?:^|[^a-z0-9])((?:[0-9a-f]{2}[:-]?){3,6})$/i)?.[1];
+  if (!token) return null;
+  const suffix = token.replace(/[^0-9a-f]/gi, '').toUpperCase();
+  if (suffix.length !== 6 && suffix.length !== 12) return null;
 
   const matches = new Set(
     assignedMacs
       .map(value => normalizeMac(value))
       .filter((value): value is string => !!value)
-      .filter(mac => haystack.includes(mac.slice(-6))),
+      .filter(mac =>
+        suffix.length === 12 ? mac === suffix : mac.endsWith(suffix),
+      ),
   );
 
   return matches.size === 1 ? [...matches][0] : null;
+}
+
+/** A reported/full MAC takes precedence over the advertised-name fallback. */
+export function resolveHandBandIdentity(
+  device:
+    | { id: string; name?: string | null; localName?: string | null }
+    | null
+    | undefined,
+  assignedMacs: readonly (string | null | undefined)[],
+  reportedMac?: string | null,
+): string | null {
+  return (
+    resolveConnectedHandBandMac(reportedMac, device?.id) ??
+    resolveAssignedMacFromAdvertisedName(
+      device?.localName?.trim() || device?.name,
+      assignedMacs,
+    )
+  );
 }
 
 export function isMacAddressLike(value?: string | null): boolean {

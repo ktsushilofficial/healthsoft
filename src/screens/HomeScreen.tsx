@@ -44,7 +44,7 @@ import {
   isMacAddressLike,
   isPillDispenserAssignedDevice,
   normalizeMacAddress,
-  resolveAssignedMacFromAdvertisedName,
+  resolveHandBandIdentity,
   resolveConnectedHandBandMac,
   type SeniorAssignedDevice,
 } from '../utils/deviceAssignments';
@@ -557,7 +557,6 @@ function isV8BluetoothAvailabilityMessage(message: string | null): boolean {
   const normalized = message.toLowerCase();
   return (
     normalized.includes('bluetooth is off') ||
-    normalized.includes('bluetooth permission') ||
     normalized.includes('bluetooth is unsupported') ||
     normalized.includes('bluetooth is resetting') ||
     normalized.includes('bluetooth state is unknown') ||
@@ -1492,11 +1491,8 @@ const HomeScreen = () => {
       // UUID instead, so fall back to the MAC suffix the band advertises in its
       // name - that identifies it without needing a connection at all.
       const scannedMac =
-        normalizeMacAddress(device.id) ??
-        resolveAssignedMacFromAdvertisedName(
-          device.name ?? device.localName,
-          selectedSeniorHandBandMacs,
-        );
+        resolveHandBandIdentity(device, selectedSeniorHandBandMacs,
+          v8ConnectionStates[normalizeDeviceId(device.id)] === 'connected' ? v8DeviceInfo.mac : null);
       if (scannedMac && assignedHandBandMacSet.has(scannedMac)) {
         matched.add(device.id);
       }
@@ -1534,7 +1530,7 @@ const HomeScreen = () => {
       return;
     }
 
-    if (v8BleState !== 'PoweredOn') {
+    if (v8BleState !== 'PoweredOn' && !(Platform.OS === 'android' && (v8BleState === 'Unauthorized' || v8BleState === 'Unknown'))) {
       // iOS has no public deep link to Settings > Bluetooth; opening Settings
       // lands on this app's permission page, which cannot switch the radio on.
       // Only send the user there when the app's permission is what is missing.

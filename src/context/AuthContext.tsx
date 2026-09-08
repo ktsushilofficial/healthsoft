@@ -101,6 +101,7 @@ interface AuthContextType {
   seniors: Senior[];
   selectedSenior: Senior | null;
   selectedSeniorHandBandMacs: string[];
+  refreshHandBandAssignments: () => Promise<void>;
   getMySeniors: () => Promise<Senior[]>;
   selectSenior: (seniorId: string) => Promise<void>;
   getAssignedDevicesForSenior: (seniorId: string) => Promise<SeniorAssignedDevice[]>;
@@ -211,6 +212,7 @@ const fallbackAuthContext: AuthContextType = {
   seniors: [],
   selectedSenior: null,
   selectedSeniorHandBandMacs: [],
+  refreshHandBandAssignments: async () => { throw missingProviderError(); },
   getMySeniors: async () => {
     throw missingProviderError();
   },
@@ -456,7 +458,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [_tokens, setTokens] = useState<AuthTokens | null>(null);
   const [seniors, setSeniors] = useState<Senior[]>([]);
   const [selectedSenior, setSelectedSenior] = useState<Senior | null>(null);
-  const [selectedSeniorHandBandMacs, setSelectedSeniorHandBandMacs] = useState<string[]>([]);
+  const [handBandMacs, setSelectedSeniorHandBandMacs] = useState<string[]>([]);
+  const [handBandAssignmentOwner, setHandBandAssignmentOwner] = useState('');
+  const handBandSeniorId =
+    user?.role === SENIOR_ROLE
+      ? user.user_id.trim()
+      : user?.role === CARETAKER_ROLE || user?.role === GUARDIAN_ROLE
+      ? selectedSenior?.userId?.trim() ?? ''
+      : '';
+  const selectedSeniorHandBandMacs = useMemo(
+    () => (handBandAssignmentOwner === handBandSeniorId ? handBandMacs : []),
+    [handBandAssignmentOwner, handBandSeniorId, handBandMacs],
+  );
+  const handBandAssignmentRequestRef = useRef(0);
   const [authMethod, setAuthMethod] = useState<AuthMethod>('unknown');
 
   // Configure Google Sign-In
@@ -1259,51 +1273,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const refreshHandBandAssignments = useCallback(async () => {
+    const requestId = ++handBandAssignmentRequestRef.current;
+    if (!handBandSeniorId) {
+      setSelectedSeniorHandBandMacs([]);
+      setHandBandAssignmentOwner('');
+      return;
+    }
+    try {
+      const assigned = await getAssignedDevicesForSenior(handBandSeniorId);
+      if (requestId !== handBandAssignmentRequestRef.current) return;
+      const nextMacs = Array.from(
+        new Set(
+          assigned
+            .map(device => getAssignedHandBandMacAddress(device))
+            .filter((value): value is string => !!value),
+        ),
+      );
+      setSelectedSeniorHandBandMacs(nextMacs);
+      setHandBandAssignmentOwner(handBandSeniorId);
+    } catch (error) {
+      if (requestId !== handBandAssignmentRequestRef.current) return;
+      setSelectedSeniorHandBandMacs([]);
+      setHandBandAssignmentOwner(handBandSeniorId);
+      throw new Error(
+        `Could not load this senior's hand band assignment. Check your connection and scan again. ${getErrorMessage(
+          error,
+        )}`,
+      );
+    }
+  }, [getAssignedDevicesForSenior, handBandSeniorId]);
+
   useEffect(() => {
-    let cancelled = false;
-
-    const loadSelectedSeniorHandBandMacs = async () => {
-      const targetSeniorId = isCaretaker
-        ? selectedSenior?.userId?.trim() ?? ''
-        : user?.role === SENIOR_ROLE
-          ? user.user_id.trim()
-          : '';
-
-      if (!targetSeniorId) {
-        if (!cancelled) {
-          setSelectedSeniorHandBandMacs([]);
-        }
-        return;
-      }
-
-      try {
-        const assigned = await getAssignedDevicesForSenior(targetSeniorId);
-        if (cancelled) {
-          return;
-        }
-
-        const nextMacs = Array.from(
-          new Set(
-            assigned
-              .map(device => getAssignedHandBandMacAddress(device))
-              .filter((value): value is string => !!value),
-          ),
-        );
-
-        setSelectedSeniorHandBandMacs(nextMacs);
-      } catch {
-        if (!cancelled) {
-          setSelectedSeniorHandBandMacs([]);
-        }
-      }
-    };
-
-    loadSelectedSeniorHandBandMacs();
-
+    refreshHandBandAssignments().catch(() => {});
     return () => {
-      cancelled = true;
+      handBandAssignmentRequestRef.current += 1;
     };
-  }, [getAssignedDevicesForSenior, isCaretaker, selectedSenior?.userId, user?.role, user?.user_id]);
+  }, [refreshHandBandAssignments]);
 
   const getSeniorDashboard = useCallback(async (seniorId: string): Promise<SeniorDashboardApiResponse> => {
     const trimmed = seniorId.trim();
@@ -1600,6 +1606,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       seniors,
       selectedSenior,
       selectedSeniorHandBandMacs,
+      refreshHandBandAssignments,
       getMySeniors,
       selectSenior,
       getAssignedDevicesForSenior,
@@ -1613,7 +1620,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       user, isAuthenticated, isInitializing, isCaretaker, authMethod,
-      seniors, selectedSenior, selectedSeniorHandBandMacs, refreshUserProfile, getMySeniors, getAssignedDevicesForSenior,
+      seniors, selectedSenior, selectedSeniorHandBandMacs, refreshHandBandAssignments, refreshUserProfile, getMySeniors, getAssignedDevicesForSenior,
       getSeniorDashboard, getGuardianDashboard, subscribeToDevicePosition, syncV8DailyVitals, syncV8VitalsByDevice, getV8VitalsSummary,
     ],
   );

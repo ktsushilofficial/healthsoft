@@ -195,6 +195,13 @@ RCT_REMAP_METHOD(connect,
                  rejecter:(RCTPromiseRejectBlock)reject) {
   CBPeripheral *peripheral = self.seenPeripherals[deviceId];
   if (!peripheral) {
+    NSUUID *identifier = [[NSUUID alloc] initWithUUIDString:deviceId];
+    if (identifier) {
+      peripheral = [self.central retrievePeripheralsWithIdentifiers:@[identifier]].firstObject;
+      if (peripheral) self.seenPeripherals[deviceId] = peripheral;
+    }
+  }
+  if (!peripheral) {
     reject(@"NOT_FOUND", @"Peripheral not found. Scan first.", nil);
     return;
   }
