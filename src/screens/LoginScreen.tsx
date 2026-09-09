@@ -26,7 +26,7 @@ interface LoginScreenProps {
 }
 
 const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
-  const { login, loginWithGoogle, loginMobileSendOtp, loginMobileVerifyOtp } = useAuth();
+  const { login, loginMobileSendOtp, loginMobileVerifyOtp } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -105,17 +105,6 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
       await loginMobileVerifyOtp(normalizedPhoneNumber, normalizedOtp, selectedDialCode);
     } catch (error) {
       Alert.alert('Error', getErrorMessage(error, 'Login failed.'));
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleGoogleLogin = async () => {
-    setIsLoading(true);
-    try {
-      await loginWithGoogle();
-    } catch (error) {
-      Alert.alert('Error', getErrorMessage(error, 'Google sign-in failed.'));
     } finally {
       setIsLoading(false);
     }
@@ -298,20 +287,6 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
               </Text>
             </TouchableOpacity>
 
-            <View style={styles.divider}>
-              <View style={styles.dividerLine} />
-              <Text style={styles.dividerText}>OR</Text>
-              <View style={styles.dividerLine} />
-            </View>
-
-            <TouchableOpacity
-              style={styles.googleButton}
-              onPress={handleGoogleLogin}
-              disabled={isLoading}>
-              <Icon name="logo-google" size={20} color="#FF9500" />
-              <Text style={styles.googleButtonText}>Continue with Google</Text>
-            </TouchableOpacity>
-
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -482,38 +457,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
-  },
-  divider: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: '#E5E5E5',
-  },
-  dividerText: {
-    color: '#8E8E93',
-    paddingHorizontal: 16,
-    fontSize: 14,
-  },
-  googleButton: {
-    flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
-    height: 52,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E5E5',
-    marginBottom: 32,
-  },
-  googleButtonText: {
-    color: '#000000',
-    fontSize: 16,
-    fontWeight: '600',
-    marginLeft: 12,
   },
   methodToggle: {
     alignSelf: 'center',

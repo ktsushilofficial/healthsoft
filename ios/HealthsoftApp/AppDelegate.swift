@@ -2,7 +2,6 @@ import UIKit
 import React
 import React_RCTAppDelegate
 import ReactAppDependencyProvider
-import GoogleSignIn
 import FirebaseCore
 
 @main
@@ -36,13 +35,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     return true
   }
 
-  func application(
-    _ app: UIApplication,
-    open url: URL,
-    options: [UIApplication.OpenURLOptionsKey : Any] = [:]
-  ) -> Bool {
-    return GIDSignIn.sharedInstance.handle(url)
-  }
 }
 
 class ReactNativeDelegate: RCTDefaultReactNativeFactoryDelegate {

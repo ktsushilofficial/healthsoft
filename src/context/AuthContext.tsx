@@ -3,7 +3,6 @@ import React, { createContext, useCallback, useEffect, useMemo, useRef, useState
 import { Platform } from 'react-native';
 import axios, { Method } from 'axios';
 import * as Keychain from 'react-native-keychain';
-import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import {
   extractSeniorAssignedDevices,
   getAssignedHandBandMacAddress,
@@ -36,7 +35,6 @@ const SELECTED_SENIOR_STORAGE_SERVICE = 'healthsoft.prefs.selectedSenior';
 const CARETAKER_ROLE = 'CARE_TAKER';
 const GUARDIAN_ROLE = 'GUARDIAN';
 const SENIOR_ROLE = 'SENIOR';
-const WEB_CLIENT_ID = '388740977041-rvg9j86k6ie0etecc24qq9ovfp23lfj3.apps.googleusercontent.com';
 
 export interface Senior {
   userId: string;
@@ -86,7 +84,6 @@ interface AuthContextType {
   loginWithPhone: (phoneNumber: string, countryCode: string, password: string) => Promise<UserData>;
   loginMobileSendOtp: (phoneNumber: string, countryCode?: string) => Promise<void>;
   loginMobileVerifyOtp: (phoneNumber: string, otp: string, countryCode?: string) => Promise<UserData>;
-  loginWithGoogle: () => Promise<UserData>;
   signup: (data: SignupData) => Promise<UserData>;
   verifyEmail: (userId?: string) => Promise<UserData>;
   refreshUserProfile: () => Promise<UserData>;
@@ -94,8 +91,6 @@ interface AuthContextType {
   logout: () => Promise<void>;
   changePassword: (oldPassword: string, newPassword: string) => Promise<void>;
   refreshToken: () => Promise<UserData>;
-  googleAuth: (idToken: string) => Promise<UserData>;
-  initiateGoogleLogin: () => Promise<void>;
   forgotPassword: (email: string) => Promise<string>;
   resetPassword: (otp: string, newPassword: string, confirmPassword: string, shortLivedToken: string) => Promise<void>;
   seniors: Senior[];
@@ -134,7 +129,7 @@ interface UpdateProfileData {
   phone_number: string;
 }
 
-type AuthMethod = 'email' | 'phone' | 'otp' | 'google' | 'unknown';
+type AuthMethod = 'email' | 'phone' | 'otp' | 'unknown';
 
 interface ApiErrorResponse {
   message?: string;
@@ -173,9 +168,6 @@ const fallbackAuthContext: AuthContextType = {
   loginMobileVerifyOtp: async () => {
     throw missingProviderError();
   },
-  loginWithGoogle: async () => {
-    throw missingProviderError();
-  },
   signup: async () => {
     throw missingProviderError();
   },
@@ -195,12 +187,6 @@ const fallbackAuthContext: AuthContextType = {
     throw missingProviderError();
   },
   refreshToken: async () => {
-    throw missingProviderError();
-  },
-  googleAuth: async () => {
-    throw missingProviderError();
-  },
-  initiateGoogleLogin: async () => {
     throw missingProviderError();
   },
   forgotPassword: async () => {
@@ -472,15 +458,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   );
   const handBandAssignmentRequestRef = useRef(0);
   const [authMethod, setAuthMethod] = useState<AuthMethod>('unknown');
-
-  // Configure Google Sign-In
-  useEffect(() => {
-    GoogleSignin.configure({
-      webClientId: WEB_CLIENT_ID,
-      iosClientId: '388740977041-nrihpjmac4145t7iv2gmo1ga8p42ghil.apps.googleusercontent.com',
-      offlineAccess: true,
-    });
-  }, []);
 
   const tokensRef = useRef<AuthTokens | null>(null);
   const refreshPromiseRef = useRef<Promise<AuthTokens | null> | null>(null);
@@ -999,30 +976,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const loginWithGoogle = async (): Promise<UserData> => {
-    try {
-      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
-      const response = await GoogleSignin.signIn();
-      const idToken = response.data?.idToken;
-
-      if (!idToken) {
-        throw new Error('Google sign-in failed: no ID token received.');
-      }
-
-      // Send idToken to our backend for authentication
-      return await googleAuth(idToken);
-    } catch (error: any) {
-      if (error.code === statusCodes.SIGN_IN_CANCELLED) {
-        throw new Error('Google sign-in was cancelled.');
-      } else if (error.code === statusCodes.IN_PROGRESS) {
-        throw new Error('Google sign-in is already in progress.');
-      } else if (error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
-        throw new Error('Google Play Services not available.');
-      }
-      throw new Error(error.message || 'Google sign-in failed.');
-    }
-  };
-
   const verifyEmail = async (userId?: string): Promise<UserData> => {
     const targetUserId = userId || user?.user_id;
     if (!targetUserId) {
@@ -1146,35 +1099,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     return await refreshUserProfile();
-  };
-
-  const googleAuth = async (idToken: string): Promise<UserData> => {
-    try {
-      console.log('Google ID Token:', idToken);
-      const authResponse = await performRequest<UserData>(
-        '/api/v1/auth/google',
-        'POST',
-        { idToken, platform: Platform.OS },
-        null,
-      );
-
-      return await applySession(authResponse, undefined, 'main');
-    } catch (error) {
-      throw new Error(getErrorMessage(error));
-    }
-  };
-
-  const initiateGoogleLogin = async (): Promise<void> => {
-    try {
-      await performRequest<void>(
-        '/api/v1/auth/login/google',
-        'GET',
-        null,
-        null,
-      );
-    } catch (error) {
-      throw new Error(getErrorMessage(error));
-    }
   };
 
   const getMySeniors = useCallback(async (): Promise<Senior[]> => {
@@ -1591,7 +1515,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       loginWithPhone,
       loginMobileSendOtp,
       loginMobileVerifyOtp,
-      loginWithGoogle,
       signup,
       verifyEmail,
       refreshUserProfile,
@@ -1599,8 +1522,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       logout,
       changePassword,
       refreshToken,
-      googleAuth,
-      initiateGoogleLogin,
       forgotPassword,
       resetPassword,
       seniors,

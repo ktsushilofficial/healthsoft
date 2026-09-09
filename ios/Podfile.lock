@@ -1,14 +1,4 @@
 PODS:
-  - AppAuth (2.0.0):
-    - AppAuth/Core (= 2.0.0)
-    - AppAuth/ExternalUserAgent (= 2.0.0)
-  - AppAuth/Core (2.0.0)
-  - AppAuth/ExternalUserAgent (2.0.0):
-    - AppAuth/Core
-  - AppCheckCore (11.2.0):
-    - GoogleUtilities/Environment (~> 8.0)
-    - GoogleUtilities/UserDefaults (~> 8.0)
-    - PromisesObjC (~> 2.4)
   - boost (1.84.0)
   - BVLinearGradient (2.8.3):
     - React-Core
@@ -51,11 +41,6 @@ PODS:
   - GoogleDataTransport (10.1.0):
     - nanopb (~> 3.30910.0)
     - PromisesObjC (~> 2.4)
-  - GoogleSignIn (9.1.0):
-    - AppAuth (~> 2.0)
-    - AppCheckCore (~> 11.0)
-    - GTMAppAuth (~> 5.0)
-    - GTMSessionFetcher/Core (~> 3.3)
   - GoogleUtilities (8.1.0):
     - GoogleUtilities/AppDelegateSwizzler (= 8.1.0)
     - GoogleUtilities/Environment (= 8.1.0)
@@ -96,10 +81,6 @@ PODS:
   - GoogleUtilities/UserDefaults (8.1.0):
     - GoogleUtilities/Logger
     - GoogleUtilities/Privacy
-  - GTMAppAuth (5.0.0):
-    - AppAuth/Core (~> 2.0)
-    - GTMSessionFetcher/Core (< 4.0, >= 3.3)
-  - GTMSessionFetcher/Core (3.5.0)
   - hermes-engine (0.14.0):
     - hermes-engine/Pre-built (= 0.14.0)
   - hermes-engine/Pre-built (0.14.0)
@@ -2898,35 +2879,6 @@ PODS:
     - RNFBApp
     - SocketRocket
     - Yoga
-  - RNGoogleSignin (16.1.1):
-    - boost
-    - DoubleConversion
-    - fast_float
-    - fmt
-    - glog
-    - GoogleSignIn (~> 9.0)
-    - hermes-engine
-    - RCT-Folly
-    - RCT-Folly/Fabric
-    - RCTRequired
-    - RCTTypeSafety
-    - React-Core
-    - React-debug
-    - React-Fabric
-    - React-featureflags
-    - React-graphics
-    - React-ImageManager
-    - React-jsi
-    - React-NativeModulesApple
-    - React-RCTFabric
-    - React-renderercss
-    - React-rendererdebug
-    - React-utils
-    - ReactCodegen
-    - ReactCommon/turbomodule/bridging
-    - ReactCommon/turbomodule/core
-    - SocketRocket
-    - Yoga
   - RNKeychain (10.0.0):
     - boost
     - DoubleConversion
@@ -3227,7 +3179,6 @@ DEPENDENCIES:
   - "RNDateTimePicker (from `../node_modules/@react-native-community/datetimepicker`)"
   - "RNFBApp (from `../node_modules/@react-native-firebase/app`)"
   - "RNFBMessaging (from `../node_modules/@react-native-firebase/messaging`)"
-  - "RNGoogleSignin (from `../node_modules/@react-native-google-signin/google-signin`)"
   - RNKeychain (from `../node_modules/react-native-keychain`)
   - RNScreens (from `../node_modules/react-native-screens`)
   - RNShare (from `../node_modules/react-native-share`)
@@ -3240,8 +3191,6 @@ DEPENDENCIES:
 
 SPEC REPOS:
   trunk:
-    - AppAuth
-    - AppCheckCore
     - Firebase
     - FirebaseCore
     - FirebaseCoreExtension
@@ -3249,10 +3198,7 @@ SPEC REPOS:
     - FirebaseInstallations
     - FirebaseMessaging
     - GoogleDataTransport
-    - GoogleSignIn
     - GoogleUtilities
-    - GTMAppAuth
-    - GTMSessionFetcher
     - MultiplatformBleAdapter
     - nanopb
     - PromisesObjC
@@ -3436,8 +3382,6 @@ EXTERNAL SOURCES:
     :path: "../node_modules/@react-native-firebase/app"
   RNFBMessaging:
     :path: "../node_modules/@react-native-firebase/messaging"
-  RNGoogleSignin:
-    :path: "../node_modules/@react-native-google-signin/google-signin"
   RNKeychain:
     :path: "../node_modules/react-native-keychain"
   RNScreens:
@@ -3456,8 +3400,6 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon/yoga"
 
 SPEC CHECKSUMS:
-  AppAuth: 1c1a8afa7e12f2ec3a294d9882dfa5ab7d3cb063
-  AppCheckCore: cc8fd0a3a230ddd401f326489c99990b013f0c4f
   boost: 7e761d76ca2ce687f7cc98e698152abd03a18f90
   BVLinearGradient: cb006ba232a1f3e4f341bb62c42d1098c284da70
   DoubleConversion: cb417026b2400c8f53ae97020b2be961b59470cb
@@ -3474,10 +3416,7 @@ SPEC CHECKSUMS:
   fmt: a40bb5bd0294ea969aaaba240a927bd33d878cdd
   glog: 5683914934d5b6e4240e497e0f4a3b42d1854183
   GoogleDataTransport: aae35b7ea0c09004c3797d53c8c41f66f219d6a7
-  GoogleSignIn: fcee2257188d5eda57a5e2b6a715550ffff9206d
   GoogleUtilities: 00c88b9a86066ef77f0da2fab05f65d7768ed8e1
-  GTMAppAuth: 217a876b249c3c585a54fd6f73e6b58c4f5c4238
-  GTMSessionFetcher: 5aea5ba6bd522a239e236100971f10cb71b96ab6
   hermes-engine: 154a6942113aa5167eec9f50fc666ed3ee3396fa
   MultiplatformBleAdapter: b1fddd0d499b96b607e00f0faa8e60648343dc1d
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
@@ -3560,7 +3499,6 @@ SPEC CHECKSUMS:
   RNDateTimePicker: 73ffdd45f0ce1d00ff981031679a05206e619fdc
   RNFBApp: 555e704c7896088d6c6d3d6fcdc2c331c6f9462c
   RNFBMessaging: 8d3ebcfd48e3fe4580245ef3850ed2db1a4da18f
-  RNGoogleSignin: 4122717989e2544988cb4cec3e917da3ebc969a5
   RNKeychain: a2c134ab796272c3d605e035ab727591000b30f3
   RNScreens: ffbb0296608eb3560de641a711bbdb663ed1f6b4
   RNShare: bf3fa119b277d4a1729553e870039427bcb80c93
@@ -3573,4 +3511,4 @@ SPEC CHECKSUMS:
 
 PODFILE CHECKSUM: b802e05cd0a8ebf90f3b3e671e793f98eac5ff15
 
-COCOAPODS: 1.16.2
+COCOAPODS: 1.15.2

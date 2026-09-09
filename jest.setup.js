@@ -40,20 +40,6 @@ jest.mock('react-native-keychain', () => ({
   resetGenericPassword: jest.fn(() => Promise.resolve(true)),
 }));
 
-jest.mock('@react-native-google-signin/google-signin', () => ({
-  statusCodes: {
-    SIGN_IN_CANCELLED: 'SIGN_IN_CANCELLED',
-    IN_PROGRESS: 'IN_PROGRESS',
-    PLAY_SERVICES_NOT_AVAILABLE: 'PLAY_SERVICES_NOT_AVAILABLE',
-  },
-  GoogleSignin: {
-    configure: jest.fn(),
-    hasPlayServices: jest.fn(() => Promise.resolve(true)),
-    signIn: jest.fn(() => Promise.resolve({ data: { idToken: 'test-id-token' } })),
-    signOut: jest.fn(() => Promise.resolve()),
-  },
-}));
-
 const mockMessagingInstance = {
   requestPermission: jest.fn(() => Promise.resolve(1)),
   registerDeviceForRemoteMessages: jest.fn(() => Promise.resolve()),
