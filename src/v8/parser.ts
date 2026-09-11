@@ -1,3 +1,4 @@
+import { parseMeasurementTimestamp } from '../utils/sampleDay';
 import type { V8DeviceInfo, V8HistoryBucket, V8VitalSample } from './models';
 
 function toNum(v: unknown): number | null {
@@ -128,11 +129,9 @@ function mapEntry(record: Record<string, unknown>): V8VitalSample {
       'axillaryTemperature',
       'TempData',
     ),
-    steps: pickNum('steps', 'step', 'stepCount'),
-    distanceKm:
-      distanceRaw != null && distanceRaw > 1000
-        ? distanceRaw / 1000
-        : distanceRaw,
+    steps: pickNum('steps', 'step', 'stepCount', 'detailMinterStep'),
+    // Vendor SDK output is already in km and kcal.
+    distanceKm: distanceRaw,
     caloriesKcal: pickNum('calories', 'kcal', 'calorie'),
     exerciseMinutes: pickNum('exerciseMinutes', 'sportMinutes'),
     activeMinutes: pickNum('activeMinutes', 'StrengthTrainingTime'),
@@ -160,18 +159,9 @@ function offsetSeriesTimestamp(
   index: number,
 ): string | null {
   if (!timestamp || index === 0) return timestamp;
-  const match = timestamp.match(
-    /^(\d{4})[./-](\d{1,2})[./-](\d{1,2})\s+(\d{1,2}):(\d{1,2}):(\d{1,2})$/,
-  );
-  if (!match) return `${timestamp}#${index}`;
-  const date = new Date(
-    Number(match[1]),
-    Number(match[2]) - 1,
-    Number(match[3]),
-    Number(match[4]),
-    Number(match[5]),
-    Number(match[6]) + index,
-  );
+  const base = parseMeasurementTimestamp(timestamp);
+  if (base == null) return timestamp;
+  const date = new Date(base + index * 5_000);
   const pad = (value: number) => String(value).padStart(2, '0');
   return `${date.getFullYear()}.${pad(date.getMonth() + 1)}.${pad(
     date.getDate(),
@@ -191,7 +181,7 @@ function mapRecordEntries(record: Record<string, unknown>): V8VitalSample[] {
   return dynamicHeartRates.map((heartRate, index) => ({
     ...base,
     timestamp: offsetSeriesTimestamp(base.timestamp, index),
-    receivedAt: (base.receivedAt ?? Date.now()) + index,
+    receivedAt: base.receivedAt,
     heartRate,
   }));
 }
@@ -271,33 +261,55 @@ function detectDataTypeFromPayload(
   }
 
   const dataType = toText(payload.dataType);
-  if (platform === 'ios' && dataType === '59') return 'hrv';
-  if (platform === 'android') {
-    if (dataType === '73') return 'hrv';
-    if (dataType === '74') return 'staticHR';
-    if (dataType === '75') return 'spo2';
-  }
-  switch (dataType) {
-    case '24':
-      return 'totalActivity';
-    case '25':
-      return 'detailActivity';
-    case '27':
-      return 'dynamicHR';
-    case '28':
-      return 'staticHR';
-    case '42':
-      return 'hrv';
-    case '55':
-    case '70':
-      return 'spo2';
-    case '36':
-    case '59':
-    case '62':
-      return 'temperature';
-    default:
-      return null;
-  }
+  if (!dataType) return null;
+  if (
+    [
+      'totalActivity',
+      'detailActivity',
+      'sleep',
+      'dynamicHR',
+      'staticHR',
+      'hrv',
+      'spo2',
+      'temperature',
+      'realtimeActivity',
+    ].includes(dataType)
+  )
+    return dataType;
+  const ios: Record<string, string> = {
+    '24': 'realtimeActivity',
+    '25': 'totalActivity',
+    '26': 'detailActivity',
+    '27': 'sleep',
+    '28': 'dynamicHR',
+    '29': 'staticHR',
+    '41': 'hrv',
+    '45': 'spo2',
+    '46': 'spo2',
+    '48': 'temperature',
+    '49': 'temperature',
+    '58': 'staticHR',
+    '59': 'hrv',
+    '60': 'spo2',
+  };
+  const android: Record<string, string> = {
+    '23': 'realtimeActivity',
+    '24': 'totalActivity',
+    '25': 'detailActivity',
+    '26': 'sleep',
+    '27': 'dynamicHR',
+    '28': 'staticHR',
+    '42': 'hrv',
+    '55': 'spo2',
+    '68': 'spo2',
+    '36': 'temperature',
+    '59': 'temperature',
+    '62': 'temperature',
+    '73': 'hrv',
+    '74': 'staticHR',
+    '75': 'spo2',
+  };
+  return (platform === 'ios' ? ios : android)[dataType] ?? null;
 }
 
 export function parseV8Payload(
@@ -307,8 +319,15 @@ export function parseV8Payload(
   history: V8HistoryBucket | null;
   infoPatch: Partial<V8DeviceInfo>;
 } {
-  const dataType =
-    detectDataTypeFromPayload(payload, platform) ?? toText(payload.dataType);
+  const dataType = detectDataTypeFromPayload(payload, platform);
+  const rawType = toText(payload.dataType);
+  const sampleSource =
+    (platform === 'ios'
+      ? ['24', '58', '59', '60']
+      : ['23', '73', '74', '75']
+    ).includes(rawType ?? '') || dataType === 'realtimeActivity'
+      ? ('live' as const)
+      : ('history' as const);
   const dataEnd =
     payload.dataEnd === true ||
     String(payload.dataEnd).toLowerCase() === 'true';
@@ -414,13 +433,28 @@ export function parseV8Payload(
     updatedAt: Date.now(),
   };
 
-  if (!dataType && entries.length === 0) {
+  entries = entries
+    .filter(entry =>
+      Object.entries(entry).some(
+        ([key, value]) =>
+          key !== 'receivedAt' &&
+          key !== 'timestamp' &&
+          typeof value === 'number' &&
+          Number.isFinite(value),
+      ),
+    )
+    .map(entry => ({ ...entry, source: sampleSource }));
+
+  // Device time comes from the time response, not a history record's dateTime.
+  if (rawType !== '0') infoPatch.deviceTime = null;
+  if (!dataType) {
     return { history: null, infoPatch };
   }
 
   return {
     history: {
       dataType,
+      source: sampleSource,
       entries,
       completed: dataEnd,
       updatedAt: Date.now(),

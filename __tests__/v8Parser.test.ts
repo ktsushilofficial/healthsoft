@@ -149,7 +149,7 @@ describe('parseV8Payload', () => {
 
   it('parses android Blood_oxygen payloads into spo2 values', () => {
     const payload = {
-      dataType: '2',
+      dataType: '75',
       dataEnd: true,
       dicData: {
         Blood_oxygen: 96,
@@ -176,7 +176,7 @@ describe('parseV8Payload', () => {
       0, 24, 72, 24,
     ]);
     expect(history?.entries[0].timestamp).toBe('2026.07.14 09:15:00');
-    expect(history?.entries[1].timestamp).toBe('2026.07.14 09:15:01');
+    expect(history?.entries[1].timestamp).toBe('2026.07.14 09:15:05');
   });
 
   it('normalizes stringified Android HRV, BP, and stress history', () => {
@@ -215,5 +215,101 @@ describe('parseV8Payload', () => {
     const { history } = parseV8Payload(payload as any);
     expect(history?.dataType).toBe('temperature');
     expect(history?.entries[0].temperatureC).toBe(32.7);
+  });
+});
+
+describe('SDK-shaped vitals regression cases', () => {
+  it('reads Android detailMinterStep without rescaling SDK units', () => {
+    const { history } = parseV8Payload(
+      {
+        dataType: '25',
+        dicData: [
+          {
+            date: '2026.09.11 10:00:00',
+            detailMinterStep: '200',
+            calories: '12.34',
+            distance: '1.23',
+          },
+        ],
+      },
+      'android',
+    );
+    expect(history?.entries[0]).toMatchObject({
+      steps: 200,
+      caloriesKcal: 12.34,
+      distanceKm: 1.23,
+      source: 'history',
+    });
+  });
+  it('does not invent a record from count metadata', () => {
+    const { history } = parseV8Payload(
+      {
+        dataType: '29',
+        dicData: {
+          count: 1,
+          arraySingleHR: [{ date: '2026.09.11 10:00:00', heartRate: 72 }],
+        },
+      },
+      'ios',
+    );
+    expect(history?.entries).toHaveLength(1);
+  });
+  it.each(['51', '54', '55', '70', '80', '255'])(
+    'keeps iOS ECG/status callback %s out of vitals history',
+    dataType => {
+      expect(
+        parseV8Payload(
+          { dataType, dataEnd: true, dicData: { ECGHrValue: 72 } },
+          'ios',
+        ).history,
+      ).toBeNull();
+    },
+  );
+  it.each([
+    ['25', 'totalActivity'],
+    ['26', 'detailActivity'],
+    ['28', 'dynamicHR'],
+    ['29', 'staticHR'],
+    ['41', 'hrv'],
+    ['45', 'spo2'],
+    ['48', 'temperature'],
+  ])('maps empty iOS completion %s to %s', (dataType, type) => {
+    expect(
+      parseV8Payload({ dataType, dataEnd: true, dicData: [] }, 'ios').history,
+    ).toMatchObject({
+      dataType: type,
+      source: 'history',
+      completed: true,
+      entries: [],
+    });
+  });
+  it('distinguishes live SpO2 from a history completion', () => {
+    expect(
+      parseV8Payload(
+        { dataType: '60', dataEnd: true, dicData: { spo2: 98 } },
+        'ios',
+      ).history,
+    ).toMatchObject({ dataType: 'spo2', source: 'live' });
+    expect(
+      parseV8Payload({ dataType: '68', dataEnd: true, dicData: [] }, 'android')
+        .history,
+    ).toMatchObject({ dataType: 'spo2', source: 'history' });
+  });
+  it('spaces dynamic HR across midnight using five-second intervals', () => {
+    const { history } = parseV8Payload(
+      {
+        dataType: '27',
+        dicData: [{ date: '2026.09.10 23:59:55', arrayDynamicHR: '71 72 73' }],
+      },
+      'android',
+    );
+    expect(history?.entries.map(entry => entry.timestamp)).toEqual([
+      '2026.09.10 23:59:55',
+      '2026.09.11 00:00:00',
+      '2026.09.11 00:00:05',
+    ]);
+    expect(new Set(history?.entries.map(entry => entry.receivedAt)).size).toBe(
+      1,
+    );
   });
 });

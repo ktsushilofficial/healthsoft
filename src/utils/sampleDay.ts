@@ -1,44 +1,61 @@
-import { Platform } from 'react-native';
 import { toLocalDayKey } from './vitalsDay';
 
-/** The parts of a band sample needed to date it. */
 export type DatableSample = {
   timestamp: string | null;
   receivedAt: number | null;
+  source?: 'history' | 'live';
 };
 
-/**
- * The day a band sample belongs to, in the senior's own timezone.
- *
- * The band stamps its samples against the wall clock on the wearer's wrist, so
- * every branch here resolves to the local day - a sample taken at 02:00 on the
- * 8th is the 8th, never the 7th. This lived in two copies before and they
- * drifted apart; one bucket for the band means one function.
- */
-export function sampleDayKey(sample: DatableSample): string | null {
-  const raw = sample.timestamp?.trim();
-  if (raw) {
-    if (/^\d{10,13}$/.test(raw)) {
-      const epoch = raw.length === 13 ? Number(raw) : Number(raw) * 1000;
-      if (Number.isFinite(epoch)) return toLocalDayKey(new Date(epoch));
-    }
-    const normalized = raw.replace(/\//g, '-').replace(/\./g, '-');
-    // A date the band already spelled out is taken as written - it is already
-    // the band's own day, and re-parsing it would only invite a zone shift.
-    const direct = normalized.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
-    if (direct) {
-      const y = direct[1];
-      const m = direct[2].padStart(2, '0');
-      const d = direct[3].padStart(2, '0');
-      return `${y}-${m}-${d}`;
-    }
-    const parsed = new Date(normalized);
-    if (!Number.isNaN(parsed.getTime())) return toLocalDayKey(parsed);
-    if (Platform.OS === 'ios' && sample.receivedAt != null) {
-      return toLocalDayKey(new Date(sample.receivedAt));
-    }
-    return null;
+/** Parse vendor wall-clock timestamps without allowing Date to roll invalid dates. */
+export function parseMeasurementTimestamp(raw: string | null): number | null {
+  const text = raw?.trim();
+  if (!text) return null;
+  if (/^(\d{10}|\d{13})$/.test(text)) {
+    const value = Number(text) * (text.length === 10 ? 1000 : 1);
+    return Number.isFinite(new Date(value).getTime()) ? value : null;
   }
-  if (sample.receivedAt != null) return toLocalDayKey(new Date(sample.receivedAt));
+  const match = text.match(
+    /^(\d{4})[./-](\d{1,2})[./-](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?$/,
+  );
+  if (match) {
+    const [, y, m, d, h = '0', min = '0', s = '0', ms = '0'] = match;
+    const date = new Date(+y, +m - 1, +d, +h, +min, +s, +ms.padEnd(3, '0'));
+    return date.getFullYear() === +y &&
+      date.getMonth() === +m - 1 &&
+      date.getDate() === +d &&
+      date.getHours() === +h &&
+      date.getMinutes() === +min &&
+      date.getSeconds() === +s
+      ? date.getTime()
+      : null;
+  }
+  // Only explicit ISO offsets may use the host parser; arbitrary strings and
+  // malformed history timestamps must never fall back to the download date.
+  if (
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
+      text,
+    )
+  ) {
+    const datePart = text.slice(0, 10);
+    if (parseMeasurementTimestamp(datePart) == null) return null;
+    const value = Date.parse(text);
+    return Number.isFinite(value) ? value : null;
+  }
   return null;
+}
+
+export function sampleMeasurementTime(sample: DatableSample): number | null {
+  if (sample.timestamp?.trim())
+    return parseMeasurementTimestamp(sample.timestamp);
+  // Receipt time is meaningful only for an explicitly identified live callback.
+  return sample.source === 'live' &&
+    sample.receivedAt != null &&
+    Number.isFinite(sample.receivedAt)
+    ? sample.receivedAt
+    : null;
+}
+
+export function sampleDayKey(sample: DatableSample): string | null {
+  const time = sampleMeasurementTime(sample);
+  return time == null ? null : toLocalDayKey(new Date(time));
 }

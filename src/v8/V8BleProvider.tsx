@@ -24,12 +24,12 @@ import type {
   V8WebVitalsSyncPayload,
 } from './models';
 import { parseV8Payload } from './parser';
-import { toLocalDayKey, todayLocalDayKey } from '../utils/vitalsDay';
-import { sampleDayKey } from '../utils/sampleDay';
-import {
-  emptyVitalSummary,
-  fillTodayVitalSummaryGaps,
-} from './todayVitalsRow';
+import { todayLocalDayKey } from '../utils/vitalsDay';
+import { parseMeasurementTimestamp } from '../utils/sampleDay';
+import { aggregateVitals, mergeLatestVitals, vitalSampleKey } from './vitals';
+import { V8HistoryReader, idleHistoryReadStatus } from './historyReader';
+import type { HistoryRequest, V8HistoryReadStatus } from './historyReader';
+import { selectTodayVitalSummary } from './todayVitalsRow';
 import {
   ECG_RECORDING_DURATION_MS,
   analyzeWaveformHeartRate,
@@ -85,6 +85,7 @@ type V8BleContextValue = {
   liveModeEnabled: boolean;
   ecgSession: V8EcgSession | null;
   autoSyncStatus: V8AutoSyncStatus;
+  historyReadStatus: V8HistoryReadStatus;
   openBluetoothSettings: () => Promise<void>;
   startScan: () => Promise<void>;
   stopScan: () => Promise<void>;
@@ -120,7 +121,7 @@ type V8BleContextValue = {
 const V8BleContext = createContext<V8BleContextValue | null>(null);
 const V8_SESSION_SERVICE = 'healthsoft.v8.session';
 const V8_SESSION_USER = 'v8-session';
-const V8_HISTORY_SERVICE = 'healthsoft.v8.history';
+const V8_HISTORY_SERVICE = 'healthsoft.v8.history.v2';
 const V8_HISTORY_USER = 'v8-history';
 const V8_ECG_SERVICE = 'healthsoft.v8.ecg.latest';
 const V8_ECG_USER = 'v8-ecg';
@@ -165,13 +166,6 @@ const logV8Debug = (label: string, value?: unknown) => {
   console.log(`[V8 Debug] ${label}`, value);
 };
 
-// The band reports 0 for heart rate, SpO2, blood pressure and temperature while
-// it is off the wrist. Those are "no reading", not measurements, and counting
-// them sinks the day's min and average (a real day came back as hrMin 0 /
-// hrAvg 15 against an hrMax of 58).
-const isPositiveVital = (value: number | null | undefined): value is number =>
-  value != null && Number.isFinite(value) && value > 0;
-
 // The band replies to one command at a time; anything written while it is still
 // answering is dropped without an error.
 const DEVICE_COMMAND_SPACING_MS = 400;
@@ -181,8 +175,9 @@ const DEVICE_COMMAND_SPACING_MS = 400;
 // characteristic exists and is rejected as NOT_CONNECTED.
 const DEVICE_MAC_ATTEMPT_WINDOW_MS = 1500;
 
-// Today's row must never reach the backend with nulls: fall back to the latest
-// live sample for any gap the history aggregation left open, then to 0.
+const snapshotHistory = (buckets: Record<string, V8HistoryBucket>) =>
+  Object.fromEntries(Object.entries(buckets).map(([key, bucket]) => [key, { ...bucket, entries: [...bucket.entries] }]));
+
 const useV8BleManagerInternal = (): V8BleContextValue => {
   const {
     user,
@@ -209,6 +204,14 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     Record<string, V8HistoryBucket>
   >({});
   const historyByTypeRef = useRef<Record<string, V8HistoryBucket>>({});
+  const historyBuffersRef = useRef<Record<string, V8VitalSample[]>>({});
+  const historyIndexRef = useRef<Record<string, Set<string>>>({});
+  const historyReaderRef = useRef(new V8HistoryReader());
+  const [historyReadStatus, setHistoryReadStatus] = useState(idleHistoryReadStatus);
+  const historyReadStatusRef = useRef(idleHistoryReadStatus);
+  const historyReadInFlightRef = useRef<{ day: string; promise: Promise<void> } | null>(null);
+  const connectedDeviceRef = useRef<string | null>(null);
+  const devicePrimingRef = useRef<Promise<void> | null>(null);
   const latestLiveDataRef = useRef<V8VitalSample | null>(null);
   const deviceInfoRef = useRef<V8DeviceInfo | null>(null);
   const devicesByIdRef = useRef<Record<string, V8Device>>({});
@@ -283,8 +286,6 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     }
     return '';
   }, [selectedSenior?.userId, user?.role, user?.user_id]);
-  const liveSnapshotInFlightRef = useRef(false);
-  const liveSnapshotPromiseRef = useRef<Promise<void> | null>(null);
   const scanStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const automaticSyncInFlightRef = useRef(false);
   const automaticSyncCacheKeyRef = useRef<string | null>(null);
@@ -396,14 +397,6 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       appStateSubscription.remove();
     };
   }, [refreshBluetoothState]);
-
-  useEffect(() => {
-    historyByTypeRef.current = historyByType;
-  }, [historyByType]);
-
-  useEffect(() => {
-    latestLiveDataRef.current = latestLiveData;
-  }, [latestLiveData]);
 
   useEffect(() => {
     deviceInfoRef.current = deviceInfo;
@@ -524,7 +517,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     let active = true;
     Keychain.getGenericPassword({ service: V8_HISTORY_SERVICE })
       .then(value => {
-        if (!active || !value) return;
+        if (!active || !value || connectedDeviceRef.current) return;
         try {
           const parsed = JSON.parse(value.password) as {
             historyByType?: Record<string, V8HistoryBucket>;
@@ -539,6 +532,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
             setHistoryByType(parsed.historyByType);
           }
           if (parsed.latestLiveData) {
+            latestLiveDataRef.current = parsed.latestLiveData;
             setLatestLiveData(parsed.latestLiveData);
           }
           if (parsed.deviceInfo && typeof parsed.deviceInfo === 'object') {
@@ -556,6 +550,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
 
   useEffect(() => {
     if (!v8Emitter) return;
+    const historyReader = historyReaderRef.current;
 
     const scanSub = v8Emitter.addListener('V8ScanResult', evt => {
       logV8Debug('Scan result received', {
@@ -589,8 +584,24 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         (evt?.state as V8ConnectionState | undefined) ?? 'disconnected';
       setConnectionStates(prev => ({ ...prev, [normalizedDeviceId]: state }));
       if (state === 'connected') {
+        if (connectedDeviceRef.current !== normalizedDeviceId) {
+          historyReaderRef.current.cancel();
+          historyIndexRef.current = {};
+          historyBuffersRef.current = {};
+          historyByTypeRef.current = {};
+          latestLiveDataRef.current = null;
+          setHistoryByType({});
+          setLatestLiveData(null);
+          historyReadStatusRef.current = idleHistoryReadStatus;
+          setHistoryReadStatus(idleHistoryReadStatus);
+        }
+        connectedDeviceRef.current = normalizedDeviceId;
         setActiveDeviceId(normalizedDeviceId);
       } else if (state === 'disconnected') {
+        connectedDeviceRef.current = null;
+        historyReaderRef.current.cancel();
+        latestLiveDataRef.current = null;
+        setLatestLiveData(null);
         setActiveDeviceId(prev => (prev === normalizedDeviceId ? null : prev));
         setLiveModeEnabled(false);
         setEcgSession(prev => {
@@ -633,17 +644,30 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
             );
           }
         };
-        primeDeviceInfo().catch(() => {});
+        devicePrimingRef.current = primeDeviceInfo().catch(() => {});
       }
     });
 
+    let renderTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingEvents: ParsedData[] = [];
+    const scheduleVitalsRender = () => {
+      if (renderTimer) return;
+      renderTimer = setTimeout(() => {
+        renderTimer = null;
+        setHistoryByType(snapshotHistory(historyByTypeRef.current));
+        setLatestLiveData(latestLiveDataRef.current);
+        if (pendingEvents.length) setDataEvents(prev => [...pendingEvents, ...prev].slice(0, 50));
+        pendingEvents = [];
+      }, 100);
+    };
     const dataSub = v8Emitter.addListener('V8Data', evt => {
       const event = evt as ParsedData;
       logV8Debug('Data packet received', {
         receivedAt: new Date().toISOString(),
         event,
       });
-      setDataEvents(prev => [event, ...prev].slice(0, 50));
+      pendingEvents = [event, ...pendingEvents].slice(0, 50);
+      scheduleVitalsRender();
       if (event.type !== 'parsed' || !event.payload) return;
       setEcgSession(prev => {
         if (!prev) return prev;
@@ -854,79 +878,33 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         dataPlatform,
       );
 
-      setDeviceInfo(prev => ({
-        ...prev,
-        ...Object.fromEntries(
-          Object.entries(infoPatch).filter(
-            ([, value]) => value !== null && value !== undefined,
-          ),
-        ),
-        updatedAt: Date.now(),
-      }));
+      const infoValues = Object.fromEntries(Object.entries(infoPatch).filter(
+        ([key, value]) => key !== 'updatedAt' && value != null,
+      ));
+      if (Object.keys(infoValues).length) {
+        setDeviceInfo(prev => ({ ...prev, ...infoValues, updatedAt: Date.now() }));
+      }
 
-      if (history) {
-        // Always update latestLiveData with any incoming entries before dedup,
-        // so the Activity screen sees fresh data immediately.
-        if (history.entries.length > 0) {
-          const newest = history.entries[history.entries.length - 1];
-          setLatestLiveData(prev => {
-            if (!prev) return newest;
-            // Simple latest-wins merge: for every field, prefer the newest
-            // non-null value, falling back to the previous value.
-            return {
-              timestamp: newest.timestamp ?? prev.timestamp,
-              receivedAt: newest.receivedAt ?? prev.receivedAt,
-              heartRate: newest.heartRate ?? prev.heartRate,
-              hrv: newest.hrv ?? prev.hrv,
-              stress: newest.stress ?? prev.stress,
-              systolicBp: newest.systolicBp ?? prev.systolicBp,
-              diastolicBp: newest.diastolicBp ?? prev.diastolicBp,
-              spo2: newest.spo2 ?? prev.spo2,
-              temperatureC: newest.temperatureC ?? prev.temperatureC,
-              steps: newest.steps ?? prev.steps,
-              distanceKm: newest.distanceKm ?? prev.distanceKm,
-              caloriesKcal: newest.caloriesKcal ?? prev.caloriesKcal,
-              exerciseMinutes: newest.exerciseMinutes ?? prev.exerciseMinutes,
-              activeMinutes: newest.activeMinutes ?? prev.activeMinutes,
-              goalPercent: newest.goalPercent ?? prev.goalPercent,
-            };
-          });
-        }
-
-        const key = history.dataType ?? 'unknown';
-        const existing = historyByTypeRef.current[key];
-        const mergedEntries = [
-          ...(existing?.entries ?? []),
-          ...history.entries,
-        ];
-        // O(n) dedup using a Set instead of O(n²) filter+findIndex.
-        const seen = new Set<string>();
-        const deduped: V8VitalSample[] = [];
-        for (const entry of mergedEntries) {
-          const marker = `${entry.timestamp ?? ''}-${entry.heartRate ?? ''}-${
-            entry.hrv ?? ''
-          }-${entry.systolicBp ?? ''}-${entry.diastolicBp ?? ''}-${
-            entry.steps ?? ''
-          }-${entry.distanceKm ?? ''}-${entry.temperatureC ?? ''}-${
-            entry.caloriesKcal ?? ''
-          }-${entry.exerciseMinutes ?? ''}-${entry.activeMinutes ?? ''}-${
-            entry.goalPercent ?? ''
-          }`;
-          if (!seen.has(marker)) {
-            seen.add(marker);
-            deduped.push(entry);
+      if (history && connectedDeviceRef.current) {
+        if (history.source === 'live') {
+          for (const entry of history.entries) {
+            latestLiveDataRef.current = mergeLatestVitals(latestLiveDataRef.current, entry);
           }
         }
-
-        const nextBucket: V8HistoryBucket = {
-          dataType: history.dataType,
-          completed: history.completed,
-          updatedAt: history.updatedAt,
-          entries: deduped,
-        };
-        const next = { ...historyByTypeRef.current, [key]: nextBucket };
-        historyByTypeRef.current = next;
-        setHistoryByType(next);
+        const key = history.source === 'live' ? `${history.dataType}:live` : history.dataType!;
+        const existing = historyByTypeRef.current[key];
+        const seen = historyIndexRef.current[key] ?? new Set((existing?.entries ?? []).map(vitalSampleKey));
+        historyIndexRef.current[key] = seen;
+        const entries = historyBuffersRef.current[key] ?? [...(existing?.entries ?? [])];
+        historyBuffersRef.current[key] = entries;
+        for (const entry of history.entries) {
+          const marker = vitalSampleKey(entry);
+          if (!seen.has(marker)) { seen.add(marker); entries.push(entry); }
+        }
+        const nextBucket: V8HistoryBucket = { ...history, entries };
+        historyByTypeRef.current = { ...historyByTypeRef.current, [key]: nextBucket };
+        scheduleVitalsRender();
+        historyReaderRef.current.accept(history);
       }
     });
 
@@ -934,6 +912,8 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       scanSub.remove();
       stateSub.remove();
       dataSub.remove();
+      if (renderTimer) clearTimeout(renderTimer);
+      historyReader.cancel();
     };
   }, []);
 
@@ -1269,14 +1249,17 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   ]);
 
   const requestDeviceVersion = useCallback(async () => {
+    await historyReadInFlightRef.current?.promise.catch(() => {});
     if (!v8Native) return;
     await v8Native.requestDeviceVersion();
   }, []);
   const requestBattery = useCallback(async () => {
+    await historyReadInFlightRef.current?.promise.catch(() => {});
     if (!v8Native) return;
     await v8Native.requestBattery();
   }, []);
   const requestDeviceMac = useCallback(async () => {
+    await historyReadInFlightRef.current?.promise.catch(() => {});
     if (!v8Native) return;
     await v8Native.requestDeviceMac();
   }, []);
@@ -1323,18 +1306,22 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     [],
   );
   const requestDeviceName = useCallback(async () => {
+    await historyReadInFlightRef.current?.promise.catch(() => {});
     if (!v8Native) return;
     await v8Native.requestDeviceName();
   }, []);
   const requestDeviceTime = useCallback(async () => {
+    await historyReadInFlightRef.current?.promise.catch(() => {});
     if (!v8Native) return;
     await v8Native.requestDeviceTime();
   }, []);
   const syncDeviceTime = useCallback(async () => {
+    await historyReadInFlightRef.current?.promise.catch(() => {});
     if (!v8Native) return;
     await v8Native.syncDeviceTime();
   }, []);
   const requestPersonalInfo = useCallback(async () => {
+    await historyReadInFlightRef.current?.promise.catch(() => {});
     if (!v8Native) return;
     await v8Native.requestPersonalInfo();
   }, []);
@@ -1610,458 +1597,60 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   }, []);
 
 
-  const requestLiveSnapshot = useCallback(async () => {
-    if (!v8Native) return;
-    if (liveSnapshotInFlightRef.current && liveSnapshotPromiseRef.current) {
-      await liveSnapshotPromiseRef.current;
-      return;
+  const readVitalsHistory = useCallback(async (bandDay: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(bandDay) || parseMeasurementTimestamp(bandDay) == null) {
+      throw new Error('Use a valid YYYY-MM-DD date.');
     }
-    liveSnapshotInFlightRef.current = true;
-    const snapshotPromise = (async () => {
-      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const start =
-        Platform.OS === 'ios'
-          ? oneDayAgo.getTime()
-          : `${toLocalDayKey(oneDayAgo)} ${oneDayAgo
-              .toTimeString()
-              .slice(0, 8)}`;
-
-      // Request vital data types so steps, BP, SpO2, temperature, and HR are populated.
-      // NOTE: requestTotalActivity is intentionally excluded — it returns
-      // inflated/stale daily totals that overwrite the accurate interval
-      // values from requestStaticHR / requestDetailActivity.
-      await Promise.all([
-        v8Native.requestStaticHR(0, start),
-        v8Native.requestDynamicHR(0, start),
-        v8Native.requestHRV(0, start),
-        v8Native.requestSpo2
-          ? v8Native.requestSpo2(0, start)
-          : Promise.resolve(true),
-      ]);
-      await Promise.all([
-        v8Native.requestTemperature
-          ? v8Native.requestTemperature(0, start)
-          : Promise.resolve(true),
-        v8Native.requestDetailActivity(0, start),
-      ]);
+    const pending = historyReadInFlightRef.current;
+    if (pending) {
+      if (pending.day !== bandDay) throw new Error('Wait for the current history read to finish.');
+      return pending.promise;
+    }
+    const native = v8Native;
+    if (!native || !connectedDeviceRef.current) throw new Error('Connect the hand band before reading vitals.');
+    const start = Platform.OS === 'ios' ? parseMeasurementTimestamp(bandDay)! : `${bandDay} 00:00:00`;
+    const requests: HistoryRequest[] = [
+      { type: 'totalActivity', request: mode => native.requestTotalActivity(mode, start) },
+      { type: 'detailActivity', request: mode => native.requestDetailActivity(mode, start) },
+      { type: 'dynamicHR', request: mode => native.requestDynamicHR(mode, start) },
+      { type: 'staticHR', request: mode => native.requestStaticHR(mode, start) },
+      { type: 'hrv', request: mode => native.requestHRV(mode, start) },
+    ];
+    if (native.requestSpo2) requests.push({ type: 'spo2', request: mode => native.requestSpo2!(mode, start) });
+    if (native.requestTemperature) requests.push({ type: 'temperature', request: mode => native.requestTemperature!(mode, start) });
+    // Rebuild this download from fresh responses. Cached records must not make a
+    // missing response look complete or retain a previous revision of today's total.
+    historyByTypeRef.current = Object.fromEntries(Object.entries(historyByTypeRef.current).filter(([, bucket]) => bucket.source === 'live'));
+    historyIndexRef.current = {};
+    historyBuffersRef.current = {};
+    setHistoryByType(snapshotHistory(historyByTypeRef.current));
+    historyReadStatusRef.current = { ...idleHistoryReadStatus, phase: 'reading', day: bandDay };
+    setHistoryReadStatus(historyReadStatusRef.current);
+    const deviceId = connectedDeviceRef.current;
+    const promise = (async () => {
+      await devicePrimingRef.current;
+      if (connectedDeviceRef.current !== deviceId) throw new Error('The hand band connection changed. Retry the read.');
+      await historyReaderRef.current.readAll(bandDay, requests, status => {
+        historyReadStatusRef.current = status;
+        setHistoryReadStatus(status);
+      });
     })();
-    liveSnapshotPromiseRef.current = snapshotPromise;
-    try {
-      await snapshotPromise;
-    } finally {
-      liveSnapshotInFlightRef.current = false;
-      liveSnapshotPromiseRef.current = null;
+    historyReadInFlightRef.current = { day: bandDay, promise };
+    try { await promise; }
+    finally {
+      historyReadInFlightRef.current = null;
+      setHistoryByType(snapshotHistory(historyByTypeRef.current));
     }
   }, []);
 
+  const requestLiveSnapshot = useCallback(async () => {
+    await readVitalsHistory(todayLocalDayKey());
+  }, [readVitalsHistory]);
 
-  // Reads the band for one day only - the day it is filling in now. The band
-  // is asked for samples since that day's local midnight and nothing earlier.
-  const buildTodayVitals = useCallback(
-    async (bandDay: string): Promise<V8DailyVitalSummary[]> => {
-      const dayStart = new Date(`${bandDay}T00:00:00`);
-      if (Number.isNaN(dayStart.getTime())) {
-        throw new Error('Use YYYY-MM-DD date format.');
-      }
-      const native = v8Native;
-      if (!native) return [];
-
-      const start =
-        Platform.OS === 'ios' ? dayStart.getTime() : `${bandDay} 00:00:00`;
-
-      const initialUpdatedAt: Record<string, number> = Object.fromEntries(
-        Object.entries(historyByTypeRef.current).map(([k, b]) => [
-          k,
-          b.updatedAt,
-        ]),
-      );
-      const targetKeys = [
-        'totalActivity',
-        'detailActivity',
-        'dynamicHR',
-        'staticHR',
-        'hrv',
-        'spo2',
-        'temperature',
-      ];
-      const androidTimeouts: Record<string, number> = {};
-      const maxPages = 12;
-      for (let page = 0; page < maxPages; page += 1) {
-        const mode = page === 0 ? 0 : 2;
-        const requests: Array<[string, () => Promise<unknown>]> = [
-          ['totalActivity', () => native.requestTotalActivity(mode, start)],
-          ['detailActivity', () => native.requestDetailActivity(mode, start)],
-          ['dynamicHR', () => native.requestDynamicHR(mode, start)],
-          ['staticHR', () => native.requestStaticHR(mode, start)],
-          ['hrv', () => native.requestHRV(mode, start)],
-        ];
-        if (native.requestSpo2) {
-          requests.push(['spo2', () => native.requestSpo2!(mode, start)]);
-        }
-        if (native.requestTemperature) {
-          requests.push([
-            'temperature',
-            () => native.requestTemperature!(mode, start),
-          ]);
-        }
-
-        if (Platform.OS === 'android') {
-          // Android native promises resolve after queueing the command, not after
-          // the band finishes its multi-packet response. Keep history requests
-          // serialized so a new command cannot interrupt the previous response.
-          for (const [key, request] of requests) {
-            if ((androidTimeouts[key] ?? 0) >= 2) continue;
-            const previousUpdatedAt =
-              historyByTypeRef.current[key]?.updatedAt ?? 0;
-            await request();
-            const deadline = Date.now() + 1500;
-            let receivedCompletedResponse = false;
-            while (Date.now() < deadline) {
-              const bucket = historyByTypeRef.current[key];
-              if (
-                bucket &&
-                bucket.updatedAt > previousUpdatedAt &&
-                bucket.completed
-              ) {
-                receivedCompletedResponse = true;
-                break;
-              }
-              await new Promise<void>(resolve => setTimeout(resolve, 50));
-            }
-            androidTimeouts[key] = receivedCompletedResponse
-              ? 0
-              : (androidTimeouts[key] ?? 0) + 1;
-          }
-        } else {
-          await Promise.all(requests.map(([, request]) => request()));
-          await new Promise<void>(resolve => setTimeout(resolve, 450));
-        }
-        const done = targetKeys.every(key => {
-          if (Platform.OS === 'android' && (androidTimeouts[key] ?? 0) >= 2)
-            return true;
-          const bucket = historyByTypeRef.current[key];
-          if (!bucket) return false;
-          const prevUpdated = initialUpdatedAt[key] ?? 0;
-          return bucket.completed && bucket.updatedAt > prevUpdated;
-        });
-        if (done) break;
-      }
-
-      type Agg = {
-        day: string;
-        steps: number | null;
-        distanceKm: number | null;
-        caloriesKcal: number | null;
-        exerciseMinutes: number | null;
-        activeMinutes: number | null;
-        goalPercent: number | null;
-        hrSum: number;
-        hrCount: number;
-        hrMin: number | null;
-        hrMax: number | null;
-        hrLatest: number | null;
-        hrLatestTs: number;
-        spo2Sum: number;
-        spo2Count: number;
-        spo2Min: number | null;
-        spo2Max: number | null;
-        spo2Latest: number | null;
-        spo2LatestTs: number;
-        hrvSum: number;
-        hrvCount: number;
-        hrvMin: number | null;
-        hrvMax: number | null;
-        hrvLatest: number | null;
-        hrvLatestTs: number;
-        sysSum: number;
-        diaSum: number;
-        bpCount: number;
-        sysMin: number | null;
-        sysMax: number | null;
-        diaMin: number | null;
-        diaMax: number | null;
-        sysLatest: number | null;
-        diaLatest: number | null;
-        bpLatestTs: number;
-        tempSum: number;
-        tempCount: number;
-        tempMin: number | null;
-        tempMax: number | null;
-        tempLatest: number | null;
-        tempLatestTs: number;
-        stressSum: number;
-        stressCount: number;
-        stressMin: number | null;
-        stressMax: number | null;
-        stressLatest: number | null;
-        stressLatestTs: number;
-      };
-
-      const fromTs = dayStart.getTime();
-      const toTs = new Date(`${bandDay}T23:59:59`).getTime();
-      const aggs = new Map<string, Agg>();
-      const ensure = (day: string): Agg => {
-        const current = aggs.get(day);
-        if (current) return current;
-        const created: Agg = {
-          day,
-          steps: null,
-          distanceKm: null,
-          caloriesKcal: null,
-          exerciseMinutes: null,
-          activeMinutes: null,
-          goalPercent: null,
-          hrSum: 0,
-          hrCount: 0,
-          hrMin: null,
-          hrMax: null,
-          hrLatest: null,
-          hrLatestTs: 0,
-          spo2Sum: 0,
-          spo2Count: 0,
-          spo2Min: null,
-          spo2Max: null,
-          spo2Latest: null,
-          spo2LatestTs: 0,
-          hrvSum: 0,
-          hrvCount: 0,
-          hrvMin: null,
-          hrvMax: null,
-          hrvLatest: null,
-          hrvLatestTs: 0,
-          sysSum: 0,
-          diaSum: 0,
-          bpCount: 0,
-          sysMin: null,
-          sysMax: null,
-          diaMin: null,
-          diaMax: null,
-          sysLatest: null,
-          diaLatest: null,
-          bpLatestTs: 0,
-          tempSum: 0,
-          tempCount: 0,
-          tempMin: null,
-          tempMax: null,
-          tempLatest: null,
-          tempLatestTs: 0,
-          stressSum: 0,
-          stressCount: 0,
-          stressMin: null,
-          stressMax: null,
-          stressLatest: null,
-          stressLatestTs: 0,
-        };
-        aggs.set(day, created);
-        return created;
-      };
-
-      for (const [key, bucket] of Object.entries(historyByTypeRef.current)) {
-        for (const sample of bucket.entries) {
-          const day = sampleDayKey(sample);
-          if (!day) continue;
-          const dayTs = new Date(`${day}T00:00:00`).getTime();
-          if (!Number.isFinite(dayTs) || dayTs < fromTs || dayTs > toTs)
-            continue;
-          const agg = ensure(day);
-          const sampleTs = sample.receivedAt ?? 0;
-
-          if (isPositiveVital(sample.heartRate)) {
-            agg.hrSum += sample.heartRate;
-            agg.hrCount += 1;
-            agg.hrMin =
-              agg.hrMin == null
-                ? sample.heartRate
-                : Math.min(agg.hrMin, sample.heartRate);
-            agg.hrMax =
-              agg.hrMax == null
-                ? sample.heartRate
-                : Math.max(agg.hrMax, sample.heartRate);
-            if (sampleTs >= agg.hrLatestTs) {
-              agg.hrLatestTs = sampleTs;
-              agg.hrLatest = sample.heartRate;
-            }
-          }
-          if (isPositiveVital(sample.spo2)) {
-            agg.spo2Sum += sample.spo2;
-            agg.spo2Count += 1;
-            agg.spo2Min =
-              agg.spo2Min == null
-                ? sample.spo2
-                : Math.min(agg.spo2Min, sample.spo2);
-            agg.spo2Max =
-              agg.spo2Max == null
-                ? sample.spo2
-                : Math.max(agg.spo2Max, sample.spo2);
-            if (sampleTs >= agg.spo2LatestTs) {
-              agg.spo2LatestTs = sampleTs;
-              agg.spo2Latest = sample.spo2;
-            }
-          }
-          if (isPositiveVital(sample.hrv)) {
-            agg.hrvSum += sample.hrv;
-            agg.hrvCount += 1;
-            agg.hrvMin =
-              agg.hrvMin == null
-                ? sample.hrv
-                : Math.min(agg.hrvMin, sample.hrv);
-            agg.hrvMax =
-              agg.hrvMax == null
-                ? sample.hrv
-                : Math.max(agg.hrvMax, sample.hrv);
-            if (sampleTs >= agg.hrvLatestTs) {
-              agg.hrvLatestTs = sampleTs;
-              agg.hrvLatest = sample.hrv;
-            }
-          }
-          if (
-            isPositiveVital(sample.systolicBp) &&
-            isPositiveVital(sample.diastolicBp)
-          ) {
-            agg.sysSum += sample.systolicBp;
-            agg.diaSum += sample.diastolicBp;
-            agg.bpCount += 1;
-            agg.sysMin =
-              agg.sysMin == null
-                ? sample.systolicBp
-                : Math.min(agg.sysMin, sample.systolicBp);
-            agg.sysMax =
-              agg.sysMax == null
-                ? sample.systolicBp
-                : Math.max(agg.sysMax, sample.systolicBp);
-            agg.diaMin =
-              agg.diaMin == null
-                ? sample.diastolicBp
-                : Math.min(agg.diaMin, sample.diastolicBp);
-            agg.diaMax =
-              agg.diaMax == null
-                ? sample.diastolicBp
-                : Math.max(agg.diaMax, sample.diastolicBp);
-            if (sampleTs >= agg.bpLatestTs) {
-              agg.bpLatestTs = sampleTs;
-              agg.sysLatest = sample.systolicBp;
-              agg.diaLatest = sample.diastolicBp;
-            }
-          }
-          if (isPositiveVital(sample.temperatureC)) {
-            agg.tempSum += sample.temperatureC;
-            agg.tempCount += 1;
-            agg.tempMin =
-              agg.tempMin == null
-                ? sample.temperatureC
-                : Math.min(agg.tempMin, sample.temperatureC);
-            agg.tempMax =
-              agg.tempMax == null
-                ? sample.temperatureC
-                : Math.max(agg.tempMax, sample.temperatureC);
-            if (sampleTs >= agg.tempLatestTs) {
-              agg.tempLatestTs = sampleTs;
-              agg.tempLatest = sample.temperatureC;
-            }
-          }
-          if (isPositiveVital(sample.stress)) {
-            agg.stressSum += sample.stress;
-            agg.stressCount += 1;
-            agg.stressMin =
-              agg.stressMin == null
-                ? sample.stress
-                : Math.min(agg.stressMin, sample.stress);
-            agg.stressMax =
-              agg.stressMax == null
-                ? sample.stress
-                : Math.max(agg.stressMax, sample.stress);
-            if (sampleTs >= agg.stressLatestTs) {
-              agg.stressLatestTs = sampleTs;
-              agg.stressLatest = sample.stress;
-            }
-          }
-
-          if (key === 'totalActivity') {
-            if (sample.steps != null) agg.steps = sample.steps;
-            if (sample.distanceKm != null) agg.distanceKm = sample.distanceKm;
-            if (sample.caloriesKcal != null)
-              agg.caloriesKcal = sample.caloriesKcal;
-            if (sample.exerciseMinutes != null)
-              agg.exerciseMinutes = sample.exerciseMinutes;
-            if (sample.activeMinutes != null)
-              agg.activeMinutes = sample.activeMinutes;
-            if (sample.goalPercent != null)
-              agg.goalPercent = sample.goalPercent;
-          } else {
-            if (sample.steps != null)
-              agg.steps =
-                agg.steps == null
-                  ? sample.steps
-                  : Math.max(agg.steps, sample.steps);
-            if (sample.distanceKm != null) {
-              agg.distanceKm =
-                agg.distanceKm == null
-                  ? sample.distanceKm
-                  : Math.max(agg.distanceKm, sample.distanceKm);
-            }
-            if (sample.caloriesKcal != null) {
-              agg.caloriesKcal =
-                agg.caloriesKcal == null
-                  ? sample.caloriesKcal
-                  : Math.max(agg.caloriesKcal, sample.caloriesKcal);
-            }
-          }
-        }
-      }
-
-      return Array.from(aggs.values())
-        .sort((a, b) => a.day.localeCompare(b.day))
-        .map(day => ({
-          date: day.day,
-          steps: day.steps,
-          distanceKm: day.distanceKm,
-          caloriesKcal: day.caloriesKcal,
-          exerciseMinutes: day.exerciseMinutes,
-          activeMinutes: day.activeMinutes,
-          goalPercent: day.goalPercent,
-          heartRateAvg:
-            day.hrCount > 0 ? Math.round(day.hrSum / day.hrCount) : null,
-          heartRateMin: day.hrMin,
-          heartRateMax: day.hrMax,
-          heartRateLatest: day.hrLatest,
-          spo2Avg:
-            day.spo2Count > 0 ? Math.round(day.spo2Sum / day.spo2Count) : null,
-          spo2Min: day.spo2Min,
-          spo2Max: day.spo2Max,
-          spo2Latest: day.spo2Latest,
-          hrvAvg:
-            day.hrvCount > 0 ? Math.round(day.hrvSum / day.hrvCount) : null,
-          hrvMin: day.hrvMin,
-          hrvMax: day.hrvMax,
-          hrvLatest: day.hrvLatest,
-          systolicBpMin: day.sysMin,
-          systolicBpMax: day.sysMax,
-          systolicBpAvg:
-            day.bpCount > 0 ? Math.round(day.sysSum / day.bpCount) : null,
-          diastolicBpMin: day.diaMin,
-          diastolicBpMax: day.diaMax,
-          diastolicBpAvg:
-            day.bpCount > 0 ? Math.round(day.diaSum / day.bpCount) : null,
-          systolicBpLatest: day.sysLatest,
-          diastolicBpLatest: day.diaLatest,
-          temperatureMinC: day.tempMin,
-          temperatureMaxC: day.tempMax,
-          temperatureAvgC:
-            day.tempCount > 0
-              ? Number((day.tempSum / day.tempCount).toFixed(1))
-              : null,
-          temperatureLatestC: day.tempLatest,
-          stressMin: day.stressMin,
-          stressMax: day.stressMax,
-          stressAvg:
-            day.stressCount > 0
-              ? Math.round(day.stressSum / day.stressCount)
-              : null,
-          stressLatest: day.stressLatest,
-        }));
-    },
-    [],
-  );
+  const buildTodayVitals = useCallback(async (bandDay: string): Promise<V8DailyVitalSummary[]> => {
+    await readVitalsHistory(bandDay);
+    return aggregateVitals(historyByTypeRef.current, bandDay);
+  }, [readVitalsHistory]);
 
   // The app only ever syncs the day the band is filling in now. There is no
   // backfill path: a missed day stays missed rather than being reconstructed
@@ -2155,23 +1744,15 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         stressLatest: day.stressLatest ?? null,
       }));
 
-      // Today's row is still being filled in as the day progresses, so a sync
-      // never refuses to send: whatever the history aggregation leaves out is
-      // taken from the latest live sample, and anything still missing after
-      // that goes as 0. A day the band recorded nothing on is sent as a row of
-      // zeros rather than skipped, so every day is present on the backend.
-      const aggregatedRow =
-        allVitalSummaries.find(summary => summary.recordDate === bandDay) ??
-        allVitalSummaries[0];
-      const liveFallback = latestLiveDataRef.current;
-      const normalizedSummaries = [
-        fillTodayVitalSummaryGaps(
-          // Relabelled rather than dropped: a row the aggregation dated
-          // differently still holds the band's readings for this sync.
-          { ...(aggregatedRow ?? emptyVitalSummary(bandDay)), recordDate: bandDay },
-          liveFallback,
-        ),
-      ];
+      const status = historyReadStatusRef.current;
+      if (status.day === bandDay && status.phase !== 'complete') {
+        throw new Error('History is incomplete. Retry the read before uploading vitals.');
+      }
+      const row = selectTodayVitalSummary(allVitalSummaries, bandDay, latestLiveDataRef.current);
+      if (!Object.entries(row).some(([key, value]) => key !== 'recordDate' && value != null)) {
+        throw new Error('No readings recorded for this day. Nothing was uploaded.');
+      }
+      const normalizedSummaries = [row];
 
       // syncFrom/syncTo/syncDays describe a one-day window because that is the
       // only window there is; the backend still requires all three.
@@ -2193,11 +1774,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         syncFrom: webPayload.syncFrom,
         syncTo: webPayload.syncTo,
         recordDate: webPayload.vitalSummaries[0]?.recordDate ?? null,
-        source: aggregatedRow
-          ? 'band history'
-          : liveFallback
-          ? 'live sample only'
-          : 'zeros - band recorded nothing today',
+        source: 'dated readings; missing metrics remain null',
       });
 
       await syncV8VitalsByDevice(webPayload);
@@ -2235,6 +1812,11 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
 
 
   const clearSavedData = useCallback(async () => {
+    historyReaderRef.current.cancel();
+    historyByTypeRef.current = {};
+    historyIndexRef.current = {};
+    historyBuffersRef.current = {};
+    latestLiveDataRef.current = null;
     setHistoryByType({});
     setLatestLiveData(null);
     setDataEvents([]);
@@ -2432,8 +2014,6 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       const bandDay = todayLocalDayKey();
       const todayRows = await buildTodayVitals(bandDay);
       const bandRows = todayRows.filter(row => row.date === bandDay);
-      // No rows is not a failure - the sync falls back to the live sample and
-      // then to zeros, so the day is still recorded.
       await syncTodayVitalsToBackend(bandDay, bandRows);
     } catch (error) {
       const retryAt = Date.now() + 60_000;
@@ -2531,6 +2111,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     liveModeEnabled,
     ecgSession,
     autoSyncStatus,
+    historyReadStatus,
     openBluetoothSettings,
     startScan,
     stopScan,

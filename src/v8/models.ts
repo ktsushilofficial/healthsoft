@@ -1,6 +1,8 @@
 export type V8VitalSample = {
   timestamp: string | null;
   receivedAt: number | null;
+  source?: 'history' | 'live';
+  metricTimestamps?: Partial<Record<V8VitalMetric, number>>;
   heartRate: number | null;
   hrv: number | null;
   stress: number | null;
@@ -15,6 +17,11 @@ export type V8VitalSample = {
   activeMinutes: number | null;
   goalPercent: number | null;
 };
+
+export type V8VitalMetric = Exclude<
+  keyof V8VitalSample,
+  'timestamp' | 'receivedAt' | 'source' | 'metricTimestamps'
+>;
 
 export type V8DeviceInfo = {
   imei: string | null;
@@ -69,7 +76,14 @@ export type V8EcgSession = {
 };
 
 export type V8EcgEvent = {
-  kind: 'started' | 'samples' | 'status' | 'completed' | 'stopped' | 'failed' | 'unknown';
+  kind:
+    | 'started'
+    | 'samples'
+    | 'status'
+    | 'completed'
+    | 'stopped'
+    | 'failed'
+    | 'unknown';
   samples: number[];
   waveformSource: V8WaveformSource | null;
   waveformField: string | null;
@@ -84,6 +98,7 @@ export type V8EcgEvent = {
 };
 
 export type V8HistoryBucket = {
+  source?: 'history' | 'live';
   dataType: string | null;
   entries: V8VitalSample[];
   completed: boolean;

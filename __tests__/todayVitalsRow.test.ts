@@ -1,54 +1,93 @@
 import {
   emptyVitalSummary,
   fillTodayVitalSummaryGaps,
+  selectTodayVitalSummary,
 } from '../src/v8/todayVitalsRow';
-import type { V8VitalSample, V8WebVitalSummary } from '../src/v8/models';
+import { parseV8Payload } from '../src/v8/parser';
 
-const live = { heartRate: 74, spo2: 97, steps: 1200 } as unknown as V8VitalSample;
+const now = new Date('2026-09-11T10:00:00').getTime();
+const live = {
+  ...parseV8Payload(
+    { dataType: '75', dicData: { heartRate: 74, Blood_oxygen: 97, step: 0 } },
+    'android',
+  ).history!.entries[0],
+  receivedAt: now,
+};
 
-const rowWithGaps = (): V8WebVitalSummary => ({
-  ...emptyVitalSummary('2026-09-08'),
-  steps: 4210,
-  hrAvg: 68,
-});
-
-describe('today vitals row', () => {
-  it('prefers the aggregated value over the live sample', () => {
-    const filled = fillTodayVitalSummaryGaps(rowWithGaps(), live);
-    expect(filled.steps).toBe(4210);
-    expect(filled.hrAvg).toBe(68);
+describe('dated vitals upload rows', () => {
+  it('preserves the aggregate and fills gaps only from fresh same-day readings', () => {
+    const row = fillTodayVitalSummaryGaps(
+      { ...emptyVitalSummary('2026-09-11'), hrAvg: 68, steps: 4210 },
+      live,
+      now,
+    );
+    expect(row.hrAvg).toBe(68);
+    expect(row.steps).toBe(4210);
+    expect(row.hrLatest).toBe(74);
+    expect(row.spo2Avg).toBe(97);
+    expect(row.tempAvg).toBeNull();
   });
-
-  it('falls back to the live sample for gaps the aggregation left', () => {
-    const filled = fillTodayVitalSummaryGaps(rowWithGaps(), live);
-    expect(filled.hrMin).toBe(74);
-    expect(filled.hrMax).toBe(74);
-    expect(filled.hrLatest).toBe(74);
-    expect(filled.spo2Avg).toBe(97);
+  it('keeps missing values null, including through JSON serialization', () => {
+    const row = JSON.parse(
+      JSON.stringify(
+        fillTodayVitalSummaryGaps(emptyVitalSummary('2026-09-11'), null, now),
+      ),
+    );
+    const { recordDate, ...metrics } = row;
+    expect(recordDate).toBe('2026-09-11');
+    expect(Object.values(metrics).every(value => value === null)).toBe(true);
   });
-
-  it('falls back to 0 when neither has the metric', () => {
-    const filled = fillTodayVitalSummaryGaps(rowWithGaps(), live);
-    expect(filled.tempAvg).toBe(0);
-    expect(filled.stressAvg).toBe(0);
-    expect(filled.systolicBpAvg).toBe(0);
+  it('keeps valid zero activity but rejects zero HR and SpO2', () => {
+    const row = fillTodayVitalSummaryGaps(
+      emptyVitalSummary('2026-09-11'),
+      { ...live, heartRate: 0, spo2: 0 },
+      now,
+    );
+    expect(row.steps).toBe(0);
+    expect(row.hrLatest).toBeNull();
+    expect(row.spo2Latest).toBeNull();
   });
-
-  it('sends a full row of zeros when the band recorded nothing', () => {
-    const filled = fillTodayVitalSummaryGaps(emptyVitalSummary('2026-09-08'), null);
-    const { recordDate, ...metrics } = filled;
-    expect(recordDate).toBe('2026-09-08');
-    expect(Object.values(metrics).every(value => value === 0)).toBe(true);
+  it.each([now - 301_000, now + 1_000, now - 86400_000])(
+    'rejects stale, future, or other-day fallback (%s)',
+    time => {
+      const row = fillTodayVitalSummaryGaps(
+        emptyVitalSummary('2026-09-11'),
+        { ...live, receivedAt: time },
+        now,
+      );
+      expect(row.hrLatest).toBeNull();
+    },
+  );
+  it('does not relabel yesterday even when no requested-day row exists', () => {
+    const row = selectTodayVitalSummary(
+      [{ ...emptyVitalSummary('2026-09-10'), steps: 9999, hrLatest: 83 }],
+      '2026-09-11',
+      null,
+      now,
+    );
+    expect(row.recordDate).toBe('2026-09-11');
+    expect(row.steps).toBeNull();
+    expect(row.hrLatest).toBeNull();
   });
-
-  it('never emits null, so the sync always has something to send', () => {
-    const filled = fillTodayVitalSummaryGaps(emptyVitalSummary('2026-09-08'), live);
-    expect(Object.values(filled).some(value => value == null)).toBe(false);
-    expect(filled.hrAvg).toBe(74);
-    expect(filled.tempAvg).toBe(0);
+  it('checks freshness per metric in a merged live sample', () => {
+    const row = fillTodayVitalSummaryGaps(
+      emptyVitalSummary('2026-09-11'),
+      {
+        ...live,
+        metricTimestamps: { heartRate: now - 86400_000, spo2: now },
+      },
+      now,
+    );
+    expect(row.hrLatest).toBeNull();
+    expect(row.spo2Latest).toBe(97);
   });
-
-  it('keeps the requested day on the row', () => {
-    expect(emptyVitalSummary('2026-09-08').recordDate).toBe('2026-09-08');
+  it('never accepts undated legacy cached data as a live reading', () => {
+    expect(
+      fillTodayVitalSummaryGaps(
+        emptyVitalSummary('2026-09-11'),
+        { ...live, source: undefined },
+        now,
+      ).hrLatest,
+    ).toBeNull();
   });
 });

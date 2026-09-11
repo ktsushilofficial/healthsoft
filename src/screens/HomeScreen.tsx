@@ -1688,7 +1688,6 @@ const HomeScreen = () => {
       const bandDay = todayLocalDayKey();
       const todayRows = await buildTodayVitals(bandDay);
       const bandRows = todayRows.filter(row => row.date === bandDay);
-      // An empty read still syncs - live sample first, then zeros.
       await syncTodayVitalsToBackend(bandDay, bandRows);
       setSyncedVitalsRows(bandRows);
       Alert.alert('Sync complete', 'Today\'s hand band health data is up to date.');

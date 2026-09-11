@@ -16,7 +16,8 @@ import { useAuth } from '../context/AuthContext';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import type { V8DailyVitalSummary } from '../v8/models';
 import { todayLocalDayKey } from '../utils/vitalsDay';
-import { sampleDayKey } from '../utils/sampleDay';
+import { historyTypeLabels } from '../v8/historyReader';
+import { aggregateVitals } from '../v8/vitals';
 import DailyVitalsTable from '../components/DailyVitalsTable';
 
 type RouteParams = {
@@ -57,26 +58,10 @@ const VitalCard = ({
   </View>
 );
 
-const ActionBtn = ({
-  icon, label, onPress, disabled, loading,
-}: { icon: string; label: string; onPress: () => Promise<void> | void; disabled?: boolean; loading?: boolean }) => (
-  <TouchableOpacity
-    style={[s.actionBtn, disabled ? s.disabled : null]}
-    disabled={disabled || loading}
-    onPress={onPress}
-    activeOpacity={0.7}
-  >
-    {loading
-      ? <ActivityIndicator size="small" color="#F28C28" />
-      : <Icon name={icon} size={18} color="#F28C28" />}
-    <Text style={s.actionBtnText}>{label}</Text>
-  </TouchableOpacity>
-);
-
 /* ── main screen ───────────────────────────────────────── */
 
 const V8DeviceManageScreen = () => {
-  const { user, selectedSenior, selectedSeniorHandBandMacs } = useAuth();
+  const { user, selectedSeniorHandBandMacs } = useAuth();
   const normalizeId = (id?: string | null) => (id ?? '').trim().toLowerCase();
   const navigation = useNavigation<any>();
   const route = useRoute();
@@ -87,7 +72,7 @@ const V8DeviceManageScreen = () => {
     requestBattery, requestDeviceMac, requestPersonalInfo,
     requestLiveSnapshot,
     buildTodayVitals, syncTodayVitalsToBackend,
-    latestLiveData, historyByType, deviceInfo,
+    latestLiveData, historyByType, deviceInfo, historyReadStatus,
   } = useV8DeviceManager();
 
   const state = connectionStates[normalizeId(deviceId)] ?? 'disconnected';
@@ -130,7 +115,9 @@ const V8DeviceManageScreen = () => {
         requestBattery(),
         requestDeviceMac(),
       ]);
-    } catch { /* */ }
+    } catch (error) {
+      setActionStatus(error instanceof Error ? error.message : 'Unable to refresh vitals.');
+    }
     setRefreshingLive(false);
   }, [requestBattery, requestDeviceMac, requestLiveSnapshot, requestPersonalInfo]);
 
@@ -179,9 +166,7 @@ const V8DeviceManageScreen = () => {
       const todayRows = await buildTodayVitals(bandDay);
       setFetchedVitalsRows(todayRows);
 
-      const exactTodayRows = todayRows.filter(row => row.date === bandDay);
-      const bandRows = exactTodayRows.length > 0 ? exactTodayRows : todayRows;
-      // An empty read still syncs - live sample first, then zeros.
+      const bandRows = todayRows.filter(row => row.date === bandDay);
       const result = await syncTodayVitalsToBackend(bandDay, bandRows);
       setActionStatus(`Today vitals synced to backend for ${result.days} day(s)`);
     } catch (error) {
@@ -213,9 +198,10 @@ const V8DeviceManageScreen = () => {
     );
   }, [deviceId, handleFetchAndSyncToday, isSeniorUser, route.params]);
 
+  const todayRows = useMemo(() => aggregateVitals(historyByType, todayLocalDayKey()), [historyByType]);
   const vitalsRowsForTable = useMemo(
-    () => [...fetchedVitalsRows].sort((a, b) => b.date.localeCompare(a.date)),
-    [fetchedVitalsRows],
+    () => historyReadStatus.day === todayLocalDayKey() ? todayRows : fetchedVitalsRows,
+    [todayRows, historyReadStatus.day, fetchedVitalsRows],
   );
   const batteryIcon = useMemo(() => {
     const pct = deviceInfo.batteryPercent;
@@ -233,81 +219,17 @@ const V8DeviceManageScreen = () => {
     return '#C62828';
   }, [deviceInfo.batteryPercent]);
 
-  const todayMotionFallback = useMemo(() => {
-    // sampleDayKey buckets by the senior's local day, so compare against it.
-    const today = todayLocalDayKey();
-    const all = Object.values(historyByType).flatMap(bucket => bucket.entries);
-    const todayEntries = all.filter(entry => sampleDayKey(entry) === today);
-    let steps: number | null = null;
-    let distanceKm: number | null = null;
-    let caloriesKcal: number | null = null;
-    for (const entry of todayEntries) {
-      if (entry.steps != null) {
-        steps = steps == null ? entry.steps : Math.max(steps, entry.steps);
-      }
-      if (entry.distanceKm != null) {
-        distanceKm = distanceKm == null ? entry.distanceKm : Math.max(distanceKm, entry.distanceKm);
-      }
-      if (entry.caloriesKcal != null) {
-        caloriesKcal = caloriesKcal == null ? entry.caloriesKcal : Math.max(caloriesKcal, entry.caloriesKcal);
-      }
-    }
-    return { steps, distanceKm, caloriesKcal };
-  }, [historyByType]);
-
-  const latestVitalsFallback = useMemo(() => {
-    const all = Object.values(historyByType).flatMap(bucket => bucket.entries);
-    const latestNonNull = <T,>(pick: (entry: typeof all[number]) => T | null | undefined): T | null => {
-      let value: T | null = null;
-      let latestTs = 0;
-      for (const entry of all) {
-        const current = pick(entry);
-        if (current == null) continue;
-        const ts = entry.receivedAt ?? 0;
-        if (ts >= latestTs) {
-          latestTs = ts;
-          value = current as T;
-        }
-      }
-      return value;
-    };
-    const latestBp = latestNonNull<{ systolic: number; diastolic: number }>(entry =>
-      entry.systolicBp != null && entry.diastolicBp != null
-        ? { systolic: entry.systolicBp, diastolic: entry.diastolicBp }
-        : null,
-    );
-    return {
-      heartRate: latestNonNull<number>(entry => entry.heartRate),
-      spo2: latestNonNull<number>(entry => entry.spo2),
-      temperatureC: latestNonNull<number>(entry => entry.temperatureC),
-      hrv: latestNonNull<number>(entry => entry.hrv),
-      stress: latestNonNull<number>(entry => entry.stress),
-      systolicBp: latestBp?.systolic ?? null,
-      diastolicBp: latestBp?.diastolic ?? null,
-    };
-  }, [historyByType]);
-
-  const latestIsToday = useMemo(() => {
-    if (!latestLiveData) return false;
-    return sampleDayKey(latestLiveData) === todayLocalDayKey();
-  }, [latestLiveData]);
-
-  const displaySteps = latestIsToday
-    ? (latestLiveData?.steps ?? todayMotionFallback.steps)
-    : todayMotionFallback.steps;
-  const displayDistanceKm = latestIsToday
-    ? (latestLiveData?.distanceKm ?? todayMotionFallback.distanceKm)
-    : todayMotionFallback.distanceKm;
-  const displayCaloriesKcal = latestIsToday
-    ? (latestLiveData?.caloriesKcal ?? todayMotionFallback.caloriesKcal)
-    : todayMotionFallback.caloriesKcal;
-  const displayHeartRate = latestLiveData?.heartRate ?? latestVitalsFallback.heartRate;
-  const displaySpo2 = latestLiveData?.spo2 ?? latestVitalsFallback.spo2;
-  const displaySystolicBp = latestLiveData?.systolicBp ?? latestVitalsFallback.systolicBp;
-  const displayDiastolicBp = latestLiveData?.diastolicBp ?? latestVitalsFallback.diastolicBp;
-  const displayTemperatureC = latestLiveData?.temperatureC ?? latestVitalsFallback.temperatureC;
-  const displayHrv = latestLiveData?.hrv ?? latestVitalsFallback.hrv;
-  const displayStress = latestLiveData?.stress ?? latestVitalsFallback.stress;
+  const today = todayRows[0];
+  const displaySteps = today?.steps ?? null;
+  const displayDistanceKm = today?.distanceKm ?? null;
+  const displayCaloriesKcal = today?.caloriesKcal ?? null;
+  const displayHeartRate = today?.heartRateLatest ?? null;
+  const displaySpo2 = today?.spo2Latest ?? null;
+  const displaySystolicBp = today?.systolicBpLatest ?? null;
+  const displayDiastolicBp = today?.diastolicBpLatest ?? null;
+  const displayTemperatureC = today?.temperatureLatestC ?? null;
+  const displayHrv = today?.hrvLatest ?? null;
+  const displayStress = today?.stressLatest ?? null;
   const hasAnyLiveVital =
     displayHeartRate != null ||
     displaySpo2 != null ||
@@ -326,8 +248,17 @@ const V8DeviceManageScreen = () => {
     return `${Math.floor(sec / 60)}m ago`;
   }, [latestLiveData?.receivedAt]);
 
+  const readStatusText = historyReadStatus.phase === 'reading'
+    ? historyReadStatus.currentType
+      ? `Reading ${historyTypeLabels[historyReadStatus.currentType] ?? 'vitals'}… ${historyReadStatus.completedTypes.length} categories complete. Values shown so far are partial.`
+      : 'Preparing to read hand band vitals…'
+    : historyReadStatus.phase === 'partial'
+    ? 'Some readings could not be downloaded. Review the received values and retry before syncing.'
+    : null;
+
   return (
     <SafeAreaView style={s.container}>
+      {readStatusText ? <Text accessibilityLiveRegion="polite" style={s.readStatus}>{readStatusText}</Text> : null}
       <ScrollView contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
         {/* ── Header ── */}
         <View style={s.headerRow}>
@@ -529,6 +460,7 @@ export default V8DeviceManageScreen;
 /* ── styles ────────────────────────────────────────────── */
 
 const s = StyleSheet.create({
+  readStatus: { padding: 12 },
   container: { flex: 1, backgroundColor: '#F5F2EE' },
   content: { paddingBottom: 30 },
 
