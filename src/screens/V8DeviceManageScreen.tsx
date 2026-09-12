@@ -168,7 +168,13 @@ const V8DeviceManageScreen = () => {
 
       const bandRows = todayRows.filter(row => row.date === bandDay);
       const result = await syncTodayVitalsToBackend(bandDay, bandRows);
-      setActionStatus(`Today vitals synced to backend for ${result.days} day(s)`);
+      setActionStatus(
+        result.partial
+          ? `Today vitals synced for ${result.days} day(s). ${result.missingTypes
+              .map(type => historyTypeLabels[type] ?? type)
+              .join(', ')} could not be read and were sent as null.`
+          : `Today vitals synced to backend for ${result.days} day(s)`,
+      );
     } catch (error) {
       setActionStatus(error instanceof Error ? error.message : 'Failed to fetch and sync today vitals');
     } finally {
@@ -254,16 +260,23 @@ const V8DeviceManageScreen = () => {
   const unavailableHistory = Object.entries(historyReadStatus.categories)
     .filter(([, category]) => category.outcome === 'unavailable')
     .map(([type]) => historyTypeLabels[type] ?? type);
+  const failedHistory = historyReadStatus.failedTypes.map(type => historyTypeLabels[type] ?? type);
+  const missingHistory = Array.from(new Set([...failedHistory, ...unavailableHistory]));
+  // A category that failed or could not be parsed leaves its metrics null; the
+  // readings that did arrive are still shown and still uploaded.
+  const parseNote = parseFailures.length
+    ? ` Some ${parseFailures.join(', ')} readings could not be processed and sync as null.`
+    : '';
   const readStatusText = historyReadStatus.phase === 'reading'
     ? historyReadStatus.currentType
       ? `Reading ${historyTypeLabels[historyReadStatus.currentType] ?? 'vitals'}… ${historyReadStatus.completedTypes.length} categories complete. Values shown so far are partial.`
       : 'Preparing to read hand band vitals…'
     : historyReadStatus.phase === 'partial'
-    ? parseFailures.length
-      ? `Could not process ${parseFailures.join(', ')} readings. Review the received values and retry before syncing.`
-      : 'Some readings could not be downloaded. Review the received values and retry before syncing.'
-    : historyReadStatus.phase === 'complete' && unavailableHistory.length
-    ? `Available history downloaded. This app cannot request ${unavailableHistory.join(', ')} history from the band.`
+    ? historyReadStatus.cancellationReason
+      ? `${historyReadStatus.cancellationReason} Nothing was uploaded. Reconnect the band and retry.`
+      : `${missingHistory.length ? `Could not download ${missingHistory.join(', ')}.` : 'Some readings could not be downloaded.'} The readings that arrived still sync; missing values are sent as null.${parseNote}`
+    : historyReadStatus.phase === 'complete' && (unavailableHistory.length || parseFailures.length)
+    ? `Available history downloaded.${unavailableHistory.length ? ` This app cannot request ${unavailableHistory.join(', ')} history from the band.` : ''}${parseNote}`
     : null;
 
   return (

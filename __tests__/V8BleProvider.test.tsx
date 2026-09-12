@@ -419,7 +419,7 @@ describe('hand band connection and ownership', () => {
       }
     },
   );
-  it('blocks uploading a partial download even when some valid readings arrived', async () => {
+  it('uploads a partial download and sends the missing categories as null', async () => {
     await emit('V8ScanResult', iosBand);
     await emit('V8ConnectionState', {
       deviceId: iosBand.id,
@@ -454,16 +454,15 @@ describe('hand band connection and ownership', () => {
         return true;
       });
     });
-    let result!: Promise<unknown>;
+    let result!: Promise<V8DailyVitalSummary[] | Error>;
     await act(async () => {
       result = manager.buildTodayVitals('2026-09-11').catch(error => error);
     });
     await act(async () => {
       await jest.advanceTimersByTimeAsync(5100);
     });
-    expect(await result).toMatchObject({
-      message: expect.stringContaining('incomplete'),
-    });
+    const rows = await result;
+    expect(rows).not.toBeInstanceOf(Error);
     expect(manager.historyReadStatus).toMatchObject({
       phase: 'partial',
       failedTypes: ['hrv'],
@@ -475,10 +474,25 @@ describe('hand band connection and ownership', () => {
     await act(async () => {
       renderer.update(tree());
     });
-    await expect(
-      manager.syncTodayVitalsToBackend('2026-09-11', []),
-    ).rejects.toThrow('History is incomplete');
-    expect(mockAuth.syncV8VitalsByDevice).not.toHaveBeenCalled();
+    let outcome!: { days: number; partial: boolean; missingTypes: string[] };
+    await act(async () => {
+      outcome = await manager.syncTodayVitalsToBackend(
+        '2026-09-11',
+        rows as V8DailyVitalSummary[],
+      );
+    });
+    expect(outcome).toMatchObject({ days: 1, partial: true, missingTypes: ['hrv'] });
+    const summary = mockAuth.syncV8VitalsByDevice.mock.calls[0][0].vitalSummaries[0];
+    expect(summary).toMatchObject({
+      recordDate: '2026-09-11',
+      steps: 300,
+      hrvMin: null,
+      hrvMax: null,
+      hrvAvg: null,
+      hrvLatest: null,
+      spo2Avg: null,
+      tempAvg: null,
+    });
   });
 
   const prepareRead = async (platform: 'ios' | 'android' = 'ios', malformed = false) => {
@@ -536,21 +550,74 @@ describe('hand band connection and ownership', () => {
     } finally { Object.defineProperty(Platform, 'OS', { configurable: true, value: original }); }
   });
 
-  it.each(['ios', 'android'] as const)('blocks silently rejected %s history even after dataEnd', async platform => {
+  it.each(['ios', 'android'] as const)('still uploads the other %s categories when continuous HR is silently rejected', async platform => {
     const original = Platform.OS;
     try {
       await prepareRead(platform, true);
-      await act(async () => { await expect(manager.buildTodayVitals('2026-09-11')).rejects.toThrow('incomplete'); });
+      let rows!: V8DailyVitalSummary[];
+      await act(async () => { rows = await manager.buildTodayVitals('2026-09-11'); });
+      expect(manager.historyReadStatus).toMatchObject({ phase: 'partial', failedTypes: ['dynamicHR'] });
       expect(manager.historyReadStatus.categories.dynamicHR).toMatchObject({ outcome: 'failed', rejectedRecords: 1 });
       await becomeSenior();
-      await expect(manager.syncTodayVitalsToBackend('2026-09-11', [])).rejects.toThrow('History is incomplete');
-      expect(mockAuth.syncV8VitalsByDevice).not.toHaveBeenCalled();
+      await act(async () => { await manager.syncTodayVitalsToBackend('2026-09-11', rows); });
+      const summary = mockAuth.syncV8VitalsByDevice.mock.calls[0][0].vitalSummaries[0];
+      // Continuous HR contributed nothing; the resting HR record and the other
+      // categories still upload.
+      expect(summary).toMatchObject({ recordDate: '2026-09-11', steps: 8000, spo2Avg: 98, hrvAvg: 55, tempAvg: 36.5 });
     } finally { Object.defineProperty(Platform, 'OS', { configurable: true, value: original }); }
   });
 
-  it('requires a completed read even when no prior status exists', async () => {
+  it('uploads the single value that arrived when every category failed', async () => {
+    await emit('V8ScanResult', iosBand);
+    await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'connected' });
+    await act(async () => { await jest.advanceTimersByTimeAsync(2100); });
+    // Only resting HR answers, and it never sends its completion marker, so
+    // every one of the seven categories ends up failed.
+    Object.values(mockHistoryRequests).forEach((request, index) => {
+      request.mockImplementation(async () => {
+        if (index === 3) {
+          mockListeners.get('V8Data')?.({
+            type: 'parsed',
+            payload: {
+              dataType: '29',
+              dataEnd: false,
+              dicData: [{ date: '2026.09.11 10:00:00', heartRate: 72 }],
+            },
+          });
+        }
+        return true;
+      });
+    });
+    let result!: Promise<V8DailyVitalSummary[] | Error>;
+    await act(async () => {
+      result = manager.buildTodayVitals('2026-09-11').catch(error => error);
+    });
+    await act(async () => { await jest.advanceTimersByTimeAsync(40000); });
+    const rows = await result;
+    expect(rows).not.toBeInstanceOf(Error);
+    expect(manager.historyReadStatus).toMatchObject({
+      phase: 'partial',
+      completedTypes: [],
+      failedTypes: ['totalActivity', 'detailActivity', 'dynamicHR', 'staticHR', 'hrv', 'spo2', 'temperature'],
+    });
     await becomeSenior();
-    await expect(manager.syncTodayVitalsToBackend('2026-09-11', [])).rejects.toThrow('History is incomplete');
+    let outcome!: { days: number; partial: boolean };
+    await act(async () => {
+      outcome = await manager.syncTodayVitalsToBackend('2026-09-11', rows as V8DailyVitalSummary[]);
+    });
+    expect(outcome).toMatchObject({ days: 1, partial: true });
+    const summary = mockAuth.syncV8VitalsByDevice.mock.calls[0][0].vitalSummaries[0];
+    expect(summary).toMatchObject({
+      recordDate: '2026-09-11',
+      hrMin: 72, hrMax: 72, hrAvg: 72, hrLatest: 72,
+      steps: null, spo2Avg: null, hrvAvg: null, tempAvg: null,
+      systolicBpAvg: null, diastolicBpAvg: null, stressAvg: null,
+    });
+  });
+
+  it('requires a current read even when no prior status exists', async () => {
+    await becomeSenior();
+    await expect(manager.syncTodayVitalsToBackend('2026-09-11', [])).rejects.toThrow('Read the hand band again');
     expect(mockAuth.getAssignedDevicesForSenior).not.toHaveBeenCalled();
     expect(mockAuth.syncV8VitalsByDevice).not.toHaveBeenCalled();
   });
@@ -575,7 +642,7 @@ describe('hand band connection and ownership', () => {
         mockAuth.user = { role: 'SENIOR', user_id: 'senior-2' };
         await act(async () => { renderer.update(tree()); });
       }
-      await expect(manager.syncTodayVitalsToBackend(day, rows)).rejects.toThrow(/History is incomplete|do not match/);
+      await expect(manager.syncTodayVitalsToBackend(day, rows)).rejects.toThrow(/Read the hand band again|do not match/);
       expect(mockAuth.syncV8VitalsByDevice).not.toHaveBeenCalled();
     },
   );
@@ -616,6 +683,27 @@ describe('hand band connection and ownership', () => {
     await becomeSenior();
     await act(async () => { await manager.syncTodayVitalsToBackend('2026-09-11', rows); });
     expect(mockAuth.syncV8VitalsByDevice.mock.calls[0][0].vitalSummaries[0].steps).toBe(8000);
+  });
+
+
+  it('reports an Android disconnect once and keeps later categories unattempted', async () => {
+    const original = Platform.OS;
+    try {
+      const device = await prepareRead('android');
+      mockHistoryRequests.requestDynamicHR.mockImplementation(async () => true);
+      let result!: Promise<unknown>;
+      await act(async () => { result = manager.buildTodayVitals('2026-09-11').catch(error => error); });
+      expect(manager.historyReadStatus.currentType).toBe('dynamicHR');
+      await emit('V8ConnectionState', { deviceId: device.id, state: 'disconnected', gattStatus: 133 });
+      const error = await result as Error;
+      expect(error.message).toBe('Hand band history is incomplete. The hand band disconnected during the read (Bluetooth status 133). Nothing was uploaded. Reconnect the band and retry.');
+      expect(manager.historyReadStatus).toMatchObject({
+        phase: 'partial', failedTypes: [], completedTypes: ['totalActivity', 'detailActivity'],
+        categories: { dynamicHR: { outcome: 'cancelled' }, staticHR: { outcome: 'notRead' }, hrv: { outcome: 'notRead' } },
+      });
+      expect(mockHistoryRequests.requestStaticHR).not.toHaveBeenCalled();
+      expect(mockAuth.syncV8VitalsByDevice).not.toHaveBeenCalled();
+    } finally { Object.defineProperty(Platform, 'OS', { configurable: true, value: original }); }
   });
 
 });

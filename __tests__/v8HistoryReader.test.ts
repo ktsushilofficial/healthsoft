@@ -62,7 +62,7 @@ describe('response-driven history reads', () => {
     reader.accept(packet('staticHR', true));
     await read;
   });
-  it('reports partial failure but still collects other categories', async () => {
+  it('keeps reading and resolves partial when a category fails', async () => {
     const reader = new V8HistoryReader(100);
     const first = jest.fn(async () => true),
       second = jest.fn(async () => true);
@@ -79,14 +79,14 @@ describe('response-driven history reads', () => {
     await jest.advanceTimersByTimeAsync(101);
     expect(second).toHaveBeenCalledWith(0);
     reader.accept(packet('spo2', true));
-    expect(await result).toMatchObject({
-      message: expect.stringContaining('incomplete'),
-    });
-    expect(progress.at(-1)).toMatchObject({
+    const status = await result;
+    expect(status).not.toBeInstanceOf(Error);
+    expect(status).toMatchObject({
       phase: 'partial',
       completedTypes: ['spo2'],
       failedTypes: ['staticHR'],
     });
+    expect(progress.at(-1)).toEqual(status);
   });
   it('does not send the next category until the current category completes', async () => {
     const reader = new V8HistoryReader();
@@ -128,7 +128,7 @@ describe('response-driven history reads', () => {
     expect(second).not.toHaveBeenCalled();
     expect(jest.getTimerCount()).toBe(0);
   });
-  it('fails rather than silently succeeding when a page limit is exhausted', async () => {
+  it('fails the category rather than silently succeeding when a page limit is exhausted', async () => {
     const reader = new V8HistoryReader(100, 1);
     const read = reader.readAll(
       '2026-09-11',
@@ -139,7 +139,14 @@ describe('response-driven history reads', () => {
     await flush();
     for (let i = 0; i < 50; i++) reader.accept(packet());
     expect(await result).toMatchObject({
-      message: expect.stringContaining('incomplete'),
+      phase: 'partial',
+      failedTypes: ['staticHR'],
+      categories: {
+        staticHR: {
+          outcome: 'failed',
+          error: expect.stringContaining('Page limit'),
+        },
+      },
     });
   });
 });
@@ -168,12 +175,47 @@ describe('history outcome diagnostics', () => {
       },
     });
     reader.accept(packet('dynamicHR', true));
-    expect(await result).toBeInstanceOf(Error);
+    // The records that parsed are kept and reported; only the rejected ones
+    // go missing, and the read still finishes for upload.
+    expect(await result).not.toBeInstanceOf(Error);
+    expect(status.phase).toBe('complete');
     expect(status.categories.dynamicHR).toMatchObject({
-      outcome: 'failed',
+      outcome: 'downloaded',
       receivedRecords: 2,
       extractedSamples: 3,
       rejectedRecords: 1,
+      error: expect.stringContaining('Could not parse'),
+    });
+  });
+
+  it('fails only the category whose records were all rejected', async () => {
+    const reader = new V8HistoryReader();
+    let status!: V8HistoryReadStatus;
+    const result = reader
+      .readAll(
+        '2026-09-11',
+        [{ type: 'dynamicHR', request: async () => true }],
+        s => {
+          status = s;
+        },
+      )
+      .catch(error => error);
+    await flush();
+    reader.accept({
+      ...packet('dynamicHR'),
+      diagnostics: {
+        receivedRecords: 2,
+        extractedSamples: 0,
+        rejectedRecords: 2,
+        invalidTimestampRecords: 2,
+      },
+    });
+    reader.accept(packet('dynamicHR', true));
+    expect(await result).not.toBeInstanceOf(Error);
+    expect(status.phase).toBe('partial');
+    expect(status.failedTypes).toEqual(['dynamicHR']);
+    expect(status.categories.dynamicHR).toMatchObject({
+      outcome: 'failed',
       error: expect.stringContaining('Could not parse'),
     });
   });
@@ -202,7 +244,7 @@ describe('history outcome diagnostics', () => {
         )
         .catch(error => error);
       await jest.advanceTimersByTimeAsync(101);
-      expect(await result).toBeInstanceOf(Error);
+      expect(await result).not.toBeInstanceOf(Error);
       expect(status.categories.staticHR.outcome).toBe('empty');
       expect(status.categories.temperature.outcome).toBe('unavailable');
       expect(status.categories.spo2).toMatchObject({
@@ -312,4 +354,33 @@ it('counts a batched iOS notification once without confusing records or HR sampl
   expect(request.mock.calls).toEqual([[0], [2]]);
   reader.accept(packet('dynamicHR', true));
   await read;
+});
+
+it('preserves the first cancellation cause when cleanup also cancels', async () => {
+  const reader = new V8HistoryReader();
+  let status!: V8HistoryReadStatus;
+  const read = reader
+    .readAll(
+      '2026-09-12',
+      [
+        { type: 'dynamicHR', request: async () => true },
+        { type: 'staticHR', request: async () => true },
+      ],
+      s => {
+        status = s;
+      },
+    )
+    .catch(error => error);
+  await flush();
+  reader.cancel('Bluetooth connection failed.');
+  reader.cancel('Manager closed.');
+  expect((await read).message).toBe(
+    'Hand band history is incomplete. Bluetooth connection failed. Nothing was uploaded. Reconnect the band and retry.',
+  );
+  expect(status.cancellationReason).toBe('Bluetooth connection failed.');
+  expect(status.failedTypes).toEqual([]);
+  expect(status.categories.staticHR).toMatchObject({
+    outcome: 'notRead',
+    error: null,
+  });
 });

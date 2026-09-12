@@ -137,6 +137,37 @@ describe('shared daily vitals aggregation', () => {
       aggregateVitals({ hr: bucket('hrv', [a, b]) }, day)[0],
     ).toMatchObject({ systolicBpLatest: null, diastolicBpLatest: null });
   });
+  it('nulls only the metric that cannot be computed and keeps the rest of the day', () => {
+    const hr = sample(`${day} 10:00:00`, { heartRate: 70 });
+    const broken = sample(`${day} 10:05:00`, { temperature: 36.6 });
+    // A value that throws on every read stands in for any metric the vendor
+    // payload makes uncomputable.
+    Object.defineProperty(broken, 'temperatureC', {
+      get() {
+        throw new Error('unreadable temperature');
+      },
+    });
+    const row = aggregateVitals(
+      { hr: bucket('staticHR', [hr]), temp: bucket('temperature', [broken]) },
+      day,
+    )[0];
+    expect(row).toMatchObject({
+      heartRateLatest: 70,
+      temperatureLatestC: null,
+      temperatureAvgC: null,
+    });
+  });
+  it('skips malformed buckets instead of dropping the whole day', () => {
+    const hr = sample(`${day} 10:00:00`, { heartRate: 70 });
+    const buckets = {
+      hr: bucket('staticHR', [hr]),
+      broken: { ...bucket('spo2', []), entries: undefined as never },
+    };
+    expect(aggregateVitals(buckets, day)[0]).toMatchObject({
+      heartRateLatest: 70,
+      spo2Latest: null,
+    });
+  });
   it('keeps each live metric timestamp when different metrics arrive', () => {
     const a = sample('2026-09-10 23:59:00', { heartRate: 75 });
     const b = sample(`${day} 10:00:00`, { temperature: 36.5 });

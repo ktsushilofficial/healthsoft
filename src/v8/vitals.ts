@@ -87,22 +87,46 @@ export function mergeLatestVitals(
   return next;
 }
 
+/** One unreadable metric must never cost the whole day: fall back to null. */
+function metricOrNull<T>(compute: () => T, fallback: T): T {
+  try {
+    return compute();
+  } catch {
+    return fallback;
+  }
+}
+
+type MetricStats = {
+  min: number | null;
+  max: number | null;
+  avg: number | null;
+  latest: number | null;
+};
+const noStats: MetricStats = { min: null, max: null, avg: null, latest: null };
+
 export function aggregateVitals(
   buckets: Record<string, V8HistoryBucket>,
   day: string,
 ): V8DailyVitalSummary[] {
-  const groups = Object.values(buckets).map(bucket => ({
-    bucket,
-    entries: bucket.entries.filter(entry => sampleDayKey(entry) === day),
-  }));
+  const groups = Object.values(buckets ?? {})
+    .filter(bucket => Array.isArray(bucket?.entries))
+    .map(bucket => ({
+      bucket,
+      entries: bucket.entries.filter(
+        entry =>
+          !!entry && metricOrNull(() => sampleDayKey(entry) === day, false),
+      ),
+    }));
   const entries = groups.flatMap(group => group.entries);
   if (
     !entries.some(entry =>
-      vitalMetrics.some(metric => validVital(metric, entry[metric])),
+      vitalMetrics.some(metric =>
+        metricOrNull(() => validVital(metric, entry[metric]), false),
+      ),
     )
   )
     return [];
-  const stats = (metric: V8VitalMetric, paired = false) => {
+  const stats = (metric: V8VitalMetric, paired = false): MetricStats => {
     const seen = new Set<string>();
     const values = entries
       .filter(entry => {
@@ -171,22 +195,28 @@ export function aggregateVitals(
         )
       : null;
   };
-  const hr = stats('heartRate'),
-    spo2 = stats('spo2'),
-    hrv = stats('hrv');
-  const sys = stats('systolicBp', true),
-    dia = stats('diastolicBp', true);
-  const temp = stats('temperatureC'),
-    stress = stats('stress');
+  // Each metric is computed on its own. A metric that cannot be computed is
+  // reported as null; it never aborts the remaining metrics or the day.
+  const safeStats = (metric: V8VitalMetric, paired = false) =>
+    metricOrNull(() => stats(metric, paired), noStats);
+  const safeMotion = (metric: V8VitalMetric) =>
+    metricOrNull(() => motion(metric), null);
+  const hr = safeStats('heartRate'),
+    spo2 = safeStats('spo2'),
+    hrv = safeStats('hrv');
+  const sys = safeStats('systolicBp', true),
+    dia = safeStats('diastolicBp', true);
+  const temp = safeStats('temperatureC'),
+    stress = safeStats('stress');
   return [
     {
       date: day,
-      steps: motion('steps'),
-      distanceKm: motion('distanceKm'),
-      caloriesKcal: motion('caloriesKcal'),
-      exerciseMinutes: motion('exerciseMinutes'),
-      activeMinutes: motion('activeMinutes'),
-      goalPercent: motion('goalPercent'),
+      steps: safeMotion('steps'),
+      distanceKm: safeMotion('distanceKm'),
+      caloriesKcal: safeMotion('caloriesKcal'),
+      exerciseMinutes: safeMotion('exerciseMinutes'),
+      activeMinutes: safeMotion('activeMinutes'),
+      goalPercent: safeMotion('goalPercent'),
       heartRateMin: hr.min,
       heartRateMax: hr.max,
       heartRateAvg: hr.avg,

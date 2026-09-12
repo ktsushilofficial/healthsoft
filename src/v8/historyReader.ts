@@ -16,12 +16,20 @@ export type V8HistoryReadStatus = {
   currentType: string | null;
   completedTypes: string[];
   failedTypes: string[];
+  cancellationReason: string | null;
   categories: Record<string, V8HistoryCategoryStatus>;
 };
 export type V8HistoryCategoryStatus = V8ParseDiagnostics & {
   responsePackets: number;
   pagesRequested: number;
-  outcome: 'reading' | 'downloaded' | 'empty' | 'failed' | 'unavailable';
+  outcome:
+    | 'reading'
+    | 'downloaded'
+    | 'empty'
+    | 'failed'
+    | 'unavailable'
+    | 'cancelled'
+    | 'notRead';
   error: string | null;
 };
 const emptyDiagnostics: V8ParseDiagnostics = {
@@ -36,6 +44,7 @@ export const idleHistoryReadStatus: V8HistoryReadStatus = {
   currentType: null,
   completedTypes: [],
   failedTypes: [],
+  cancellationReason: null,
   categories: {},
 };
 export type HistoryRequest = {
@@ -48,6 +57,7 @@ export class V8HistoryReader {
   private acceptPacket: ((bucket: V8HistoryBucket) => void) | null = null;
   private rejectPending: ((error: Error) => void) | null = null;
   private cancelled = false;
+  private cancellationReason: string | null = null;
   private running = false;
   // Continuous HR can contain 15 samples per 75-second record: a full day
   // can require 24 pages at one record/callback. Keep a bound above one day.
@@ -56,39 +66,44 @@ export class V8HistoryReader {
   accept(bucket: V8HistoryBucket) {
     this.acceptPacket?.(bucket);
   }
-  cancel() {
+  cancel(reason = 'The hand band history read was cancelled.') {
+    if (this.cancelled) return;
     this.cancelled = true;
-    this.rejectPending?.(
-      new Error('Hand band history read cancelled. Reconnect and retry.'),
-    );
+    this.cancellationReason = reason;
+    this.rejectPending?.(new Error(reason));
   }
 
   async readAll(
     day: string,
     requests: HistoryRequest[],
     onProgress: (status: V8HistoryReadStatus) => void,
-  ): Promise<void> {
+  ): Promise<V8HistoryReadStatus> {
     if (this.running)
       throw new Error('A hand band history read is already in progress.');
     this.running = true;
     this.cancelled = false;
+    this.cancellationReason = null;
     const completedTypes: string[] = [],
       failedTypes: string[] = [];
     const categories: V8HistoryReadStatus['categories'] = {};
     const publish = (
       phase: V8HistoryReadStatus['phase'],
       currentType: string | null,
-    ) =>
-      onProgress({
+    ): V8HistoryReadStatus => {
+      const status: V8HistoryReadStatus = {
         phase,
         day,
         currentType,
         completedTypes: [...completedTypes],
         failedTypes: [...failedTypes],
+        cancellationReason: this.cancellationReason,
         categories: Object.fromEntries(
           Object.entries(categories).map(([key, value]) => [key, { ...value }]),
         ),
-      });
+      };
+      onProgress(status);
+      return status;
+    };
     try {
       for (const request of requests) {
         const category: V8HistoryCategoryStatus = {
@@ -106,9 +121,7 @@ export class V8HistoryReader {
           continue;
         }
         if (this.cancelled) {
-          failedTypes.push(request.type);
-          category.outcome = 'failed';
-          category.error = 'History read cancelled.';
+          category.outcome = 'notRead';
           continue;
         }
         publish('reading', request.type);
@@ -116,31 +129,41 @@ export class V8HistoryReader {
           await this.readType(request, category, () =>
             publish('reading', request.type),
           );
-          completedTypes.push(request.type);
-          category.outcome = category.receivedRecords ? 'downloaded' : 'empty';
+          if (category.rejectedRecords) {
+            category.error = `Could not parse ${category.rejectedRecords} of ${
+              category.receivedRecords
+            } ${historyTypeLabels[request.type] ?? request.type} records (${
+              category.invalidTimestampRecords
+            } invalid dates). Those readings are missing from this day.`;
+          }
+          if (category.rejectedRecords && !category.extractedSamples) {
+            // Nothing usable survived parsing: the metric stays null, the
+            // remaining categories are still read and uploaded.
+            failedTypes.push(request.type);
+            category.outcome = 'failed';
+          } else {
+            completedTypes.push(request.type);
+            category.outcome = category.receivedRecords ? 'downloaded' : 'empty';
+          }
         } catch (error) {
-          failedTypes.push(request.type);
-          category.outcome = 'failed';
+          if (!this.cancelled) failedTypes.push(request.type);
+          category.outcome = this.cancelled ? 'cancelled' : 'failed';
           category.error =
             error instanceof Error ? error.message : String(error);
         }
       }
-      if (failedTypes.length || this.cancelled) {
+      // A category that fails, times out or cannot be parsed leaves its
+      // metrics null. It never cancels the categories after it and never
+      // discards the readings that did arrive; only an explicit cancellation
+      // (disconnect, band/senior change, cleared data) aborts the read,
+      // because the readings can no longer be attributed to a verified band.
+      if (this.cancelled) {
         publish('partial', null);
         throw new Error(
-          `Hand band history is incomplete (${
-            failedTypes
-              .map(type => historyTypeLabels[type] ?? type)
-              .join(', ') || 'disconnected'
-          }). ${failedTypes
-            .map(type => categories[type].error)
-            .filter(Boolean)
-            .join(
-              ' ',
-            )} Received readings are available for review; retry before uploading.`,
+          `Hand band history is incomplete. ${this.cancellationReason} Nothing was uploaded. Reconnect the band and retry.`,
         );
       }
-      publish('complete', null);
+      return publish(failedTypes.length ? 'partial' : 'complete', null);
     } finally {
       this.running = false;
     }
@@ -210,17 +233,9 @@ export class V8HistoryReader {
         }
         onPacket();
         if (bucket.completed) {
-          finish(
-            diagnostics.rejectedRecords
-              ? new Error(
-                  `Could not parse ${diagnostics.rejectedRecords} of ${
-                    diagnostics.receivedRecords
-                  } ${historyTypeLabels[type] ?? type} records (${
-                    diagnostics.invalidTimestampRecords
-                  } invalid dates). Retry before uploading.`,
-                )
-              : undefined,
-          );
+          // Unparsable records are counted, not fatal: readAll reports them and
+          // the samples that did parse stay in this day's aggregation.
+          finish();
           return;
         }
         packets += 1;

@@ -93,10 +93,11 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
       .emit(event, data)
   }
 
-  private fun emitConnection(state: String, deviceId: String? = null) {
+  private fun emitConnection(state: String, deviceId: String? = null, gattStatus: Int? = null) {
     val map = Arguments.createMap()
     map.putString("state", state)
     if (deviceId != null) map.putString("deviceId", deviceId)
+    if (gattStatus != null) map.putInt("gattStatus", gattStatus)
     emit("V8ConnectionState", map)
   }
 
@@ -511,7 +512,7 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
           gatt.discoverServices()
         }
         BluetoothProfile.STATE_DISCONNECTED -> {
-          emitConnection("disconnected", activeDeviceId ?: gatt.device.address)
+          emitConnection("disconnected", activeDeviceId ?: gatt.device.address, status)
           activeDeviceId = null
         }
         else -> Unit
@@ -526,7 +527,7 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
 
       val notify = notifyCharacteristic
       if (status != BluetoothGatt.GATT_SUCCESS || writeCharacteristic == null || notify == null) {
-        emitConnection("error", gatt.device.address)
+        emitConnection("error", gatt.device.address, status)
         gatt.disconnect()
         return
       }
@@ -534,7 +535,7 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
       val descriptor: BluetoothGattDescriptor? = notify.getDescriptor(cccUuid)
       descriptor?.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
       if (descriptor == null || !gatt.writeDescriptor(descriptor)) {
-        emitConnection("error", gatt.device.address)
+        emitConnection("error", gatt.device.address, status)
         gatt.disconnect()
       }
     }
@@ -544,7 +545,7 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
       if (status == BluetoothGatt.GATT_SUCCESS) {
         emitConnection("connected", gatt.device.address)
       } else {
-        emitConnection("error", gatt.device.address)
+        emitConnection("error", gatt.device.address, status)
         gatt.disconnect()
       }
     }
