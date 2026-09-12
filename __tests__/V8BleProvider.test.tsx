@@ -519,6 +519,32 @@ describe('hand band connection and ownership', () => {
     await act(async () => { renderer.update(tree()); });
   };
 
+  it.each(['resolve', 'reject'] as const)('reports upload progress in order when the API will %s', async outcome => {
+    await prepareRead();
+    let rows!: V8DailyVitalSummary[];
+    await act(async () => { rows = await manager.buildTodayVitals('2026-09-11'); });
+    await becomeSenior();
+    let resolveUpload!: () => void;
+    let rejectUpload!: (error: Error) => void;
+    mockAuth.syncV8VitalsByDevice.mockImplementationOnce(() => new Promise<void>((resolve, reject) => {
+      resolveUpload = resolve;
+      rejectUpload = reject;
+    }));
+    const onProgress = jest.fn();
+    let result!: Promise<unknown>;
+    await act(async () => {
+      result = manager.syncTodayVitalsToBackend('2026-09-11', rows, onProgress).catch(error => error);
+    });
+    expect(onProgress.mock.calls.flat()).toEqual(['verifying', 'uploading']);
+    await act(async () => {
+      if (outcome === 'resolve') resolveUpload();
+      else rejectUpload(new Error('Upload failed'));
+      await result;
+    });
+    expect(onProgress.mock.calls.flat()).toEqual(outcome === 'resolve'
+      ? ['verifying', 'uploading', 'finishing'] : ['verifying', 'uploading']);
+  });
+
   it.each(['ios', 'android'] as const)('uploads every metric from SDK-shaped %s responses', async platform => {
     const original = Platform.OS;
     try {

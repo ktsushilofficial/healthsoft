@@ -22,6 +22,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import { useAuth } from '../context/AuthContext';
 import { todayLocalDayKey } from '../utils/vitalsDay';
 import DailyVitalsTable from '../components/DailyVitalsTable';
+import VitalsSyncProgressModal, { type VitalsSyncProgress } from '../components/VitalsSyncProgressModal';
 import HomeAssignedDeviceList from '../components/HomeAssignedDeviceList';
 import { buildHomeAssignedDevices } from '../utils/homeAssignedDevices';
 import {
@@ -637,6 +638,7 @@ const HomeScreen = () => {
   const navigation = useNavigation<any>();
   const {
     autoSyncStatus,
+    historyReadStatus,
     bleState: v8BleState,
     devices: v8Devices,
     isScanning: v8IsScanning,
@@ -690,6 +692,8 @@ const HomeScreen = () => {
   const [guardianDeviceAlarms, setGuardianDeviceAlarms] = useState<SeniorDashboardDeviceRecord[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [manualVitalsSyncing, setManualVitalsSyncing] = useState(false);
+  const [manualSyncProgress, setManualSyncProgress] = useState<VitalsSyncProgress | null>(null);
+  const [syncProgressVisible, setSyncProgressVisible] = useState(false);
   // Rows from the last manual sync, shown in the same table the Manage screen uses.
   const [syncedVitalsRows, setSyncedVitalsRows] = useState<V8DailyVitalSummary[]>([]);
   const [apiInspectorVisible, setApiInspectorVisible] = useState(false);
@@ -1717,28 +1721,32 @@ const HomeScreen = () => {
   );
 
   const handleSyncVitalsNow = useCallback(async () => {
-    if (manualVitalsSyncing || autoSyncStatus.phase === 'syncing') return;
+    if (manualVitalsSyncing) { setSyncProgressVisible(true); return; }
+    if (autoSyncStatus.phase === 'syncing') return;
 
     setManualVitalsSyncing(true);
+    setManualSyncProgress({ phase: 'preparing' });
+    setSyncProgressVisible(true);
     const syncStartedAt = Date.now();
     try {
       if (!handBandConnected) {
         await ensureAutoConnect();
-        Alert.alert(
-          'Connecting hand band',
-          'The hand band is not connected. Auto-connect has started; tap Sync now again after it connects.',
-        );
+        setManualSyncProgress({
+          phase: 'waiting',
+          message: 'Auto-connect has started. Tap Sync now again after the hand band connects.',
+        });
         return;
       }
 
       // The band is read and stored in the senior's own day - the day its
       // clock recorded. See src/utils/vitalsDay.ts.
       const bandDay = todayLocalDayKey();
+      setManualSyncProgress({ phase: 'reading' });
       const todayRows = await buildTodayVitals(bandDay);
       const bandRows = todayRows.filter(row => row.date === bandDay);
-      await syncTodayVitalsToBackend(bandDay, bandRows);
+      const result = await syncTodayVitalsToBackend(bandDay, bandRows, phase => setManualSyncProgress({ phase }));
       setSyncedVitalsRows(bandRows);
-      Alert.alert('Sync complete', 'Today\'s hand band health data is up to date.');
+      setManualSyncProgress({ phase: 'success', missingTypes: result.missingTypes });
     } catch (error) {
       const message =
         error instanceof Error
@@ -1749,7 +1757,7 @@ const HomeScreen = () => {
       if (!getLastApiExchange() || getLastApiExchange()?.at !== syncStartedAt) {
         recordSyncAbort('/api/v1/vitals/sync', message);
       }
-      Alert.alert('Sync failed', message);
+      setManualSyncProgress({ phase: 'error', message });
     } finally {
       setManualVitalsSyncing(false);
     }
@@ -1783,6 +1791,12 @@ const HomeScreen = () => {
 
   return (
     <SafeAreaView style={styles.container}>
+      <VitalsSyncProgressModal
+        visible={syncProgressVisible}
+        progress={manualSyncProgress}
+        history={historyReadStatus}
+        onClose={() => setSyncProgressVisible(false)}
+      />
       <GuardianWelcomeModal
         visible={guardianWelcomeVisible}
         greetingTitle={greeting.title}
@@ -2007,9 +2021,9 @@ const HomeScreen = () => {
               </View>
               <TouchableOpacity
                 accessibilityRole="button"
-                accessibilityLabel="Sync hand band health data now"
+                accessibilityLabel={manualVitalsSyncing ? "Show sync progress" : "Sync hand band health data now"}
                 activeOpacity={0.75}
-                disabled={syncNowBusy}
+                disabled={autoSyncStatus.phase === 'syncing' && !manualVitalsSyncing}
                 onPress={handleSyncVitalsNow}
                 style={[styles.syncNowButton, syncNowBusy && styles.syncNowButtonDisabled]}
               >

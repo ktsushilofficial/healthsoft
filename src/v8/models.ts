@@ -204,6 +204,8 @@ export type V8WebVitalSummary = {
   stressLatest: number | null;
 };
 
+export type V8VitalsUploadPhase = 'verifying' | 'uploading' | 'finishing';
+
 export type V8WebVitalsSyncPayload = {
   deviceUUID: string;
   syncDays: number;

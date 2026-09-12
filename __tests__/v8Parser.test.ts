@@ -14,6 +14,30 @@ describe('parseV8Payload', () => {
     expect(infoPatch.mac).toBe('AA:BB:CC:DD:EE:FF');
   });
 
+  it.each(['ios', 'android'] as const)(
+    'reads the %s SDK deviceVersion field used by the version response',
+    platform => {
+      // Android ResolveUtil.getDeviceVersion and the iOS demo both read
+      // dicData["deviceVersion"] for GetDeviceVersion (dataType 11).
+      const { infoPatch } = parseV8Payload(
+        { dataType: '11', dataEnd: true, dicData: { deviceVersion: '1.0.2.5' } },
+        platform,
+      );
+
+      expect(infoPatch.firmwareVersion).toBe('1.0.2.5');
+    },
+  );
+
+  it('reads the Android SDK deviceName field used by the name response', () => {
+    // ResolveUtil.getDeviceName answers CMD_Get_Name (117) with dicData.deviceName.
+    const { infoPatch } = parseV8Payload(
+      { dataType: '117', dataEnd: true, dicData: { deviceName: 'JCV8B' } },
+      'android',
+    );
+
+    expect(infoPatch.deviceName).toBe('JCV8B');
+  });
+
   it('maps iOS manual-HRV type 59 to HRV rather than temperature', () => {
     const { history } = parseV8Payload(
       {

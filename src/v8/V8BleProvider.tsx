@@ -22,6 +22,7 @@ import type {
   V8WaveformSource,
   V8WebVitalSummary,
   V8WebVitalsSyncPayload,
+  V8VitalsUploadPhase,
 } from './models';
 import { parseV8Payload } from './parser';
 import { todayLocalDayKey } from '../utils/vitalsDay';
@@ -111,6 +112,7 @@ type V8BleContextValue = {
   syncTodayVitalsToBackend: (
     bandDay: string,
     days: V8DailyVitalSummary[],
+    onProgress?: (phase: V8VitalsUploadPhase) => void,
   ) => Promise<{ days: number; partial: boolean; missingTypes: string[] }>;
   requestLiveSnapshot: () => Promise<void>;
   clearSavedData: () => Promise<void>;
@@ -653,6 +655,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
             () => native.requestDeviceMac(),
             () => native.requestBattery(),
             () => native.requestDeviceVersion(),
+            // Android answers with dicData.deviceName; the iOS vendor build
+            // does not expose GetDeviceName and rejects, which is ignored here.
+            () => native.requestDeviceName(),
             () => native.requestDeviceTime(),
             () => native.requestPersonalInfo(),
           ];
@@ -1716,7 +1721,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     async (
       bandDay: string,
       days: V8DailyVitalSummary[],
+      onProgress?: (phase: V8VitalsUploadPhase) => void,
     ): Promise<{ days: number; partial: boolean; missingTypes: string[] }> => {
+      onProgress?.('verifying');
       if (user?.role !== 'SENIOR') {
         throw new Error('Only senior users can sync Hand Band health data.');
       }
@@ -1853,7 +1860,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       if (!syncContextRef.current.macs.some(mac => normalizeMacAddress(mac) === connectedMac)) {
         throw new Error('This Hand Band is no longer assigned to the selected senior. Sync is blocked.');
       }
+      onProgress?.('uploading');
       await syncV8VitalsByDevice(webPayload);
+      onProgress?.('finishing');
       if (user?.role === 'SENIOR') {
         const syncedAt = Date.now();
         await recordV8HandBandSynced(

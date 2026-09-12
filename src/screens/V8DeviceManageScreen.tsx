@@ -19,6 +19,7 @@ import { todayLocalDayKey } from '../utils/vitalsDay';
 import { historyTypeLabels } from '../v8/historyReader';
 import { aggregateVitals } from '../v8/vitals';
 import DailyVitalsTable from '../components/DailyVitalsTable';
+import VitalsSyncProgressModal, { type VitalsSyncProgress } from '../components/VitalsSyncProgressModal';
 
 type RouteParams = {
   deviceId: string;
@@ -70,9 +71,10 @@ const V8DeviceManageScreen = () => {
   const {
     connectionStates, disconnect,
     requestBattery, requestDeviceMac, requestPersonalInfo,
+    requestDeviceVersion, requestDeviceName,
     requestLiveSnapshot,
     buildTodayVitals, syncTodayVitalsToBackend,
-    latestLiveData, historyByType, deviceInfo, historyReadStatus,
+    latestLiveData, historyByType, deviceInfo, historyReadStatus, autoSyncStatus,
   } = useV8DeviceManager();
 
   const state = connectionStates[normalizeId(deviceId)] ?? 'disconnected';
@@ -83,6 +85,10 @@ const V8DeviceManageScreen = () => {
   const [refreshingLive, setRefreshingLive] = useState(false);
   const [todayFetching, setTodayFetching] = useState(false);
   const [todaySyncing, setTodaySyncing] = useState(false);
+  const [manualSyncProgress, setManualSyncProgress] = useState<VitalsSyncProgress | null>(null);
+  const [syncProgressVisible, setSyncProgressVisible] = useState(false);
+  const bandReadBusy = refreshingLive || todayFetching || todaySyncing || autoSyncStatus.phase === 'syncing';
+  const syncActionDisabled = !todaySyncing && (!isSeniorUser || !connected || todayFetching || refreshingLive || autoSyncStatus.phase === 'syncing');
   const [fetchedVitalsRows, setFetchedVitalsRows] = useState<V8DailyVitalSummary[]>([]);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const deviceInfoRef = useRef(deviceInfo);
@@ -100,9 +106,12 @@ const V8DeviceManageScreen = () => {
         requestPersonalInfo().catch(() => {});
         requestBattery().catch(() => {});
         requestDeviceMac().catch(() => {});
+        requestDeviceVersion().catch(() => {});
+        // Rejected on iOS, where the vendor SDK exposes no GetDeviceName.
+        requestDeviceName().catch(() => {});
       });
       return () => task.cancel();
-    }, [connected, requestBattery, requestDeviceMac, requestPersonalInfo]),
+    }, [connected, requestBattery, requestDeviceMac, requestDeviceName, requestDeviceVersion, requestPersonalInfo]),
   );
 
   const handleRefreshLive = useCallback(async () => {
@@ -114,12 +123,14 @@ const V8DeviceManageScreen = () => {
         requestPersonalInfo(),
         requestBattery(),
         requestDeviceMac(),
+        requestDeviceVersion(),
+        requestDeviceName(),
       ]);
     } catch (error) {
       setActionStatus(error instanceof Error ? error.message : 'Unable to refresh vitals.');
     }
     setRefreshingLive(false);
-  }, [requestBattery, requestDeviceMac, requestLiveSnapshot, requestPersonalInfo]);
+  }, [requestBattery, requestDeviceMac, requestDeviceName, requestDeviceVersion, requestLiveSnapshot, requestPersonalInfo]);
 
   const handleFetchTodayVitals = useCallback(async () => {
     if (!isSeniorUser) {
@@ -149,6 +160,8 @@ const V8DeviceManageScreen = () => {
   }, [buildTodayVitals, connected, isSeniorUser]);
 
   const handleFetchAndSyncToday = useCallback(async () => {
+    if (todaySyncing) { setSyncProgressVisible(true); return; }
+    if (todayFetching || refreshingLive || autoSyncStatus.phase === 'syncing') return;
     if (!isSeniorUser) {
       setActionStatus('Only senior users can sync wrist band data.');
       return;
@@ -161,13 +174,16 @@ const V8DeviceManageScreen = () => {
     const bandDay = todayLocalDayKey();
     setTodaySyncing(true);
     setActionStatus(null);
+    setManualSyncProgress({ phase: 'reading' });
+    setSyncProgressVisible(true);
 
     try {
       const todayRows = await buildTodayVitals(bandDay);
       setFetchedVitalsRows(todayRows);
 
       const bandRows = todayRows.filter(row => row.date === bandDay);
-      const result = await syncTodayVitalsToBackend(bandDay, bandRows);
+      const result = await syncTodayVitalsToBackend(bandDay, bandRows, phase => setManualSyncProgress({ phase }));
+      setManualSyncProgress({ phase: 'success', missingTypes: result.missingTypes });
       setActionStatus(
         result.partial
           ? `Today vitals synced for ${result.days} day(s). ${result.missingTypes
@@ -176,11 +192,13 @@ const V8DeviceManageScreen = () => {
           : `Today vitals synced to backend for ${result.days} day(s)`,
       );
     } catch (error) {
-      setActionStatus(error instanceof Error ? error.message : 'Failed to fetch and sync today vitals');
+      const message = error instanceof Error ? error.message : 'Failed to fetch and sync today vitals';
+      setActionStatus(message);
+      setManualSyncProgress({ phase: 'error', message });
     } finally {
       setTodaySyncing(false);
     }
-  }, [buildTodayVitals, connected, isSeniorUser, syncTodayVitalsToBackend]);
+  }, [autoSyncStatus.phase, buildTodayVitals, connected, isSeniorUser, refreshingLive, syncTodayVitalsToBackend, todayFetching, todaySyncing]);
 
   useEffect(() => {
     if (!isSeniorUser || !route.params || !(route.params as RouteParams).showSyncLatestPrompt) {
@@ -281,6 +299,12 @@ const V8DeviceManageScreen = () => {
 
   return (
     <SafeAreaView style={s.container}>
+      <VitalsSyncProgressModal
+        visible={syncProgressVisible}
+        progress={manualSyncProgress}
+        history={historyReadStatus}
+        onClose={() => setSyncProgressVisible(false)}
+      />
       {readStatusText ? <Text accessibilityLiveRegion="polite" style={s.readStatus}>{readStatusText}</Text> : null}
       <ScrollView contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
         {/* ── Header ── */}
@@ -316,7 +340,9 @@ const V8DeviceManageScreen = () => {
           <InfoRow label="Firmware" value={fmt(deviceInfo.firmwareVersion)} />
           <InfoRow label="Device ID" value={fmt(deviceInfo.imei)} />
           <InfoRow label="MAC Address" value={fmt(deviceInfo.mac)} />
-          <InfoRow label="Device Name" value={fmt(deviceInfo.deviceName)} />
+          {/* The iOS vendor SDK cannot read the stored name, so fall back to
+              the advertised BLE name rather than showing nothing. */}
+          <InfoRow label="Device Name" value={fmt(deviceInfo.deviceName ?? deviceName)} />
           <InfoRow label="Device Time" value={fmt(deviceInfo.deviceTime)} />
 
           {deviceInfo.batteryPercent != null && (
@@ -365,8 +391,8 @@ const V8DeviceManageScreen = () => {
           )}
 
           <TouchableOpacity
-            style={[s.refreshLiveBtn, !connected ? s.disabled : null]}
-            disabled={!connected || refreshingLive}
+            style={[s.refreshLiveBtn, (!connected || bandReadBusy) ? s.disabled : null]}
+            disabled={!connected || bandReadBusy}
             onPress={handleRefreshLive}
             activeOpacity={0.7}
           >
@@ -392,8 +418,8 @@ const V8DeviceManageScreen = () => {
           </Text>
 
           <TouchableOpacity
-            style={[s.fetchTodayBtn, (!isSeniorUser || !connected || todayFetching || todaySyncing) ? s.disabled : null]}
-            disabled={!isSeniorUser || !connected || todayFetching || todaySyncing}
+            style={[s.fetchTodayBtn, (!isSeniorUser || !connected || bandReadBusy) ? s.disabled : null]}
+            disabled={!isSeniorUser || !connected || bandReadBusy}
             onPress={handleFetchTodayVitals}
             activeOpacity={0.7}
           >
@@ -406,8 +432,8 @@ const V8DeviceManageScreen = () => {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[s.todaySyncBtn, (!isSeniorUser || !connected || todaySyncing || todayFetching) ? s.disabled : null]}
-            disabled={!isSeniorUser || !connected || todaySyncing || todayFetching}
+            style={[s.todaySyncBtn, syncActionDisabled ? s.disabled : null]}
+            disabled={syncActionDisabled}
             onPress={handleFetchAndSyncToday}
             activeOpacity={0.7}
           >
@@ -415,7 +441,7 @@ const V8DeviceManageScreen = () => {
               ? <ActivityIndicator size="small" color="#fff" />
               : <Icon name="cloud-upload-outline" size={18} color="#fff" />}
             <Text style={s.syncBtnText}>
-              {todaySyncing ? 'Syncing Today...' : 'Sync Today Data'}
+              {todaySyncing ? 'Show sync progress' : 'Sync Today Data'}
             </Text>
           </TouchableOpacity>
 

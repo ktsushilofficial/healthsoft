@@ -459,6 +459,9 @@ export function parseV8Payload(
       'strMac',
     ),
     firmwareVersion: pickText(
+      // Both vendor SDKs answer GetDeviceVersion with dicData.deviceVersion
+      // (DeviceKey.DeviceVersion on Android, dicData[@"deviceVersion"] on iOS).
+      'deviceVersion',
       'version',
       'firmwareVersion',
       'versionName',

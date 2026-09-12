@@ -60,6 +60,7 @@ mockMessaging.AuthorizationStatus = {
 jest.mock('@react-native-firebase/messaging', () => mockMessaging);
 
 jest.mock('react-native-vector-icons/Ionicons', () => 'Icon');
+jest.mock('react-native-vector-icons/MaterialCommunityIcons', () => 'DeviceIcon');
 
 jest.mock('react-native-linear-gradient', () => 'LinearGradient');
 
