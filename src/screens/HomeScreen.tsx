@@ -22,6 +22,8 @@ import LinearGradient from 'react-native-linear-gradient';
 import { useAuth } from '../context/AuthContext';
 import { todayLocalDayKey } from '../utils/vitalsDay';
 import DailyVitalsTable from '../components/DailyVitalsTable';
+import HomeAssignedDeviceList from '../components/HomeAssignedDeviceList';
+import { buildHomeAssignedDevices } from '../utils/homeAssignedDevices';
 import {
   formatExchangeBody,
   getLastApiExchange,
@@ -42,7 +44,6 @@ import {
 } from '../utils/mapSeniorDashboardDeviceToSnapshot';
 import {
   isMacAddressLike,
-  isPillDispenserAssignedDevice,
   normalizeMacAddress,
   resolveHandBandIdentity,
   resolveConnectedHandBandMac,
@@ -564,17 +565,6 @@ function formatBatteryPercent(value: number | null | undefined): string {
   return `${Math.max(0, Math.min(100, Math.round(value)))}%`;
 }
 
-function batteryIconFor(
-  batteryPercent: number | null | undefined,
-  charging?: boolean | null,
-): string {
-  if (charging === true) return 'battery-charging';
-  if (batteryPercent == null || Number.isNaN(batteryPercent)) return 'battery-dead-outline';
-  if (batteryPercent > 75) return 'battery-full';
-  if (batteryPercent > 30) return 'battery-half';
-  return 'battery-dead';
-}
-
 function formatV8BluetoothState(state: string): string {
   switch (state) {
     case 'PoweredOn':
@@ -681,7 +671,11 @@ const HomeScreen = () => {
   const [heroIndex, setHeroIndex] = useState(0);
   const [nowTick, setNowTick] = useState(() => new Date());
   const [dashboardDevices, setDashboardDevices] = useState<SeniorDashboardDeviceRecord[]>([]);
-  const [pillDispenserAssignments, setPillDispenserAssignments] = useState<SeniorAssignedDevice[]>([]);
+  const [assignedDevicesResult, setAssignedDevicesResult] = useState<{
+    seniorId: string;
+    devices: SeniorAssignedDevice[];
+    error: string | null;
+  } | null>(null);
   const [assignedDevicesLoading, setAssignedDevicesLoading] = useState(false);
   const [selectedDeviceIndex, setSelectedDeviceIndex] = useState(0);
   const [devicePickerVisible, setDevicePickerVisible] = useState(false);
@@ -689,7 +683,7 @@ const HomeScreen = () => {
     seniorId: string;
     row: VitalsSummaryRow | null;
   } | null>(null);
-  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [guardianSeniorProfiles, setGuardianSeniorProfiles] = useState<GuardianSeniorProfileRow[]>([]);
   const [guardianDevicePositions, setGuardianDevicePositions] = useState<SeniorDashboardDeviceRecord[]>([]);
@@ -717,7 +711,6 @@ const HomeScreen = () => {
   const backgroundDashboardRefreshCountRef = useRef(0);
   const vitalsRequestIdRef = useRef(0);
   const assignedDevicesRequestIdRef = useRef(0);
-  const lastAssignedDevicesSeniorIdRef = useRef('');
   const lastRefreshedVitalsSyncRef = useRef<number | null>(null);
 
   /** Senior id for `/api/v1/senior-dashboard/{id}` — logged-in senior, caretaker's or guardian's selected senior. */
@@ -817,27 +810,23 @@ const HomeScreen = () => {
   const loadHomeAssignedDevices = useCallback(async () => {
     const requestId = ++assignedDevicesRequestIdRef.current;
     const targetSeniorId = activeDashboardSeniorId?.trim() ?? '';
-
     if (!targetSeniorId) {
-      lastAssignedDevicesSeniorIdRef.current = '';
-      setPillDispenserAssignments([]);
+      setAssignedDevicesResult(null);
       setAssignedDevicesLoading(false);
       return;
     }
-
-    if (lastAssignedDevicesSeniorIdRef.current !== targetSeniorId) {
-      lastAssignedDevicesSeniorIdRef.current = targetSeniorId;
-      setPillDispenserAssignments([]);
-    }
     setAssignedDevicesLoading(true);
     try {
-      const assigned = await getAssignedDevicesForSenior(targetSeniorId);
+      const devices = await getAssignedDevicesForSenior(targetSeniorId);
       if (!isMountedRef.current || assignedDevicesRequestIdRef.current !== requestId) return;
-      setPillDispenserAssignments(assigned.filter(isPillDispenserAssignedDevice));
+      setAssignedDevicesResult({ seniorId: targetSeniorId, devices, error: null });
     } catch (error) {
       if (!isMountedRef.current || assignedDevicesRequestIdRef.current !== requestId) return;
-      console.log('[HomeScreen] Failed to fetch assigned pill dispensers:', error);
-      setPillDispenserAssignments([]);
+      setAssignedDevicesResult({
+        seniorId: targetSeniorId,
+        devices: [],
+        error: error instanceof Error ? error.message : 'Unable to load assigned devices.',
+      });
     } finally {
       if (isMountedRef.current && assignedDevicesRequestIdRef.current === requestId) {
         setAssignedDevicesLoading(false);
@@ -1563,6 +1552,17 @@ const HomeScreen = () => {
     () => v8Devices.filter(device => homeMatchedHandBandIds.has(device.id)),
     [homeMatchedHandBandIds, v8Devices],
   );
+  const assignedDevicesForHome = assignedDevicesResult?.seniorId === activeDashboardSeniorId
+    ? assignedDevicesResult : null;
+  const homeDeviceRows = useMemo(() => {
+    const connectedMacs = v8Devices
+      .filter(device => v8ConnectionStates[normalizeDeviceId(device.id)] === 'connected')
+      .map(device => resolveHandBandIdentity(device, selectedSeniorHandBandMacs, v8DeviceInfo.mac))
+      .filter((mac): mac is string => !!mac);
+    return buildHomeAssignedDevices(assignedDevicesForHome?.devices ?? [], dashboardDevices, connectedMacs);
+  }, [assignedDevicesForHome, dashboardDevices, selectedSeniorHandBandMacs, v8ConnectionStates, v8DeviceInfo.mac, v8Devices]);
+  const homeDevicesLoading = assignedDevicesLoading || (!!activeDashboardSeniorId && !assignedDevicesForHome);
+
   const homeUnverifiedHandBandDevices = useMemo(
     () =>
       Platform.OS === 'ios'
@@ -1788,7 +1788,7 @@ const HomeScreen = () => {
         greetingTitle={greeting.title}
         guardianName={guardianWelcomeName}
         seniorsCount={seniors.length}
-        devicesCount={dashboardDevices.length}
+        devicesCount={homeDeviceRows.length}
         onClose={() => setGuardianWelcomeVisible(false)}
       />
       <ScrollView
@@ -2283,12 +2283,12 @@ const HomeScreen = () => {
           <Text style={styles.devicesSectionTitle}>DEVICES</Text>
           <TouchableOpacity
             activeOpacity={0.7}
+            disabled={homeDevicesLoading || !!assignedDevicesForHome?.error || !activeDashboardSeniorId}
+            accessibilityState={{ disabled: homeDevicesLoading || !!assignedDevicesForHome?.error || !activeDashboardSeniorId }}
             onPress={() =>
               navigation.navigate('HomeDevices', {
-                dashboardDevices,
-                activeSeniorId: activeDashboardSeniorId || user?.user_id || null,
-                showV8HandBand: user?.role === SENIOR_ROLE || selectedSeniorHandBandMacs.length > 0,
-                pillDispenserAssignments,
+                devices: homeDeviceRows,
+                activeSeniorId: activeDashboardSeniorId,
               })
             }
           >
@@ -2296,118 +2296,25 @@ const HomeScreen = () => {
           </TouchableOpacity>
         </View>
 
-        {/* Devices list */}
+        {/* The assignments API is the source of every device in this list. */}
         <View style={styles.devicesListContainer}>
-          {dashboardDevices.length > 0 ? (
-            dashboardDevices.map((device, index) => {
-              const displayLabel = getSeniorDashboardDeviceLabel(device);
-              const snapshot = mapSeniorDashboardDeviceToSnapshot(device);
-              const deviceKey = `dashboard-device-${getDashboardDeviceUuid(device) || getDashboardDeviceImei(device) || index}`;
-              const rowStatusText = formatDeviceActivityStatus(device);
-              const rowBatteryPercent = snapshot.batteryPercent;
-              const rowBatteryValue = formatBatteryPercent(rowBatteryPercent);
-              const rowBatteryIcon = batteryIconFor(rowBatteryPercent, snapshot.charging);
-
-              return (
-                <TouchableOpacity
-                  key={deviceKey}
-                  style={styles.deviceRowCard}
-                  activeOpacity={0.8}
-                  onPress={() => {
-                    navigation.navigate('PendantDetail', {
-                      seniorId: activeDashboardSeniorId || user?.user_id || undefined,
-                      imei: getDashboardDeviceImei(device),
-                      deviceUuid: getDashboardDeviceUuid(device),
-                      deviceName: displayLabel,
-                    });
-                  }}
-                >
-                  <View style={[styles.deviceRowIconWrap, styles.deviceIconPendantBg]}>
-                    <Icon name="sunny" size={22} color="#D97706" />
-                  </View>
-
-                  <View style={styles.deviceRowTextCol}>
-                    <Text style={styles.deviceRowName}>{displayLabel}</Text>
-                    <Text style={styles.deviceRowSub}>
-                      {snapshot.alarmSeverity === 'critical' ? 'Fall Detected!' : 'Fall detection · Armed'}
-                    </Text>
-                  </View>
-
-                  <View style={styles.deviceRowStatusCol}>
-                    <Text style={[styles.deviceRowStatusText, styles.deviceRowStatusActive]}>
-                      {rowStatusText}
-                    </Text>
-                    <View style={styles.deviceRowBatteryWrap}>
-                      <Icon name={rowBatteryIcon} size={14} color="#8A827A" />
-                      <Text style={styles.deviceRowBatteryText}>
-                        {rowBatteryValue}
-                      </Text>
-                    </View>
-                  </View>
-                </TouchableOpacity>
-              );
-            })
-          ) : !dashboardLoading &&
-              !assignedDevicesLoading &&
-              pillDispenserAssignments.length === 0 &&
-              !(user?.role === SENIOR_ROLE || selectedSeniorHandBandMacs.length > 0) ? (
+          {homeDevicesLoading && homeDeviceRows.length === 0 ? (
+            <ActivityIndicator color="#F28C28" accessibilityLabel="Loading assigned devices" />
+          ) : assignedDevicesForHome?.error ? (
             <View style={styles.noDevicesBox}>
-              <Text style={styles.noDevicesText}>No active devices assigned.</Text>
+              <Text style={styles.noDevicesText}>{assignedDevicesForHome.error}</Text>
+              <TouchableOpacity onPress={loadHomeAssignedDevices} accessibilityRole="button">
+                <Text style={styles.devicesSeeAllText}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          ) : homeDeviceRows.length === 0 ? (
+            <View style={styles.noDevicesBox}>
+              <Text style={styles.noDevicesText}>
+                {activeDashboardSeniorId ? 'No devices assigned.' : 'Select a senior to view devices.'}
+              </Text>
             </View>
           ) : null}
-
-          {/* PILL DISPENSERS FROM THE SENIOR ASSIGNMENTS API */}
-          {pillDispenserAssignments.map(device => (
-            <TouchableOpacity
-              key={`pill-dispenser-${device.id}`}
-              style={styles.deviceRowCard}
-              activeOpacity={0.8}
-              onPress={() => navigation.navigate('PillDispenser')}
-            >
-              <View style={[styles.deviceRowIconWrap, styles.deviceIconPillDispenserBg]}>
-                <Icon name="medical" size={22} color="#2563EB" />
-              </View>
-              <View style={styles.deviceRowTextCol}>
-                <Text style={styles.deviceRowName}>Pill Dispenser</Text>
-                <Text style={styles.deviceRowSub} numberOfLines={1}>
-                  {device.serialNumber
-                    ? `S/N ${device.serialNumber}`
-                    : device.barcode
-                      ? `Barcode ${device.barcode}`
-                      : 'Medication reminders'}
-                </Text>
-              </View>
-              <View style={styles.deviceRowStatusCol}>
-                <Text style={[styles.deviceRowStatusText, styles.deviceRowStatusActive]}>
-                  {device.status
-                    ? device.status.charAt(0).toUpperCase() + device.status.slice(1).toLowerCase()
-                    : 'Assigned'}
-                </Text>
-              </View>
-            </TouchableOpacity>
-          ))}
-
-          {/* V8 SMART BAND DEVICE */}
-          {(user?.role === SENIOR_ROLE || (selectedSeniorHandBandMacs && selectedSeniorHandBandMacs.length > 0)) && (
-            <TouchableOpacity
-              style={styles.deviceRowCard}
-              activeOpacity={0.8}
-              onPress={() => navigation.navigate('Activity')}
-            >
-              <View style={[styles.deviceRowIconWrap, styles.vitalIconHeartBg]}>
-                <Icon name="heart" size={22} color="#EF4444" />
-              </View>
-              <View style={styles.deviceRowTextCol}>
-                <Text style={styles.deviceRowName}>Smart Band</Text>
-                <Text style={styles.deviceRowSub}>Heart rate</Text>
-              </View>
-              <View style={styles.deviceRowStatusCol}>
-                <Text style={[styles.deviceRowStatusText, handBandConnected ? styles.deviceRowStatusActive : null]}>
-                  {handBandConnected ? 'Connected' : 'Available'}
-                </Text>
-              </View>
-            </TouchableOpacity>
-          )}
+          <HomeAssignedDeviceList devices={homeDeviceRows} seniorId={activeDashboardSeniorId} />
         </View>
       </ScrollView>
       <Modal
