@@ -380,6 +380,15 @@ function getGreetingFromDate(date: Date) {
 
 type VitalsSummaryRow = {
   recordDate: string;
+  hrLatest: number | null;
+  spo2Latest: number | null;
+  hrvLatest: number | null;
+  systolicBpLatest: number | null;
+  diastolicBpLatest: number | null;
+  tempLatest: number | null;
+  stressLatest: number | null;
+  createdAt: number | null;
+  updatedAt: number | null;
   steps: number | null;
   hrAvg: number | null;
   hrMin: number | null;
@@ -447,8 +456,18 @@ function normalizeSummaryRows(payload: unknown): VitalsSummaryRow[] {
       if (!row) return null;
       const recordDate = asString(row.recordDate) ?? asString(row.date);
       if (!recordDate) return null;
+      const stressLatest = asNumber(row.stressLatest);
       return {
         recordDate,
+        hrLatest: asVital(row.hrLatest),
+        spo2Latest: asVital(row.spo2Latest),
+        hrvLatest: asVital(row.hrvLatest),
+        systolicBpLatest: asVital(row.systolicBpLatest),
+        diastolicBpLatest: asVital(row.diastolicBpLatest),
+        tempLatest: asVital(row.tempLatest),
+        stressLatest: stressLatest != null && stressLatest >= 0 ? stressLatest : null,
+        createdAt: asNumber(row.createdAt),
+        updatedAt: asNumber(row.updatedAt),
         steps: asNumber(row.steps),
         hrAvg: asVital(row.hrAvg) ?? asVital(row.heartRateAvg),
         hrMin: asVital(row.hrMin) ?? asVital(row.heartRateMin),
@@ -470,6 +489,27 @@ function normalizeSummaryRows(payload: unknown): VitalsSummaryRow[] {
 function findTodaySummaryRow(rows: VitalsSummaryRow[]): VitalsSummaryRow | null {
   const todayKey = todayLocalDayKey();
   return rows.find(row => normalizeRecordDateKey(row.recordDate) === todayKey) ?? null;
+}
+
+const LATEST_VITAL_FIELDS = [
+  { key: 'hrLatest', label: 'Heart rate', unit: 'bpm', decimals: 0 },
+  { key: 'spo2Latest', label: 'Blood oxygen', unit: '%', decimals: 0 },
+  { key: 'hrvLatest', label: 'Heart rate variability', unit: 'ms', decimals: 0 },
+  { key: 'systolicBpLatest', label: 'Systolic blood pressure', unit: 'mmHg', decimals: 0 },
+  { key: 'diastolicBpLatest', label: 'Diastolic blood pressure', unit: 'mmHg', decimals: 0 },
+  { key: 'tempLatest', label: 'Temperature', unit: '°C', decimals: 1 },
+  { key: 'stressLatest', label: 'Stress', unit: '', decimals: 0 },
+] as const;
+
+function formatLatestVitalsSyncTime(row: VitalsSummaryRow | null): string {
+  const timestamp = row?.updatedAt ?? row?.createdAt;
+  if (timestamp == null) return NA;
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return NA;
+  return date.toLocaleString(undefined, {
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
 }
 
 function formatHomeSteps(value: number | null | undefined): string {
@@ -645,7 +685,10 @@ const HomeScreen = () => {
   const [assignedDevicesLoading, setAssignedDevicesLoading] = useState(false);
   const [selectedDeviceIndex, setSelectedDeviceIndex] = useState(0);
   const [devicePickerVisible, setDevicePickerVisible] = useState(false);
-  const [todayVitals, setTodayVitals] = useState<VitalsSummaryRow | null>(null);
+  const [todayVitalsResult, setTodayVitalsResult] = useState<{
+    seniorId: string;
+    row: VitalsSummaryRow | null;
+  } | null>(null);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [guardianSeniorProfiles, setGuardianSeniorProfiles] = useState<GuardianSeniorProfileRow[]>([]);
@@ -685,6 +728,11 @@ const HomeScreen = () => {
     if (user.role === GUARDIAN_ROLE && selectedSenior?.userId) return selectedSenior.userId;
     return null;
   }, [user, selectedSenior?.userId]);
+
+  // Never show the previous senior's readings while another senior is loading.
+  const todayVitals = todayVitalsResult?.seniorId === activeDashboardSeniorId
+    ? todayVitalsResult?.row ?? null
+    : null;
 
   const showTelemetryBar = useMemo(() => {
     if (!user) return false;
@@ -741,7 +789,7 @@ const HomeScreen = () => {
       !isMountedRef.current || vitalsRequestIdRef.current !== requestId;
     const targetSeniorId = activeDashboardSeniorId || (user?.role === SENIOR_ROLE ? user.user_id : null);
     if (!targetSeniorId) {
-      setTodayVitals(null);
+      setTodayVitalsResult(null);
       return;
     }
     try {
@@ -752,17 +800,17 @@ const HomeScreen = () => {
       const deviceUUID = handBandAssignment?.deviceId?.trim() ?? '';
       if (!deviceUUID) {
         if (shouldIgnore()) return;
-        setTodayVitals(null);
+        setTodayVitalsResult(null);
         return;
       }
       const payload = await getV8VitalsSummary(deviceUUID, 1);
       const normalizedRows = normalizeSummaryRows(payload);
       if (shouldIgnore()) return;
-      setTodayVitals(findTodaySummaryRow(normalizedRows));
+      setTodayVitalsResult({ seniorId: targetSeniorId, row: findTodaySummaryRow(normalizedRows) });
     } catch (err) {
       if (shouldIgnore()) return;
       console.log('[HomeScreen] Failed to fetch V8 vitals summary for today:', err);
-      setTodayVitals(null);
+      setTodayVitalsResult(null);
     }
   }, [activeDashboardSeniorId, user, getAssignedDevicesForSenior, getV8VitalsSummary]);
 
@@ -1890,6 +1938,36 @@ const HomeScreen = () => {
           </TouchableOpacity>
         )}
 
+        {activeDashboardSeniorId && (
+          <View style={styles.latestVitalsCard}>
+            <View style={styles.latestVitalsHeader}>
+              <View style={styles.autoSyncIconWrap}>
+                <Icon name="pulse-outline" size={20} color="#0B8A5B" />
+              </View>
+              <View style={styles.autoSyncTextCol}>
+                <Text style={styles.latestVitalsTitle}>Latest synced vitals</Text>
+                <Text style={styles.latestVitalsSyncTime}>
+                  Last synced: {formatLatestVitalsSyncTime(todayVitals)}
+                </Text>
+              </View>
+            </View>
+            {LATEST_VITAL_FIELDS.map(field => {
+              const value = todayVitals?.[field.key];
+              return (
+                <View key={field.key} style={styles.latestVitalRow}>
+                  <Text style={styles.latestVitalLabel}>{field.label}</Text>
+                  <Text style={styles.latestVitalValue}>
+                    {value == null ? NA : value.toFixed(field.decimals)}
+                    {value != null && field.unit ? (
+                      <Text style={styles.latestVitalUnit}> {field.unit}</Text>
+                    ) : null}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
         {showAutomaticHandBandSync && (
           <>
             <View style={styles.autoSyncCard}>
@@ -2513,6 +2591,57 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     elevation: 3,
     marginBottom: 16,
+  },
+  latestVitalsCard: {
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 16,
+    marginBottom: 16,
+    borderRadius: 24,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#DDF3E8',
+  },
+  latestVitalsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  latestVitalsTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#1B2A4A',
+  },
+  latestVitalsSyncTime: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: '#6B7280',
+    marginTop: 4,
+  },
+  latestVitalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingVertical: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E8EEE9',
+  },
+  latestVitalLabel: {
+    flex: 1,
+    fontSize: 14,
+    color: '#5A6475',
+  },
+  latestVitalValue: {
+    flexShrink: 1,
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1B2A4A',
+    textAlign: 'right',
+  },
+  latestVitalUnit: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#6B7280',
   },
   autoSyncCard: {
     backgroundColor: '#FFFFFF',
