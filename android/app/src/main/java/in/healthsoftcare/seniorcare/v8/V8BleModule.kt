@@ -400,42 +400,42 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun requestTotalActivity(mode: Int, startDate: String, promise: Promise) {
-    enqueueVendorCommand(BleSDK.GetTotalActivityDataWithMode(mode.toByte(), startDate), promise)
+    enqueueVendorCommand(BleSDK.GetTotalActivityDataWithMode(mode.toByte(), if (mode == 2) null else startDate), promise)
   }
 
   @ReactMethod
   fun requestDetailActivity(mode: Int, startDate: String, promise: Promise) {
-    enqueueVendorCommand(BleSDK.GetDetailActivityDataWithMode(mode.toByte(), startDate), promise)
+    enqueueVendorCommand(BleSDK.GetDetailActivityDataWithMode(mode.toByte(), if (mode == 2) null else startDate), promise)
   }
 
   @ReactMethod
   fun requestSleep(mode: Int, startDate: String, promise: Promise) {
-    enqueueVendorCommand(BleSDK.GetDetailSleepDataWithMode(mode.toByte(), startDate), promise)
+    enqueueVendorCommand(BleSDK.GetDetailSleepDataWithMode(mode.toByte(), if (mode == 2) null else startDate), promise)
   }
 
   @ReactMethod
   fun requestDynamicHR(mode: Int, startDate: String, promise: Promise) {
-    enqueueVendorCommand(BleSDK.GetDynamicHRWithMode(mode.toByte(), startDate), promise)
+    enqueueVendorCommand(BleSDK.GetDynamicHRWithMode(mode.toByte(), if (mode == 2) null else startDate), promise)
   }
 
   @ReactMethod
   fun requestStaticHR(mode: Int, startDate: String, promise: Promise) {
-    enqueueVendorCommand(BleSDK.GetStaticHRWithMode(mode.toByte(), startDate), promise)
+    enqueueVendorCommand(BleSDK.GetStaticHRWithMode(mode.toByte(), if (mode == 2) null else startDate), promise)
   }
 
   @ReactMethod
   fun requestHRV(mode: Int, startDate: String, promise: Promise) {
-    enqueueVendorCommand(BleSDK.GetHRVDataWithMode(mode.toByte(), startDate), promise)
+    enqueueVendorCommand(BleSDK.GetHRVDataWithMode(mode.toByte(), if (mode == 2) null else startDate), promise)
   }
 
   @ReactMethod
   fun requestSpo2(mode: Int, startDate: String, promise: Promise) {
-    enqueueVendorCommand(BleSDK.Oxygen_data(mode.toByte(), startDate), promise)
+    enqueueVendorCommand(BleSDK.Oxygen_data(mode.toByte(), if (mode == 2) null else startDate), promise)
   }
 
   @ReactMethod
   fun requestTemperature(mode: Int, startDate: String, promise: Promise) {
-    enqueueVendorCommand(BleSDK.GetTemperature_historyData(mode.toByte(), startDate), promise)
+    enqueueVendorCommand(BleSDK.GetTemperature_historyData(mode.toByte(), if (mode == 2) null else startDate), promise)
   }
 
   @SuppressLint("MissingPermission")

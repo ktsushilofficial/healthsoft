@@ -248,12 +248,22 @@ const V8DeviceManageScreen = () => {
     return `${Math.floor(sec / 60)}m ago`;
   }, [latestLiveData?.receivedAt]);
 
+  const parseFailures = Object.entries(historyReadStatus.categories)
+    .filter(([, category]) => category.rejectedRecords > 0)
+    .map(([type]) => historyTypeLabels[type] ?? type);
+  const unavailableHistory = Object.entries(historyReadStatus.categories)
+    .filter(([, category]) => category.outcome === 'unavailable')
+    .map(([type]) => historyTypeLabels[type] ?? type);
   const readStatusText = historyReadStatus.phase === 'reading'
     ? historyReadStatus.currentType
       ? `Reading ${historyTypeLabels[historyReadStatus.currentType] ?? 'vitals'}… ${historyReadStatus.completedTypes.length} categories complete. Values shown so far are partial.`
       : 'Preparing to read hand band vitals…'
     : historyReadStatus.phase === 'partial'
-    ? 'Some readings could not be downloaded. Review the received values and retry before syncing.'
+    ? parseFailures.length
+      ? `Could not process ${parseFailures.join(', ')} readings. Review the received values and retry before syncing.`
+      : 'Some readings could not be downloaded. Review the received values and retry before syncing.'
+    : historyReadStatus.phase === 'complete' && unavailableHistory.length
+    ? `Available history downloaded. This app cannot request ${unavailableHistory.join(', ')} history from the band.`
     : null;
 
   return (
@@ -414,7 +424,7 @@ const V8DeviceManageScreen = () => {
           )}
         </View>
 
-        {actionStatus ? (
+        {actionStatus && historyReadStatus.phase !== 'reading' ? (
           <View style={s.statusBanner}>
             <Text style={s.statusBannerText}>{actionStatus}</Text>
           </View>

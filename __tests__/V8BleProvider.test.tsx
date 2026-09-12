@@ -1,4 +1,5 @@
 import React from 'react';
+import { sdkHistoryPackets } from '../test/fixtures/v8History';
 import { act, create, ReactTestRenderer } from 'react-test-renderer';
 import { Platform } from 'react-native';
 import type { V8DailyVitalSummary } from '../src/v8/models';
@@ -408,7 +409,7 @@ describe('hand band connection and ownership', () => {
           manager.syncTodayVitalsToBackend('2026-09-11', [
             { ...rows[0], date: '2026-09-10' },
           ]),
-        ).rejects.toThrow('No readings');
+        ).rejects.toThrow('do not match');
         expect(mockAuth.syncV8VitalsByDevice).not.toHaveBeenCalled();
       } finally {
         Object.defineProperty(Platform, 'OS', {
@@ -479,4 +480,142 @@ describe('hand band connection and ownership', () => {
     ).rejects.toThrow('History is incomplete');
     expect(mockAuth.syncV8VitalsByDevice).not.toHaveBeenCalled();
   });
+
+  const prepareRead = async (platform: 'ios' | 'android' = 'ios', malformed = false) => {
+    Object.defineProperty(Platform, 'OS', { configurable: true, value: platform });
+    const device = { ...iosBand, id: platform === 'ios' ? iosBand.id : 'C4:14:D5:0E:09:F6' };
+    await emit('V8ScanResult', device);
+    await emit('V8ConnectionState', { deviceId: device.id, state: 'connected' });
+    await act(async () => { await jest.advanceTimersByTimeAsync(2100); });
+    const packets = sdkHistoryPackets(platform);
+    if (malformed) packets[2].dicData = [{ date: '2026.09.11', unsupportedHR: [72] }] as any;
+    Object.values(mockHistoryRequests).forEach((request, index) => {
+      request.mockImplementation(async () => {
+        mockListeners.get('V8Data')?.({ type: 'parsed', payload: packets[index] });
+        return true;
+      });
+    });
+    return device;
+  };
+  const becomeSenior = async () => {
+    mockAuth.user = { role: 'SENIOR', user_id: 'senior-1' };
+    mockAuth.getAssignedDevicesForSenior.mockResolvedValue([
+      { deviceId: 'band-uuid', bluetoothMacAddress: 'C414D50E09F6' },
+    ]);
+    await act(async () => { renderer.update(tree()); });
+  };
+
+  it.each(['ios', 'android'] as const)('uploads every metric from SDK-shaped %s responses', async platform => {
+    const original = Platform.OS;
+    try {
+      await prepareRead(platform);
+      let rows!: V8DailyVitalSummary[];
+      await act(async () => { rows = await manager.buildTodayVitals('2026-09-11'); });
+      const expectedStart = platform === 'ios' ? new Date(2026, 8, 11).getTime() : '2026-09-11 00:00:00';
+      for (const request of Object.values(mockHistoryRequests)) expect(request).toHaveBeenCalledWith(0, expectedStart);
+      expect(manager.historyReadStatus.categories.dynamicHR).toMatchObject({
+        receivedRecords: 1, extractedSamples: 2, rejectedRecords: 0, outcome: 'downloaded',
+      });
+      await becomeSenior();
+      await act(async () => { await manager.syncTodayVitalsToBackend('2026-09-11', rows); });
+      const payload = mockAuth.syncV8VitalsByDevice.mock.calls[0][0];
+      expect(payload).toEqual({ deviceUUID: 'band-uuid', syncDays: 1, syncFrom: '2026-09-11', syncTo: '2026-09-11',
+        vitalSummaries: [{ recordDate: '2026-09-11', steps: 8000, distanceKm: 5.8, caloriesKcal: 320,
+          exerciseMinutes: 65, activeMinutes: platform === 'ios' ? 20 : null, goalPercent: 80,
+          hrMin: 60, hrMax: 80, hrAvg: 72, hrLatest: 76,
+          spo2Min: 98, spo2Max: 98, spo2Avg: 98, spo2Latest: 98,
+          hrvMin: 55, hrvMax: 55, hrvAvg: 55, hrvLatest: 55,
+          systolicBpMin: 120, systolicBpMax: 120, systolicBpAvg: 120, systolicBpLatest: 120,
+          diastolicBpMin: 80, diastolicBpMax: 80, diastolicBpAvg: 80, diastolicBpLatest: 80,
+          tempMin: 36.5, tempMax: 36.5, tempAvg: 36.5, tempLatest: 36.5,
+          stressMin: 0, stressMax: 0, stressAvg: 0, stressLatest: 0 }],
+      });
+      // Repeated uploads of the same read serialize identically, including nulls.
+      await act(async () => { await manager.syncTodayVitalsToBackend('2026-09-11', rows); });
+      expect(JSON.stringify(mockAuth.syncV8VitalsByDevice.mock.calls[1][0])).toBe(JSON.stringify(payload));
+    } finally { Object.defineProperty(Platform, 'OS', { configurable: true, value: original }); }
+  });
+
+  it.each(['ios', 'android'] as const)('blocks silently rejected %s history even after dataEnd', async platform => {
+    const original = Platform.OS;
+    try {
+      await prepareRead(platform, true);
+      await act(async () => { await expect(manager.buildTodayVitals('2026-09-11')).rejects.toThrow('incomplete'); });
+      expect(manager.historyReadStatus.categories.dynamicHR).toMatchObject({ outcome: 'failed', rejectedRecords: 1 });
+      await becomeSenior();
+      await expect(manager.syncTodayVitalsToBackend('2026-09-11', [])).rejects.toThrow('History is incomplete');
+      expect(mockAuth.syncV8VitalsByDevice).not.toHaveBeenCalled();
+    } finally { Object.defineProperty(Platform, 'OS', { configurable: true, value: original }); }
+  });
+
+  it('requires a completed read even when no prior status exists', async () => {
+    await becomeSenior();
+    await expect(manager.syncTodayVitalsToBackend('2026-09-11', [])).rejects.toThrow('History is incomplete');
+    expect(mockAuth.getAssignedDevicesForSenior).not.toHaveBeenCalled();
+    expect(mockAuth.syncV8VitalsByDevice).not.toHaveBeenCalled();
+  });
+
+  it.each(['wrong day', 'changed rows', 'cleared data', 'reconnected', 'different band', 'new read', 'account changed'])(
+    'rejects a saved summary after %s', async change => {
+      await prepareRead();
+      let rows!: V8DailyVitalSummary[];
+      await act(async () => { rows = await manager.buildTodayVitals('2026-09-11'); });
+      await becomeSenior();
+      let day = '2026-09-11';
+      if (change === 'wrong day') day = '2026-09-10';
+      if (change === 'changed rows') rows[0].steps = 999999;
+      if (change === 'cleared data') await act(async () => { await manager.clearSavedData(); });
+      if (change === 'reconnected') {
+        await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'disconnected' });
+        await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'connected' });
+      }
+      if (change === 'different band') await emit('V8ConnectionState', { deviceId: 'another-band', state: 'connected' });
+      if (change === 'new read') await act(async () => { await manager.buildTodayVitals('2026-09-10'); });
+      if (change === 'account changed') {
+        mockAuth.user = { role: 'SENIOR', user_id: 'senior-2' };
+        await act(async () => { renderer.update(tree()); });
+      }
+      await expect(manager.syncTodayVitalsToBackend(day, rows)).rejects.toThrow(/History is incomplete|do not match/);
+      expect(mockAuth.syncV8VitalsByDevice).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['disconnect', 'new read', 'assignment removed', 'account changed'])(
+    'rechecks read ownership after assignment lookup: %s', async change => {
+      await prepareRead();
+      let rows!: V8DailyVitalSummary[];
+      await act(async () => { rows = await manager.buildTodayVitals('2026-09-11'); });
+      await becomeSenior();
+      let resolveLookup!: (devices: unknown[]) => void;
+      mockAuth.getAssignedDevicesForSenior.mockImplementationOnce(() => new Promise(resolve => { resolveLookup = resolve; }));
+      const result = manager.syncTodayVitalsToBackend('2026-09-11', rows).catch(error => error);
+      if (change === 'disconnect') await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'disconnected' });
+      if (change === 'new read') await act(async () => { await manager.buildTodayVitals('2026-09-11'); });
+      if (change === 'assignment removed') {
+        mockAssigned = [];
+        await act(async () => { renderer.update(tree()); });
+      }
+      if (change === 'account changed') {
+        mockAuth.user = { role: 'SENIOR', user_id: 'senior-2' };
+        await act(async () => { renderer.update(tree()); });
+      }
+      resolveLookup([{ deviceId: 'band-uuid', bluetoothMacAddress: 'C414D50E09F6' }]);
+      expect(await result).toBeInstanceOf(Error);
+      expect(mockAuth.syncV8VitalsByDevice).not.toHaveBeenCalled();
+    },
+  );
+
+
+  it('uploads the saved read even if later notifications change visible history', async () => {
+    await prepareRead();
+    let rows!: V8DailyVitalSummary[];
+    await act(async () => { rows = await manager.buildTodayVitals('2026-09-11'); });
+    await emit('V8Data', { type: 'parsed', payload: { dataType: '25', dataEnd: true,
+      dicData: { arrayTotalActivityData: [{ date: '2026.09.11', step: 99999 }] },
+    } });
+    await becomeSenior();
+    await act(async () => { await manager.syncTodayVitalsToBackend('2026-09-11', rows); });
+    expect(mockAuth.syncV8VitalsByDevice.mock.calls[0][0].vitalSummaries[0].steps).toBe(8000);
+  });
+
 });

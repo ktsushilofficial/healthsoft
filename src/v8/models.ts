@@ -97,7 +97,15 @@ export type V8EcgEvent = {
   statusMessage: string | null;
 };
 
+export type V8ParseDiagnostics = {
+  receivedRecords: number;
+  extractedSamples: number;
+  rejectedRecords: number;
+  invalidTimestampRecords: number;
+};
+
 export type V8HistoryBucket = {
+  diagnostics?: V8ParseDiagnostics;
   source?: 'history' | 'live';
   dataType: string | null;
   entries: V8VitalSample[];

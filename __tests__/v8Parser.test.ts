@@ -313,3 +313,126 @@ describe('SDK-shaped vitals regression cases', () => {
     );
   });
 });
+
+describe('history parsing diagnostics', () => {
+  it('expands the actual iOS inner arrayHR across midnight', () => {
+    const { history } = parseV8Payload(
+      {
+        dataType: '28',
+        dataEnd: true,
+        dicData: {
+          count: 1,
+          arrayContinuousHR: [
+            { date: '2026.09.10 23:59:55', arrayHR: [71, 72, 73] },
+          ],
+        },
+      },
+      'ios',
+    );
+    expect(history?.entries.map(s => [s.timestamp, s.heartRate])).toEqual([
+      ['2026.09.10 23:59:55', 71],
+      ['2026.09.11 00:00:00', 72],
+      ['2026.09.11 00:00:05', 73],
+    ]);
+    expect(history?.diagnostics).toEqual({
+      receivedRecords: 1,
+      extractedSamples: 3,
+      rejectedRecords: 0,
+      invalidTimestampRecords: 0,
+    });
+  });
+
+  it.each([[], {}, null, { arrayContinuousHR: [] }])(
+    'recognizes an empty SDK completion: %j',
+    dicData => {
+      expect(
+        parseV8Payload({ dataType: '28', dataEnd: true, dicData }, 'ios')
+          .history,
+      ).toMatchObject({
+        entries: [],
+        diagnostics: { receivedRecords: 0, rejectedRecords: 0 },
+      });
+    },
+  );
+
+  it.each([
+    { unexpectedWrapper: [] },
+    { arrayContinuousHR: null },
+    { arrayContinuousHR: [{}] },
+    { arrayContinuousHR: [null] },
+    { arrayContinuousHR: [{ date: '2026.09.11', unknownHR: [70] }] },
+    'not a decoded record',
+  ])('does not confuse unknown data with empty history: %j', dicData => {
+    const { history } = parseV8Payload(
+      { dataType: '28', dataEnd: true, dicData },
+      'ios',
+    );
+    expect(history?.entries).toEqual([]);
+    expect(history?.diagnostics?.rejectedRecords).toBeGreaterThan(0);
+  });
+
+  it.each(['ios', 'android'] as const)(
+    'counts mixed valid and rejected records on %s',
+    platform => {
+      const records = [
+        { date: '2026.09.11 10:00:00', heartRate: 75 },
+        { date: '2026.09.11 10:05:00', unknownHR: 80 },
+        { date: '2026.02.30', heartRate: 70 },
+      ];
+      const { history } = parseV8Payload(
+        {
+          dataType: platform === 'ios' ? '29' : '28',
+          dataEnd: true,
+          dicData: platform === 'ios' ? { arraySingleHR: records } : records,
+        },
+        platform,
+      );
+      expect(history?.diagnostics).toEqual({
+        receivedRecords: 3,
+        extractedSamples: 1,
+        rejectedRecords: 2,
+        invalidTimestampRecords: 1,
+      });
+      expect(history?.entries[0].heartRate).toBe(75);
+    },
+  );
+
+  it.each([
+    { series: [70, 'bad', 72] },
+    { series: [70, null, 72] },
+    { series: '70 bad 72' },
+  ])('keeps HR offsets for malformed series: %j', ({ series }) => {
+    const { history } = parseV8Payload(
+      {
+        dataType: '28',
+        dataEnd: true,
+        dicData: {
+          arrayContinuousHR: [{ date: '2026.09.11 10:00:00', arrayHR: series }],
+        },
+      },
+      'ios',
+    );
+    expect(history?.entries.map(s => [s.timestamp, s.heartRate])).toEqual([
+      ['2026.09.11 10:00:00', 70],
+      ['2026.09.11 10:00:10', 72],
+    ]);
+    expect(history?.diagnostics?.rejectedRecords).toBe(1);
+  });
+
+  it('keeps Android missing active minutes null even when exercise minutes exist', () => {
+    expect(
+      parseV8Payload(
+        {
+          dataType: '24',
+          dataEnd: true,
+          dicData: [{ date: '2026.09.11', step: '0', exerciseMinutes: '25' }],
+        },
+        'android',
+      ).history?.entries[0],
+    ).toMatchObject({
+      steps: 0,
+      exerciseMinutes: 25,
+      activeMinutes: null,
+    });
+  });
+});

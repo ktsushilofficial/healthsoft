@@ -108,7 +108,7 @@ describe('shared daily vitals aggregation', () => {
   it('excludes undated history, other days, and missing physiological zeros', () => {
     const entries = [
       sample('2026-09-10 10:00:00', { heartRate: 90 }),
-      sample('bad', { heartRate: 99 }),
+      { ...sample(day, { heartRate: 99 }), timestamp: 'bad' },
       sample(day, { heartRate: 0, spo2: 0, step: 0 }),
     ];
     expect(

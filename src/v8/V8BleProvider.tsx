@@ -210,6 +210,12 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   const [historyReadStatus, setHistoryReadStatus] = useState(idleHistoryReadStatus);
   const historyReadStatusRef = useRef(idleHistoryReadStatus);
   const historyReadInFlightRef = useRef<{ day: string; promise: Promise<void> } | null>(null);
+  const connectionGenerationRef = useRef(0);
+  const completedReadRef = useRef<{
+    day: string; deviceId: string; generation: number; seniorId: string;
+    rows: V8DailyVitalSummary[];
+    live: V8VitalSample | null;
+  } | null>(null);
   const connectedDeviceRef = useRef<string | null>(null);
   const devicePrimingRef = useRef<Promise<void> | null>(null);
   const latestLiveDataRef = useRef<V8VitalSample | null>(null);
@@ -286,6 +292,8 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     }
     return '';
   }, [selectedSenior?.userId, user?.role, user?.user_id]);
+  const syncContextRef = useRef({ seniorId: ecgSeniorId, role: user?.role, macs: selectedSeniorHandBandMacs });
+  syncContextRef.current = { seniorId: ecgSeniorId, role: user?.role, macs: selectedSeniorHandBandMacs };
   const scanStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const automaticSyncInFlightRef = useRef(false);
   const automaticSyncCacheKeyRef = useRef<string | null>(null);
@@ -585,6 +593,8 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       setConnectionStates(prev => ({ ...prev, [normalizedDeviceId]: state }));
       if (state === 'connected') {
         if (connectedDeviceRef.current !== normalizedDeviceId) {
+          connectionGenerationRef.current += 1;
+          completedReadRef.current = null;
           historyReaderRef.current.cancel();
           historyIndexRef.current = {};
           historyBuffersRef.current = {};
@@ -597,7 +607,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         }
         connectedDeviceRef.current = normalizedDeviceId;
         setActiveDeviceId(normalizedDeviceId);
-      } else if (state === 'disconnected') {
+      } else if (state === 'disconnected' || state === 'error') {
+        connectionGenerationRef.current += 1;
+        completedReadRef.current = null;
         connectedDeviceRef.current = null;
         historyReaderRef.current.cancel();
         latestLiveDataRef.current = null;
@@ -1616,8 +1628,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       { type: 'staticHR', request: mode => native.requestStaticHR(mode, start) },
       { type: 'hrv', request: mode => native.requestHRV(mode, start) },
     ];
-    if (native.requestSpo2) requests.push({ type: 'spo2', request: mode => native.requestSpo2!(mode, start) });
-    if (native.requestTemperature) requests.push({ type: 'temperature', request: mode => native.requestTemperature!(mode, start) });
+    requests.push({ type: 'spo2', request: native.requestSpo2 ? mode => native.requestSpo2!(mode, start) : undefined });
+    requests.push({ type: 'temperature', request: native.requestTemperature ? mode => native.requestTemperature!(mode, start) : undefined });
+    completedReadRef.current = null;
     // Rebuild this download from fresh responses. Cached records must not make a
     // missing response look complete or retain a previous revision of today's total.
     historyByTypeRef.current = Object.fromEntries(Object.entries(historyByTypeRef.current).filter(([, bucket]) => bucket.source === 'live'));
@@ -1627,16 +1640,39 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     historyReadStatusRef.current = { ...idleHistoryReadStatus, phase: 'reading', day: bandDay };
     setHistoryReadStatus(historyReadStatusRef.current);
     const deviceId = connectedDeviceRef.current;
+    const generation = connectionGenerationRef.current;
+    const seniorId = syncContextRef.current.seniorId;
+    const assertReadConnection = () => {
+      if (connectedDeviceRef.current !== deviceId || connectionGenerationRef.current !== generation ||
+        syncContextRef.current.seniorId !== seniorId) {
+        throw new Error('The hand band connection or senior changed. Retry the read.');
+      }
+    };
     const promise = (async () => {
       await devicePrimingRef.current;
-      if (connectedDeviceRef.current !== deviceId) throw new Error('The hand band connection changed. Retry the read.');
+      assertReadConnection();
       await historyReaderRef.current.readAll(bandDay, requests, status => {
         historyReadStatusRef.current = status;
         setHistoryReadStatus(status);
       });
+      assertReadConnection();
+      completedReadRef.current = {
+        day: bandDay, deviceId, generation, seniorId,
+        rows: aggregateVitals(historyByTypeRef.current, bandDay),
+        live: latestLiveDataRef.current ? {
+          ...latestLiveDataRef.current,
+          metricTimestamps: { ...latestLiveDataRef.current.metricTimestamps },
+        } : null,
+      };
     })();
     historyReadInFlightRef.current = { day: bandDay, promise };
     try { await promise; }
+    catch (error) {
+      completedReadRef.current = null;
+      historyReadStatusRef.current = { ...historyReadStatusRef.current, phase: 'partial', currentType: null };
+      setHistoryReadStatus(historyReadStatusRef.current);
+      throw error;
+    }
     finally {
       historyReadInFlightRef.current = null;
       setHistoryByType(snapshotHistory(historyByTypeRef.current));
@@ -1649,7 +1685,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
 
   const buildTodayVitals = useCallback(async (bandDay: string): Promise<V8DailyVitalSummary[]> => {
     await readVitalsHistory(bandDay);
-    return aggregateVitals(historyByTypeRef.current, bandDay);
+    const read = completedReadRef.current;
+    if (!read || read.day !== bandDay) throw new Error('History is incomplete. Retry the read before uploading vitals.');
+    return read.rows.map(row => ({ ...row }));
   }, [readVitalsHistory]);
 
   // The app only ever syncs the day the band is filling in now. There is no
@@ -1666,6 +1704,21 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       const seniorId = user.user_id.trim();
       if (!seniorId) {
         throw new Error('Senior ID is required before syncing vitals.');
+      }
+      const read = completedReadRef.current;
+      const assertUploadRead = () => {
+        if (!read || completedReadRef.current !== read ||
+          historyReadStatusRef.current.phase !== 'complete' ||
+          read.day !== bandDay || read.deviceId !== connectedDeviceRef.current ||
+          read.generation !== connectionGenerationRef.current ||
+          read.seniorId !== seniorId || syncContextRef.current.seniorId !== seniorId ||
+          syncContextRef.current.role !== 'SENIOR') {
+          throw new Error('History is incomplete or belongs to another day, connection or senior. Retry the read before uploading vitals.');
+        }
+      };
+      assertUploadRead();
+      if (JSON.stringify(days) !== JSON.stringify(read!.rows)) {
+        throw new Error('Readings do not match the completed history read. Build vitals again before uploading.');
       }
       const connectedMac = deviceInfo.mac ?? (await ensureDeviceMac().catch(() => null));
       if (!connectedMac) {
@@ -1706,7 +1759,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         );
       }
 
-      const allVitalSummaries: V8WebVitalSummary[] = days.map(day => ({
+      const allVitalSummaries: V8WebVitalSummary[] = read!.rows.map(day => ({
         recordDate: day.date,
         steps: day.steps,
         distanceKm: day.distanceKm,
@@ -1744,11 +1797,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         stressLatest: day.stressLatest ?? null,
       }));
 
-      const status = historyReadStatusRef.current;
-      if (status.day === bandDay && status.phase !== 'complete') {
-        throw new Error('History is incomplete. Retry the read before uploading vitals.');
-      }
-      const row = selectTodayVitalSummary(allVitalSummaries, bandDay, latestLiveDataRef.current);
+      const row = selectTodayVitalSummary(allVitalSummaries, bandDay, read!.live);
       if (!Object.entries(row).some(([key, value]) => key !== 'recordDate' && value != null)) {
         throw new Error('No readings recorded for this day. Nothing was uploaded.');
       }
@@ -1777,6 +1826,12 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         source: 'dated readings; missing metrics remain null',
       });
 
+      // Assignment lookup can yield long enough for a disconnect, new download,
+      // or account change. Recheck immediately before the POST.
+      assertUploadRead();
+      if (!syncContextRef.current.macs.some(mac => normalizeMacAddress(mac) === connectedMac)) {
+        throw new Error('This Hand Band is no longer assigned to the selected senior. Sync is blocked.');
+      }
       await syncV8VitalsByDevice(webPayload);
       if (user?.role === 'SENIOR') {
         const syncedAt = Date.now();
@@ -1812,6 +1867,10 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
 
 
   const clearSavedData = useCallback(async () => {
+    connectionGenerationRef.current += 1;
+    completedReadRef.current = null;
+    historyReadStatusRef.current = idleHistoryReadStatus;
+    setHistoryReadStatus(idleHistoryReadStatus);
     historyReaderRef.current.cancel();
     historyByTypeRef.current = {};
     historyIndexRef.current = {};

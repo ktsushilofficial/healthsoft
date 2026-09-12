@@ -1,3 +1,4 @@
+import { parseV8Payload } from '../src/v8/parser';
 import { V8HistoryReader } from '../src/v8/historyReader';
 import type { V8HistoryReadStatus } from '../src/v8/historyReader';
 import type { V8HistoryBucket } from '../src/v8/models';
@@ -141,4 +142,174 @@ describe('response-driven history reads', () => {
       message: expect.stringContaining('incomplete'),
     });
   });
+});
+
+describe('history outcome diagnostics', () => {
+  it('retains a parse failure across packets even when the final marker is empty', async () => {
+    const reader = new V8HistoryReader();
+    let status!: V8HistoryReadStatus;
+    const result = reader
+      .readAll(
+        '2026-09-11',
+        [{ type: 'dynamicHR', request: async () => true }],
+        s => {
+          status = s;
+        },
+      )
+      .catch(error => error);
+    await flush();
+    reader.accept({
+      ...packet('dynamicHR'),
+      diagnostics: {
+        receivedRecords: 2,
+        extractedSamples: 3,
+        rejectedRecords: 1,
+        invalidTimestampRecords: 0,
+      },
+    });
+    reader.accept(packet('dynamicHR', true));
+    expect(await result).toBeInstanceOf(Error);
+    expect(status.categories.dynamicHR).toMatchObject({
+      outcome: 'failed',
+      receivedRecords: 2,
+      extractedSamples: 3,
+      rejectedRecords: 1,
+      error: expect.stringContaining('Could not parse'),
+    });
+  });
+
+  it('separates empty history, missing native methods and timeouts', async () => {
+    jest.useFakeTimers();
+    try {
+      const reader = new V8HistoryReader(100);
+      let status!: V8HistoryReadStatus;
+      const result = reader
+        .readAll(
+          '2026-09-11',
+          [
+            {
+              type: 'staticHR',
+              request: async () => {
+                reader.accept(packet('staticHR', true));
+              },
+            },
+            { type: 'temperature' },
+            { type: 'spo2', request: async () => true },
+          ],
+          s => {
+            status = s;
+          },
+        )
+        .catch(error => error);
+      await jest.advanceTimersByTimeAsync(101);
+      expect(await result).toBeInstanceOf(Error);
+      expect(status.categories.staticHR.outcome).toBe('empty');
+      expect(status.categories.temperature.outcome).toBe('unavailable');
+      expect(status.categories.spo2).toMatchObject({
+        outcome: 'failed',
+        error: expect.stringContaining('no history response received'),
+      });
+      expect(status.failedTypes).toEqual(['spo2']);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+it('paginates real iOS HR packets by callback count, not expanded sample count', async () => {
+  const reader = new V8HistoryReader();
+  const request = jest.fn(async () => true);
+  let status!: V8HistoryReadStatus;
+  const read = reader.readAll(
+    '2026-09-11',
+    [{ type: 'dynamicHR', request }],
+    s => {
+      status = s;
+    },
+  );
+  await flush();
+  const bucket = parseV8Payload(
+    {
+      dataType: '28',
+      dataEnd: false,
+      dicData: {
+        arrayContinuousHR: [
+          { date: '2026.09.10 23:59:55', arrayHR: [70, 71, 72] },
+        ],
+      },
+    },
+    'ios',
+  ).history!;
+  for (let i = 0; i < 49; i++) reader.accept(bucket);
+  await flush();
+  expect(request.mock.calls).toEqual([[0]]);
+  reader.accept(bucket);
+  await flush();
+  expect(request.mock.calls).toEqual([[0], [2]]);
+  reader.accept({ ...bucket, completed: true });
+  await read;
+  expect(status.categories.dynamicHR).toMatchObject({
+    outcome: 'downloaded',
+    receivedRecords: 51,
+    extractedSamples: 153,
+    rejectedRecords: 0,
+  });
+});
+
+it('allows a full day of continuous HR beyond twelve pages', async () => {
+  const reader = new V8HistoryReader();
+  let status!: V8HistoryReadStatus;
+  const request = jest.fn(async () => {
+    const currentPage = request.mock.calls.length;
+    for (let i = 0; i < 50; i++) {
+      reader.accept(packet('dynamicHR', currentPage === 24 && i === 49));
+    }
+  });
+  await reader.readAll('2026-09-12', [{ type: 'dynamicHR', request }], s => {
+    status = s;
+  });
+  expect(request).toHaveBeenCalledTimes(24);
+  expect(status.phase).toBe('complete');
+  expect(status.categories.dynamicHR).toMatchObject({
+    responsePackets: 1200,
+    pagesRequested: 24,
+  });
+});
+
+it('counts a batched iOS notification once without confusing records or HR samples with callbacks', async () => {
+  const reader = new V8HistoryReader();
+  const request = jest.fn(async () => true);
+  const read = reader.readAll(
+    '2026-09-12',
+    [{ type: 'dynamicHR', request }],
+    () => {},
+  );
+  await flush();
+  // Captured iOS notifications contain seven 24-byte records, each with 15 HR samples.
+  const bucket = parseV8Payload(
+    {
+      dataType: '28',
+      dataEnd: false,
+      dicData: {
+        arrayContinuousHR: Array.from({ length: 7 }, (_, index) => ({
+          date: `2026.09.12 09:${String(index).padStart(2, '0')}:00`,
+          arrayHR: Array(15).fill(72),
+        })),
+      },
+    },
+    'ios',
+  ).history!;
+  expect(bucket.diagnostics).toMatchObject({
+    receivedRecords: 7,
+    extractedSamples: 105,
+    rejectedRecords: 0,
+  });
+  for (let i = 0; i < 49; i++) reader.accept(bucket);
+  await flush();
+  expect(request.mock.calls).toEqual([[0]]);
+  reader.accept(bucket);
+  await flush();
+  expect(request.mock.calls).toEqual([[0], [2]]);
+  reader.accept(packet('dynamicHR', true));
+  await read;
 });

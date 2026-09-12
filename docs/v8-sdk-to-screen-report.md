@@ -2,6 +2,8 @@
 
 Detailed implementation report | HealthsoftApp | 11 September 2026
 
+**Follow-up implementation:** The iOS inner `arrayHR` parser, parsing-failure detection, category outcomes, and upload/read binding have since been corrected. See [current validation notes](v8-vitals-validation.md) for the changes and remaining hardware/backend acceptance work. The report below remains a point-in-time audit of commit `5777bc5`; its descriptions of those client bugs are historical.
+
 Reviewed branch: `codex/fix-v8-vitals`. Reviewed application commit: `5777bc5` (`Fix V8 vitals dates, aggregation, parsing and history sync`). This report describes the current code, including remaining gaps. Report preparation does not change the application implementation.
 
 ## 1. What the app currently does

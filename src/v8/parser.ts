@@ -139,19 +139,19 @@ function mapEntry(record: Record<string, unknown>): V8VitalSample {
   };
 }
 
-function parseNumberSeries(value: unknown): number[] {
+function parseNumberSeries(value: unknown): (number | null)[] {
   if (Array.isArray(value)) {
     return value.flatMap(item => parseNumberSeries(item));
   }
   if (typeof value === 'number') {
-    return Number.isFinite(value) ? [value] : [];
+    return [toNum(value)];
   }
-  if (typeof value !== 'string') return [];
+  if (typeof value !== 'string') return [null];
+  if (!value.trim()) return [];
   return value
     .trim()
     .split(/[\s,;|]+/)
-    .map(item => Number(item))
-    .filter(Number.isFinite);
+    .map(toNum);
 }
 
 function offsetSeriesTimestamp(
@@ -170,11 +170,16 @@ function offsetSeriesTimestamp(
   )}`;
 }
 
-function mapRecordEntries(record: Record<string, unknown>): V8VitalSample[] {
-  const dynamicHeartRates = parseNumberSeries(
+function heartRateSeries(record: Record<string, unknown>) {
+  const value =
+    readAnyKey(record, 'arrayHR') ??
     readAnyKey(record, 'arrayDynamicHR') ??
-      readAnyKey(record, 'arrayContinuousHR'),
-  );
+    readAnyKey(record, 'arrayContinuousHR');
+  return value === undefined ? [] : parseNumberSeries(value);
+}
+
+function mapRecordEntries(record: Record<string, unknown>): V8VitalSample[] {
+  const dynamicHeartRates = heartRateSeries(record);
   if (dynamicHeartRates.length === 0) return [mapEntry(record)];
 
   const base = mapEntry(record);
@@ -186,8 +191,27 @@ function mapRecordEntries(record: Record<string, unknown>): V8VitalSample[] {
   }));
 }
 
-function parseDictDataUnknown(dicData: unknown): Record<string, unknown>[] {
+const historyWrappers = new Set(
+  [
+    'arrayTotalActivityData',
+    'arrayDetailActivityData',
+    'arrayDetailSleepData',
+    'arrayContinuousHR',
+    'arraySingleHR',
+    'arrayDynamicHR',
+    'arrayHrvData',
+    'arrayAutomaticHRVData',
+    'arrayAutomaticSpo2Data',
+    'arrayManualSpo2Data',
+    'arrayBloodOxygenData',
+    'arrayemperatureData',
+    'arrayTemperatureData',
+  ].map(normalizeKey),
+);
+
+function parseDictDataUnknown(dicData: unknown) {
   const out: Record<string, unknown>[] = [];
+  let malformedNodes = 0;
 
   const parseRecordString = (value: string): Record<string, unknown>[] => {
     const entries = value.match(/\{[^{}]*\}/g) ?? [];
@@ -203,11 +227,20 @@ function parseDictDataUnknown(dicData: unknown): Record<string, unknown>[] {
     });
   };
 
-  const collect = (node: unknown): void => {
-    if (node == null) return;
+  const collect = (node: unknown, root = false): void => {
+    if (node == null) {
+      if (!root) malformedNodes += 1;
+      return;
+    }
 
     if (typeof node === 'string') {
-      parseRecordString(node).forEach(item => out.push(item));
+      try {
+        collect(JSON.parse(node), root);
+      } catch {
+        const records = parseRecordString(node);
+        if (!records.length) malformedNodes += 1;
+        records.forEach(item => out.push(item));
+      }
       return;
     }
 
@@ -218,19 +251,39 @@ function parseDictDataUnknown(dicData: unknown): Record<string, unknown>[] {
 
     if (typeof node === 'object') {
       const obj = node as Record<string, unknown>;
-      const values = Object.values(obj);
-      const hasPrimitiveValue = values.some(
-        v => v == null || (typeof v !== 'object' && !Array.isArray(v)),
+      if (root && Object.keys(obj).length === 0) return;
+      const wrappers = Object.entries(obj).filter(
+        ([key, value]) =>
+          historyWrappers.has(normalizeKey(key)) &&
+          // An array on a dated record is a series, not a wrapper.
+          mapEntry(obj).timestamp == null &&
+          typeof value === 'object',
       );
-      if (hasPrimitiveValue) {
+      if (wrappers.length) {
+        for (const [, value] of wrappers) {
+          if (Array.isArray(value)) collect(value);
+          else malformedNodes += 1;
+        }
+        // Count metadata is not a measurement. Unknown sibling fields must not
+        // hide another nonempty response structure.
+        if (
+          Object.keys(obj).some(
+            key =>
+              !historyWrappers.has(normalizeKey(key)) &&
+              normalizeKey(key) !== 'count',
+          )
+        )
+          malformedNodes += 1;
+      } else {
         out.push(obj);
       }
-      values.forEach(v => collect(v));
+      return;
     }
+    malformedNodes += 1;
   };
 
-  collect(dicData);
-  return out;
+  collect(dicData, true);
+  return { records: out, malformedNodes };
 }
 
 function detectDataTypeFromPayload(
@@ -332,7 +385,9 @@ export function parseV8Payload(
     payload.dataEnd === true ||
     String(payload.dataEnd).toLowerCase() === 'true';
 
-  const dicData = parseDictDataUnknown(payload.dicData);
+  const { records: dicData, malformedNodes } = parseDictDataUnknown(
+    payload.dicData,
+  );
   let entries = dicData.flatMap(mapRecordEntries);
 
   const infoSources: Record<string, unknown>[] = [payload, ...dicData];
@@ -356,7 +411,7 @@ export function parseV8Payload(
   };
 
   // iOS sometimes puts live fields directly in payload instead of dicData.
-  if (entries.length === 0) {
+  if (entries.length === 0 && sampleSource === 'live') {
     const directEntry = mapEntry(payload);
     const hasAnyVital =
       directEntry.heartRate != null ||
@@ -445,6 +500,54 @@ export function parseV8Payload(
     )
     .map(entry => ({ ...entry, source: sampleSource }));
 
+  const hasVital = (entry: V8VitalSample) =>
+    Object.entries(entry).some(
+      ([key, value]) =>
+        key !== 'receivedAt' &&
+        key !== 'timestamp' &&
+        typeof value === 'number' &&
+        Number.isFinite(value),
+    );
+  const categoryMetrics: Record<string, (keyof V8VitalSample)[]> = {
+    totalActivity: [
+      'steps',
+      'distanceKm',
+      'caloriesKcal',
+      'exerciseMinutes',
+      'activeMinutes',
+      'goalPercent',
+    ],
+    detailActivity: ['steps', 'distanceKm', 'caloriesKcal'],
+    dynamicHR: ['heartRate'],
+    staticHR: ['heartRate'],
+    hrv: ['heartRate', 'hrv', 'stress', 'systolicBp', 'diastolicBp'],
+    spo2: ['spo2'],
+    temperature: ['temperatureC'],
+  };
+  const hasCategoryVital = (entry: V8VitalSample) =>
+    categoryMetrics[dataType ?? '']?.some(
+      key => typeof entry[key] === 'number' && Number.isFinite(entry[key]),
+    ) ?? hasVital(entry);
+  let rejectedRecords = malformedNodes;
+  let invalidTimestampRecords = 0;
+  for (const record of dicData) {
+    const invalidTimestamp =
+      sampleSource === 'history' &&
+      parseMeasurementTimestamp(mapEntry(record).timestamp) == null;
+    if (invalidTimestamp) invalidTimestampRecords += 1;
+    if (
+      invalidTimestamp ||
+      !mapRecordEntries(record).some(hasCategoryVital) ||
+      heartRateSeries(record).some(value => value == null)
+    )
+      rejectedRecords += 1;
+  }
+  if (sampleSource === 'history') {
+    entries = entries.filter(
+      entry => parseMeasurementTimestamp(entry.timestamp) != null,
+    );
+  }
+
   // Device time comes from the time response, not a history record's dateTime.
   if (rawType !== '0') infoPatch.deviceTime = null;
   if (!dataType) {
@@ -456,6 +559,12 @@ export function parseV8Payload(
       dataType,
       source: sampleSource,
       entries,
+      diagnostics: {
+        receivedRecords: dicData.length + malformedNodes,
+        extractedSamples: entries.length,
+        rejectedRecords,
+        invalidTimestampRecords,
+      },
       completed: dataEnd,
       updatedAt: Date.now(),
     },

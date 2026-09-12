@@ -467,7 +467,8 @@ RCT_REMAP_METHOD(requestTotalActivity,
 #if TARGET_OS_SIMULATOR
   [self rejectSimulatorUnsupported:reject method:@"requestTotalActivity"];
 #else
-  NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
+  // Continuation uses the SDK cursor; the vendor demo passes no start date.
+  NSDate *date = [mode intValue] == 2 ? nil : [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetTotalActivityDataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
 #endif
@@ -481,7 +482,8 @@ RCT_REMAP_METHOD(requestDetailActivity,
 #if TARGET_OS_SIMULATOR
   [self rejectSimulatorUnsupported:reject method:@"requestDetailActivity"];
 #else
-  NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
+  // Continuation uses the SDK cursor; the vendor demo passes no start date.
+  NSDate *date = [mode intValue] == 2 ? nil : [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetDetailActivityDataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
 #endif
@@ -495,7 +497,8 @@ RCT_REMAP_METHOD(requestSleep,
 #if TARGET_OS_SIMULATOR
   [self rejectSimulatorUnsupported:reject method:@"requestSleep"];
 #else
-  NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
+  // Continuation uses the SDK cursor; the vendor demo passes no start date.
+  NSDate *date = [mode intValue] == 2 ? nil : [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetDetailSleepDataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
 #endif
@@ -509,7 +512,8 @@ RCT_REMAP_METHOD(requestDynamicHR,
 #if TARGET_OS_SIMULATOR
   [self rejectSimulatorUnsupported:reject method:@"requestDynamicHR"];
 #else
-  NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
+  // Continuation uses the SDK cursor; the vendor demo passes no start date.
+  NSDate *date = [mode intValue] == 2 ? nil : [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetContinuousHRDataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
 #endif
@@ -523,7 +527,8 @@ RCT_REMAP_METHOD(requestStaticHR,
 #if TARGET_OS_SIMULATOR
   [self rejectSimulatorUnsupported:reject method:@"requestStaticHR"];
 #else
-  NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
+  // Continuation uses the SDK cursor; the vendor demo passes no start date.
+  NSDate *date = [mode intValue] == 2 ? nil : [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetSingleHRDataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
 #endif
@@ -537,7 +542,8 @@ RCT_REMAP_METHOD(requestHRV,
 #if TARGET_OS_SIMULATOR
   [self rejectSimulatorUnsupported:reject method:@"requestHRV"];
 #else
-  NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
+  // Continuation uses the SDK cursor; the vendor demo passes no start date.
+  NSDate *date = [mode intValue] == 2 ? nil : [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetHRVDataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
 #endif
@@ -551,7 +557,8 @@ RCT_REMAP_METHOD(requestSpo2,
 #if TARGET_OS_SIMULATOR
   [self rejectSimulatorUnsupported:reject method:@"requestSpo2"];
 #else
-  NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
+  // Continuation uses the SDK cursor; the vendor demo passes no start date.
+  NSDate *date = [mode intValue] == 2 ? nil : [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetAutomaticSpo2DataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
 #endif
@@ -565,7 +572,8 @@ RCT_REMAP_METHOD(requestTemperature,
 #if TARGET_OS_SIMULATOR
   [self rejectSimulatorUnsupported:reject method:@"requestTemperature"];
 #else
-  NSDate *date = [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
+  // Continuation uses the SDK cursor; the vendor demo passes no start date.
+  NSDate *date = [mode intValue] == 2 ? nil : [NSDate dateWithTimeIntervalSince1970:([startDateEpochMs doubleValue] / 1000.0)];
   NSData *cmd = [[BleSDK_V8 sharedManager] GetTemperatureDataWithMode:[mode intValue] withStartDate:date];
   [self enqueueCommand:cmd resolver:resolve rejecter:reject];
 #endif
