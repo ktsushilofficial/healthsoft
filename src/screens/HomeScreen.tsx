@@ -387,7 +387,6 @@ type VitalsSummaryRow = {
   hrvLatest: number | null;
   systolicBpLatest: number | null;
   diastolicBpLatest: number | null;
-  tempLatest: number | null;
   stressLatest: number | null;
   createdAt: number | null;
   updatedAt: number | null;
@@ -396,7 +395,6 @@ type VitalsSummaryRow = {
   hrMin: number | null;
   hrMax: number | null;
   spo2Avg: number | null;
-  tempAvg: number | null;
   systolicBpAvg: number | null;
   diastolicBpAvg: number | null;
   systolicBpMin: number | null;
@@ -466,7 +464,6 @@ function normalizeSummaryRows(payload: unknown): VitalsSummaryRow[] {
         hrvLatest: asVital(row.hrvLatest),
         systolicBpLatest: asVital(row.systolicBpLatest),
         diastolicBpLatest: asVital(row.diastolicBpLatest),
-        tempLatest: asVital(row.tempLatest),
         stressLatest: stressLatest != null && stressLatest >= 0 ? stressLatest : null,
         createdAt: asNumber(row.createdAt),
         updatedAt: asNumber(row.updatedAt),
@@ -475,7 +472,6 @@ function normalizeSummaryRows(payload: unknown): VitalsSummaryRow[] {
         hrMin: asVital(row.hrMin) ?? asVital(row.heartRateMin),
         hrMax: asVital(row.hrMax) ?? asVital(row.heartRateMax),
         spo2Avg: asVital(row.spo2Avg),
-        tempAvg: asVital(row.tempAvg) ?? asVital(row.temperatureAvgC),
         systolicBpAvg: asVital(row.systolicBpAvg),
         diastolicBpAvg: asVital(row.diastolicBpAvg),
         systolicBpMin: asVital(row.systolicBpMin),
@@ -499,7 +495,6 @@ const LATEST_VITAL_FIELDS = [
   { key: 'hrvLatest', label: 'Heart rate variability', unit: 'ms', decimals: 0 },
   { key: 'systolicBpLatest', label: 'Systolic blood pressure', unit: 'mmHg', decimals: 0 },
   { key: 'diastolicBpLatest', label: 'Diastolic blood pressure', unit: 'mmHg', decimals: 0 },
-  { key: 'tempLatest', label: 'Temperature', unit: '°C', decimals: 1 },
   { key: 'stressLatest', label: 'Stress', unit: '', decimals: 0 },
 ] as const;
 
@@ -2004,20 +1999,6 @@ const HomeScreen = () => {
               <View style={styles.autoSyncLiveBadge}>
                 <View style={styles.autoSyncLiveDot} />
                 <Text style={styles.autoSyncLiveText}>AUTO</Text>
-                <TouchableOpacity
-                  accessibilityRole="button"
-                  accessibilityLabel="Show the last sync request and response"
-                  activeOpacity={0.7}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  onPress={() => setApiInspectorVisible(true)}
-                  style={styles.apiInfoButton}
-                >
-                  <Icon
-                    name="information-circle-outline"
-                    size={15}
-                    color={lastExchange ? '#0B8A5B' : '#9AA6A0'}
-                  />
-                </TouchableOpacity>
               </View>
               <TouchableOpacity
                 accessibilityRole="button"
@@ -2585,9 +2566,6 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     borderWidth: 1,
     borderColor: '#DDF3E8',
-  },
-  apiInfoButton: {
-    marginLeft: 5,
   },
   apiModalBackdrop: {
     flex: 1,

@@ -106,12 +106,16 @@ export type V8ParseDiagnostics = {
 
 export type V8HistoryBucket = {
   diagnostics?: V8ParseDiagnostics;
+  // Vendor record order, before HR series are expanded into ascending samples.
+  recordRanges?: Array<{ startMs: number; endMs: number }>;
   source?: 'history' | 'live';
   dataType: string | null;
   entries: V8VitalSample[];
   completed: boolean;
   updatedAt: number;
 };
+
+export type V8HistoryWindow = { startMs: number; endMs: number };
 
 export type V8DailyVitalSummary = {
   date: string;

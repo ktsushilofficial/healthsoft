@@ -1,5 +1,5 @@
 import { parseMeasurementTimestamp } from '../utils/sampleDay';
-import type { V8DeviceInfo, V8HistoryBucket, V8VitalSample } from './models';
+import type { V8DeviceInfo, V8HistoryBucket, V8HistoryWindow, V8VitalSample } from './models';
 
 function toNum(v: unknown): number | null {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
@@ -368,6 +368,7 @@ function detectDataTypeFromPayload(
 export function parseV8Payload(
   payload: Record<string, unknown>,
   platform?: 'ios' | 'android',
+  window?: V8HistoryWindow,
 ): {
   history: V8HistoryBucket | null;
   infoPatch: Partial<V8DeviceInfo>;
@@ -388,7 +389,17 @@ export function parseV8Payload(
   const { records: dicData, malformedNodes } = parseDictDataUnknown(
     payload.dicData,
   );
-  let entries = dicData.flatMap(mapRecordEntries);
+  const records = dicData.map(record => {
+    const startMs = parseMeasurementTimestamp(mapEntry(record).timestamp);
+    const series = heartRateSeries(record);
+    const range = startMs == null ? null : {
+      startMs, endMs: startMs + Math.max(0, series.length - 1) * 5000,
+    };
+    const outsideWindow = sampleSource === 'history' && window && range &&
+      (range.endMs < window.startMs || range.startMs > window.endMs);
+    return { range, series, outsideWindow, entries: outsideWindow ? [] : mapRecordEntries(record) };
+  });
+  let entries = records.flatMap(record => record.entries);
 
   const infoSources: Record<string, unknown>[] = [payload, ...dicData];
   const pickText = (...keys: string[]): string | null => {
@@ -482,6 +493,7 @@ export function parseV8Payload(
       'Battery',
     ),
     deviceTime: pickText(
+      'strDeviceTime',
       'time',
       'deviceTime',
       'dateTime',
@@ -533,21 +545,23 @@ export function parseV8Payload(
     ) ?? hasVital(entry);
   let rejectedRecords = malformedNodes;
   let invalidTimestampRecords = 0;
-  for (const record of dicData) {
-    const invalidTimestamp =
-      sampleSource === 'history' &&
-      parseMeasurementTimestamp(mapEntry(record).timestamp) == null;
+  for (const record of records) {
+    if (record.outsideWindow) continue;
+    const invalidTimestamp = sampleSource === 'history' && record.range == null;
     if (invalidTimestamp) invalidTimestampRecords += 1;
     if (
       invalidTimestamp ||
-      !mapRecordEntries(record).some(hasCategoryVital) ||
-      heartRateSeries(record).some(value => value == null)
+      !record.entries.some(hasCategoryVital) ||
+      record.series.some(value => value == null)
     )
       rejectedRecords += 1;
   }
   if (sampleSource === 'history') {
     entries = entries.filter(
-      entry => parseMeasurementTimestamp(entry.timestamp) != null,
+      entry => {
+        const time = parseMeasurementTimestamp(entry.timestamp);
+        return time != null && (!window || (time >= window.startMs && time <= window.endMs));
+      },
     );
   }
 
@@ -561,6 +575,7 @@ export function parseV8Payload(
     history: {
       dataType,
       source: sampleSource,
+      recordRanges: records.flatMap(record => record.range ? [record.range] : []),
       entries,
       diagnostics: {
         receivedRecords: dicData.length + malformedNodes,

@@ -32,6 +32,9 @@ type NativeV8Module = {
   requestHRV(mode: number, startDate: string | number): Promise<boolean>;
   requestSpo2?(mode: number, startDate: string | number): Promise<boolean>;
   requestTemperature?(mode: number, startDate: string | number): Promise<boolean>;
+  // Optional: present only in builds that bridge on-demand HR measurement.
+  startHeartRateMeasurement?(seconds: number): Promise<boolean>;
+  stopHeartRateMeasurement?(seconds: number): Promise<boolean>;
   setEcgRealtimeEnabled(enabled: boolean): Promise<boolean>;
   startEcgMeasurement(): Promise<boolean>;
   stopEcgMeasurement(): Promise<boolean>;

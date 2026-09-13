@@ -1,6 +1,30 @@
 import { parseV8Payload } from '../src/v8/parser';
+import { parseMeasurementTimestamp } from '../src/utils/sampleDay';
 
 describe('parseV8Payload', () => {
+  it.each(['ios', 'android'] as const)('keeps only samples between midnight and read time on %s, including a record spanning midnight', platform => {
+    const startMs = parseMeasurementTimestamp('2026-09-13 00:00:00')!;
+    const endMs = parseMeasurementTimestamp('2026-09-13 12:00:00')!;
+    const history = parseV8Payload({ dataType: platform === 'ios' ? '28' : '27', dataEnd: false,
+      dicData: [
+        { date: '2026.09.13 12:00:05', arrayHR: [200, 200] },
+        { date: '2026.09.13 11:59:55', arrayHR: [70, 71, 72] },
+        { date: '2026.09.12 23:59:55', arrayHR: [60, 61, 62] },
+        { date: '2026.08.04 19:36:03', arrayHR: Array(15).fill(180) },
+      ],
+    }, platform, { startMs, endMs }).history!;
+    expect(history.entries.map(entry => [parseMeasurementTimestamp(entry.timestamp), entry.heartRate])).toEqual([
+      [endMs - 5000, 70], [endMs, 71], [startMs, 61], [startMs + 5000, 62],
+    ]);
+    expect(history.diagnostics).toMatchObject({ receivedRecords: 4, extractedSamples: 4, rejectedRecords: 0 });
+    expect(history.recordRanges).toHaveLength(4);
+  });
+  it.each(['android', 'ios'] as const)('reads the %s SDK clock without replacing it with history timestamps', platform => {
+    expect(parseV8Payload({ dataType: '0', dicData: { strDeviceTime: '2026-09-12 22:37:00' } }, platform).infoPatch.deviceTime)
+      .toBe('2026-09-12 22:37:00');
+    expect(parseV8Payload({ dataType: '28', dicData: { dateTime: '2026-09-11 12:00:00' } }, platform).infoPatch.deviceTime)
+      .toBeNull();
+  });
   it('reads the iOS SDK strMac field used by the MAC response', () => {
     const { infoPatch } = parseV8Payload(
       {

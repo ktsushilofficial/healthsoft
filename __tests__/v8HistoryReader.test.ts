@@ -1,7 +1,11 @@
 import { parseV8Payload } from '../src/v8/parser';
-import { V8HistoryReader } from '../src/v8/historyReader';
+import {
+  V8HistoryReader,
+  describeHistoryTransfer,
+} from '../src/v8/historyReader';
 import type { V8HistoryReadStatus } from '../src/v8/historyReader';
-import type { V8HistoryBucket } from '../src/v8/models';
+import type { V8HistoryBucket, V8VitalSample } from '../src/v8/models';
+import { parseMeasurementTimestamp } from '../src/utils/sampleDay';
 const packet = (
   type = 'staticHR',
   completed = false,
@@ -16,6 +20,70 @@ const packet = (
 const flush = async () => {
   for (let i = 0; i < 8; i++) await Promise.resolve();
 };
+
+describe('today-only pagination', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+  const window = {
+    startMs: parseMeasurementTimestamp('2026-09-13 00:00:00')!,
+    endMs: parseMeasurementTimestamp('2026-09-13 12:00:00')!,
+  };
+  const hr = (date: string, values = [72], completed = false) => parseV8Payload({
+    dataType: '28', dataEnd: completed, dicData: [{ date, arrayHR: values }],
+  }, 'ios', window).history!;
+
+  it('drains the current page and never requests an older page after crossing midnight', async () => {
+    const reader = new V8HistoryReader();
+    const request = jest.fn(async () => true);
+    const next = jest.fn(async () => reader.accept(packet('spo2', true)));
+    const result = reader.readAll('2026-09-13', [
+      { type: 'dynamicHR', request }, { type: 'spo2', request: next },
+    ], () => {}, window);
+    await flush();
+    reader.accept(hr('2026.09.13 00:00:00'));
+    for (let i = 0; i < 48; i++) reader.accept(hr('2026.08.04 19:36:03', Array(15).fill(180)));
+    await flush();
+    expect(next).not.toHaveBeenCalled();
+    reader.accept(hr('2026.08.04 19:36:03', Array(15).fill(180)));
+    expect(await result).toMatchObject({ phase: 'complete', categories: { dynamicHR: {
+      stoppedAtDayStart: true, pagesRequested: 1, extractedSamples: 1,
+    } } });
+    expect(request.mock.calls).toEqual([[0]]);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('finishes at the boundary when a short old page goes quiet without dataEnd', async () => {
+    const reader = new V8HistoryReader();
+    const result = reader.readAll('2026-09-13', [{ type: 'dynamicHR', request: async () => true }], () => {}, window);
+    await flush();
+    reader.accept(hr('2026.08.04 19:36:03'));
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await result).toMatchObject({ phase: 'complete', categories: { dynamicHR: { outcome: 'empty', stoppedAtDayStart: true } } });
+  });
+
+  it('does not stop on a record starting yesterday whose samples extend into today', async () => {
+    const reader = new V8HistoryReader();
+    const request = jest.fn(async () => true);
+    const result = reader.readAll('2026-09-13', [{ type: 'dynamicHR', request }], () => {}, window);
+    await flush();
+    for (let i = 0; i < 50; i++) reader.accept(hr('2026.09.12 23:59:55', [70, 71, 72]));
+    await flush();
+    expect(request.mock.calls).toEqual([[0], [2]]);
+    reader.accept(packet('dynamicHR', true));
+    await result;
+  });
+
+  it('reports partial instead of claiming complete coverage if record order reverses at the boundary', async () => {
+    const reader = new V8HistoryReader();
+    const result = reader.readAll('2026-09-13', [{ type: 'dynamicHR', request: async () => true }], () => {}, window);
+    await flush();
+    reader.accept(hr('2026.09.12 23:00:00'));
+    reader.accept(hr('2026.09.13 00:00:00'));
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await result).toMatchObject({ phase: 'partial', failedTypes: ['dynamicHR'] });
+  });
+});
 
 describe('response-driven history reads', () => {
   beforeEach(() => jest.useFakeTimers());
@@ -87,6 +155,50 @@ describe('response-driven history reads', () => {
       failedTypes: ['staticHR'],
     });
     expect(progress.at(-1)).toEqual(status);
+  });
+  it('bounds a continuous stream without dataEnd and reads the remaining categories', async () => {
+    const reader = new V8HistoryReader();
+    const request = jest.fn(async () => true);
+    const next = jest.fn(async () => reader.accept(packet('spo2', true)));
+    let status!: V8HistoryReadStatus;
+    const read = reader.readAll('2026-09-12', [
+      { type: 'dynamicHR', request },
+      { type: 'spo2', request: next },
+    ], s => { status = s; });
+    await flush();
+    // Responses keep the five-second idle timeout alive, even across pages.
+    for (let second = 1; second < 120; second++) {
+      await jest.advanceTimersByTimeAsync(1000);
+      reader.accept(packet('dynamicHR'));
+    }
+    expect(status.currentType).toBe('dynamicHR');
+    expect(request.mock.calls).toEqual([[0], [2], [2]]);
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(await read).toMatchObject({
+      phase: 'partial',
+      completedTypes: ['spo2'],
+      failedTypes: ['dynamicHR'],
+      categories: { dynamicHR: {
+        responsePackets: 119,
+        pagesRequested: 3,
+        error: expect.stringContaining('Time limit (120 seconds)'),
+      } },
+    });
+    expect(next).toHaveBeenCalledTimes(1);
+    reader.accept(packet('dynamicHR', true));
+    expect(status.phase).toBe('partial');
+    expect(jest.getTimerCount()).toBe(0);
+  });
+  it('expires on a resumed callback when wall time has passed the deadline', async () => {
+    const reader = new V8HistoryReader();
+    const read = reader.readAll('2026-09-12', [
+      { type: 'dynamicHR', request: async () => true },
+    ], () => {});
+    await flush();
+    jest.setSystemTime(Date.now() + 120_001);
+    reader.accept(packet('dynamicHR', true));
+    expect(await read).toMatchObject({ phase: 'partial', failedTypes: ['dynamicHR'] });
+    expect(jest.getTimerCount()).toBe(0);
   });
   it('does not send the next category until the current category completes', async () => {
     const reader = new V8HistoryReader();
@@ -383,4 +495,59 @@ it('preserves the first cancellation cause when cleanup also cancels', async () 
     outcome: 'notRead',
     error: null,
   });
+});
+
+it('reports the read total, never a per-category count that restarts at zero', async () => {
+  const reader = new V8HistoryReader();
+  const seen: string[] = [];
+  const sample = (): V8VitalSample => ({
+    timestamp: '2026-09-12 08:00:00',
+    receivedAt: Date.now(),
+    source: 'history',
+    heartRate: 70,
+    hrv: null,
+    stress: null,
+    systolicBp: null,
+    diastolicBp: null,
+    spo2: null,
+    temperatureC: null,
+    steps: null,
+    distanceKm: null,
+    caloriesKcal: null,
+    exerciseMinutes: null,
+    activeMinutes: null,
+    goalPercent: null,
+  });
+  const withSamples = (
+    type: string,
+    count: number,
+    completed = false,
+  ): V8HistoryBucket => ({
+    ...packet(type, completed),
+    entries: Array.from({ length: count }, sample),
+  });
+  const read = reader.readAll(
+    '2026-09-12',
+    [
+      { type: 'totalActivity', request: async () => true },
+      { type: 'spo2', request: async () => true },
+    ],
+    status => seen.push(describeHistoryTransfer(status)),
+  );
+  await flush();
+  reader.accept(withSamples('totalActivity', 3, true));
+  await flush();
+  reader.accept(withSamples('spo2', 2, true));
+  const status = await read;
+
+  // The denominator the modal renders is fixed before the first category runs.
+  expect(status.totalCategories).toBe(2);
+  // No frame of the sync may claim the band sent nothing when it is simply
+  // being waited on, and the total may never fall back between categories.
+  expect(seen).not.toContain('0 responses received, 0 readings so far.');
+  expect(seen[0]).toBe('Waiting for the band to answer…');
+  const totals = seen
+    .map(line => Number(line.match(/(\d+) readings so far/)?.[1] ?? 0));
+  expect(Math.max(...totals)).toBe(5);
+  expect(totals).toEqual([...totals].sort((a, b) => a - b));
 });

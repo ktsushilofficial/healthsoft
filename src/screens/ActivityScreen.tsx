@@ -24,9 +24,6 @@ type VitalsSummaryRow = {
   spo2Min: number | null;
   spo2Max: number | null;
   spo2Avg: number | null;
-  tempMin: number | null;
-  tempMax: number | null;
-  tempAvg: number | null;
   systolicBpMin: number | null;
   systolicBpMax: number | null;
   systolicBpAvg: number | null;
@@ -186,9 +183,6 @@ function normalizeSummaryRows(payload: unknown): VitalsSummaryRow[] {
         spo2Min: asNumber(row.spo2Min),
         spo2Max: asNumber(row.spo2Max),
         spo2Avg: asNumber(row.spo2Avg),
-        tempMin: asNumber(row.tempMin) ?? asNumber(row.temperatureMinC),
-        tempMax: asNumber(row.tempMax) ?? asNumber(row.temperatureMaxC),
-        tempAvg: asNumber(row.tempAvg) ?? asNumber(row.temperatureAvgC),
         systolicBpMin: asNumber(row.systolicBpMin),
         systolicBpMax: asNumber(row.systolicBpMax),
         systolicBpAvg: asNumber(row.systolicBpAvg),
@@ -377,7 +371,6 @@ const ActivityScreen = () => {
     bloodPressure: bloodPressureRange(visibleRows),
     spo2: metricRange(visibleRows, row => row.spo2Avg),
     heartRate: metricRange(visibleRows, row => row.hrAvg),
-    temperature: metricRange(visibleRows, row => row.tempAvg),
   }), [visibleRows]);
 
   const singleDayRow = visibleRows[0] ?? null;
@@ -671,74 +664,6 @@ const ActivityScreen = () => {
             </View>
           </View>
 
-          <View style={styles.metricCard}>
-            <View style={styles.metricIconWrap}>
-              <Icon name="thermometer" size={24} color="#F28C28" />
-            </View>
-            <View style={styles.metricInfo}>
-              <Text style={styles.metricLabel}>{summaryPeriodLabel} Body Temperature</Text>
-              {isMultiDayRange ? (
-                <View style={styles.metricRangeRow}>
-                  <View style={styles.metricRangeItem}>
-                    <Text style={styles.metricRangeLabel}>HIGH DAY</Text>
-                    <View style={styles.inlineRow}>
-                      <Text style={styles.metricRangeValue}>
-                        {vitalSummary.temperature.high != null
-                          ? vitalSummary.temperature.high.toFixed(1)
-                          : 'NA'}
-                      </Text>
-                      <Text style={styles.metricRangeUnit}>°C</Text>
-                    </View>
-                  </View>
-                  <View style={styles.metricRangeDivider} />
-                  <View style={styles.metricRangeItem}>
-                    <Text style={styles.metricRangeLabel}>LOW DAY</Text>
-                    <View style={styles.inlineRow}>
-                      <Text style={styles.metricRangeValue}>
-                        {vitalSummary.temperature.low != null
-                          ? vitalSummary.temperature.low.toFixed(1)
-                          : 'NA'}
-                      </Text>
-                      <Text style={styles.metricRangeUnit}>°C</Text>
-                    </View>
-                  </View>
-                </View>
-              ) : (
-                <View style={styles.metricRangeRow}>
-                  <View style={styles.metricRangeItem}>
-                    <Text style={styles.metricRangeLabel}>AVERAGE</Text>
-                    <View style={styles.inlineRow}>
-                      <Text style={styles.metricRangeValue}>
-                        {formatMetricValue(singleDayRow?.tempAvg, 1)}
-                      </Text>
-                      <Text style={styles.metricRangeUnit}>°C</Text>
-                    </View>
-                  </View>
-                  <View style={[styles.metricRangeDivider, styles.dailyRangeDivider]} />
-                  <View style={styles.metricRangeItem}>
-                    <Text style={styles.metricRangeLabel}>HIGH</Text>
-                    <View style={styles.inlineRow}>
-                      <Text style={styles.metricRangeValue}>
-                        {formatMetricValue(singleDayRow?.tempMax, 1)}
-                      </Text>
-                      <Text style={styles.metricRangeUnit}>°C</Text>
-                    </View>
-                  </View>
-                  <View style={[styles.metricRangeDivider, styles.dailyRangeDivider]} />
-                  <View style={styles.metricRangeItem}>
-                    <Text style={styles.metricRangeLabel}>LOW</Text>
-                    <View style={styles.inlineRow}>
-                      <Text style={styles.metricRangeValue}>
-                        {formatMetricValue(singleDayRow?.tempMin, 1)}
-                      </Text>
-                      <Text style={styles.metricRangeUnit}>°C</Text>
-                    </View>
-                  </View>
-                </View>
-              )}
-            </View>
-          </View>
-
           <TouchableOpacity
             style={[styles.sevenDayBtn, visibleRows.length === 0 ? styles.sevenDayBtnDisabled : null]}
             disabled={visibleRows.length === 0}
@@ -758,7 +683,6 @@ const ActivityScreen = () => {
                 <Text style={[styles.tableCell, styles.tableHeaderText]}>Steps</Text>
                 <Text style={[styles.tableCell, styles.tableHeaderText]}>HR</Text>
                 <Text style={[styles.tableCell, styles.tableHeaderText]}>SpO2</Text>
-                <Text style={[styles.tableCell, styles.tableHeaderText]}>Temp</Text>
                 <Text style={[styles.tableCell, styles.tableHeaderText]}>BP</Text>
               </View>
               {visibleRows.map(row => (
@@ -767,7 +691,6 @@ const ActivityScreen = () => {
                   <Text style={styles.tableCell}>{row.steps != null ? `${row.steps}` : '--'}</Text>
                   <Text style={styles.tableCell}>{row.hrAvg != null ? `${Math.round(row.hrAvg)}` : '--'}</Text>
                   <Text style={styles.tableCell}>{row.spo2Avg != null ? `${Math.round(row.spo2Avg)}%` : '--'}</Text>
-                  <Text style={styles.tableCell}>{row.tempAvg != null ? `${row.tempAvg.toFixed(1)}` : '--'}</Text>
                   <Text style={styles.tableCell}>
                     {row.systolicBpAvg != null && row.diastolicBpAvg != null
                       ? `${Math.round(row.systolicBpAvg)}/${Math.round(row.diastolicBpAvg)}`

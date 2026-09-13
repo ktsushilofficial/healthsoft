@@ -37,6 +37,7 @@ const mockNative = {
   requestDeviceMac: jest.fn(async () => true),
   requestBattery: jest.fn(async () => true),
   requestDeviceVersion: jest.fn(async () => true),
+  requestDeviceName: jest.fn(async () => true),
   requestDeviceTime: jest.fn(async () => true),
   requestPersonalInfo: jest.fn(async () => true),
 };
@@ -46,6 +47,7 @@ const mockAuth = {
   user: { role: 'GUARDIAN', user_id: 'guardian' },
   selectedSenior: { userId: 'senior-1' },
   getAssignedDevicesForSenior: jest.fn(),
+  getV8VitalsSummary: jest.fn(async () => [] as unknown),
   refreshHandBandAssignments: jest.fn(async () => {}),
   syncV8VitalsByDevice: jest.fn(),
 };
@@ -95,10 +97,26 @@ describe('hand band connection and ownership', () => {
   let renderer: ReactTestRenderer;
   beforeEach(async () => {
     jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-11T12:00:00+05:30'));
     jest.clearAllMocks();
     mockAuth.user = { role: 'GUARDIAN', user_id: 'guardian' };
+    mockAuth.getV8VitalsSummary.mockReset().mockResolvedValue([]);
     for (const request of Object.values(mockHistoryRequests))
       request.mockReset().mockResolvedValue(true);
+    const infoReplies = [
+      [mockNative.requestDeviceMac, '10', { macAddress: 'C414D50E09F6' }],
+      [mockNative.requestBattery, '9', { batteryLevel: 80 }],
+      [mockNative.requestDeviceVersion, '11', { deviceVersion: '1.0.2.5' }],
+      [mockNative.requestDeviceTime, '0', { strDeviceTime: '2026-09-12 22:37:00' }],
+      [mockNative.requestPersonalInfo, '2', { deviceId: '000000' }],
+      [mockNative.requestDeviceName, '117', { deviceName: 'JCV8B' }],
+    ] as const;
+    for (const [request, dataType, dicData] of infoReplies) {
+      request.mockReset().mockImplementation(async () => {
+        mockListeners.get('V8Data')?.({ type: 'parsed', payload: { dataType, dicData, dataEnd: true } });
+        return true;
+      });
+    }
     jest.mocked(Keychain.getGenericPassword).mockResolvedValue(false);
     mockAssigned = ['C414D50E09F6'];
     jest.mocked(requestHandBandPermissions).mockResolvedValue();
@@ -127,6 +145,56 @@ describe('hand band connection and ownership', () => {
       await manager.startScan();
     });
     expect(mockNative.startScan).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries dropped Android firmware details before requesting later fields', async () => {
+    const original = Platform.OS;
+    Object.defineProperty(Platform, 'OS', { configurable: true, value: 'android' });
+    try {
+      mockNative.requestDeviceVersion.mockImplementationOnce(async () => true);
+      await emit('V8ScanResult', { ...iosBand, id: 'C4:14:D5:0E:09:F6' });
+      await emit('V8ConnectionState', { deviceId: 'C4:14:D5:0E:09:F6', state: 'connected' });
+      expect(manager.deviceInfoReading).toBe(true);
+      expect(mockNative.requestDeviceVersion).toHaveBeenCalledTimes(1);
+      expect(mockNative.requestDeviceTime).not.toHaveBeenCalled();
+      let refresh!: Promise<void>;
+      await act(async () => { refresh = manager.refreshDeviceInfo(); });
+      const packets = sdkHistoryPackets('android');
+      Object.values(mockHistoryRequests).forEach((request, index) => {
+        request.mockImplementation(async () => {
+          mockListeners.get('V8Data')?.({ type: 'parsed', payload: packets[index] });
+          return true;
+        });
+      });
+      let history!: Promise<V8DailyVitalSummary[]>;
+      await act(async () => { history = manager.buildTodayVitals('2026-09-11'); });
+      expect(mockHistoryRequests.requestTotalActivity).not.toHaveBeenCalled();
+      await act(async () => { await jest.advanceTimersByTimeAsync(1500); });
+      await refresh;
+      await history;
+      expect(manager.historyReadStatus.phase).toBe('complete');
+      expect(mockNative.requestDeviceVersion).toHaveBeenCalledTimes(2);
+      expect(manager.deviceInfo).toMatchObject({ firmwareVersion: '1.0.2.5', deviceTime: '2026-09-12 22:37:00', deviceName: 'JCV8B' });
+      expect(manager.deviceInfoReading).toBe(false);
+      expect(manager.deviceInfoError).toBeNull();
+    } finally {
+      Object.defineProperty(Platform, 'OS', { configurable: true, value: original });
+    }
+  });
+
+  it('clears old firmware on reconnection and reports an unanswered query while reading other details', async () => {
+    await emit('V8ScanResult', iosBand);
+    await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'connected' });
+    expect(manager.deviceInfo.firmwareVersion).toBe('1.0.2.5');
+    await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'disconnected' });
+    mockNative.requestDeviceVersion.mockImplementation(async () => true);
+    await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'connected' });
+    expect(manager.deviceInfo.firmwareVersion).toBeNull();
+    await act(async () => { await jest.advanceTimersByTimeAsync(3000); });
+    expect(manager.deviceInfoReading).toBe(false);
+    expect(manager.deviceInfoError).toContain('Firmware: No response');
+    expect(manager.deviceInfo.deviceTime).toBe('2026-09-12 22:37:00');
+    expect(manager.deviceInfo.firmwareVersion).toBeNull();
   });
 
   it('reloads assignments on scan and reports a backend failure so it can be retried', async () => {
@@ -335,22 +403,11 @@ describe('hand band connection and ownership', () => {
         Object.values(mockHistoryRequests).forEach((request, index) => {
           request.mockImplementation(async () => {
             const entries =
-              index === 1
-                ? [
-                    {
-                      date: '2026.09.11 10:00:00',
-                      [platform === 'android'
-                        ? 'detailMinterStep'
-                        : 'step']: 100,
-                    },
-                    {
-                      date: '2026.09.11 10:10:00',
-                      [platform === 'android'
-                        ? 'detailMinterStep'
-                        : 'step']: 200,
-                    },
-                  ]
-                : index === 3
+              // Steps come from the activity totals record; detail intervals are
+              // no longer requested during a sync.
+              index === 0
+                ? [{ date: '2026.09.11', step: 300 }]
+                : index === 4
                 ? [
                     { date: '2026.09.11 10:00:00', heartRate: 80 },
                     { date: '2026.09.11 09:00:00', heartRate: 60 },
@@ -502,7 +559,7 @@ describe('hand band connection and ownership', () => {
     await emit('V8ConnectionState', { deviceId: device.id, state: 'connected' });
     await act(async () => { await jest.advanceTimersByTimeAsync(2100); });
     const packets = sdkHistoryPackets(platform);
-    if (malformed) packets[2].dicData = [{ date: '2026.09.11', unsupportedHR: [72] }] as any;
+    if (malformed) packets[4].dicData = [{ date: '2026.09.11', unsupportedHR: [72] }] as any;
     Object.values(mockHistoryRequests).forEach((request, index) => {
       request.mockImplementation(async () => {
         mockListeners.get('V8Data')?.({ type: 'parsed', payload: packets[index] });
@@ -518,6 +575,121 @@ describe('hand band connection and ownership', () => {
     ]);
     await act(async () => { renderer.update(tree()); });
   };
+
+  it('rejects requests for yesterday and tomorrow before sending history commands', async () => {
+    await prepareRead();
+    await expect(manager.buildTodayVitals('2026-09-10')).rejects.toThrow('only be read for today');
+    await expect(manager.buildTodayVitals('2026-09-12')).rejects.toThrow('only be read for today');
+    expect(mockHistoryRequests.requestHRV).not.toHaveBeenCalled();
+  });
+
+  it.each(['ios', 'android'] as const)('bounds %s history to today through the read cutoff and stops older pagination', async platform => {
+    const original = Platform.OS;
+    try {
+      jest.setSystemTime(new Date('2026-09-11T12:00:00+05:30'));
+      await prepareRead(platform);
+      const type = platform === 'ios' ? '41' : '42';
+      // Shaped like a real HRV record: heart rate is carried alongside HRV.
+      const hr = (value: number) => (platform === 'ios'
+        ? { heartRate: value, hrv: 27 }
+        : { heartRate: String(value), hrv: '27' });
+      mockHistoryRequests.requestHRV.mockImplementation(async () => {
+        for (let i = 0; i < 50; i++) {
+          const records = i === 0 ? [
+            { date: '2026.09.11 13:00:00', ...hr(200) },
+            { date: '2026.09.11 11:59:55', ...hr(70) },
+            { date: '2026.09.10 23:59:55', ...hr(60) },
+            { date: '2026.08.04 19:36:03', ...hr(180) },
+          ] : [{ date: '2026.08.04 19:36:03', ...hr(180) }];
+          mockListeners.get('V8Data')?.({ type: 'parsed', payload: { dataType: type, dataEnd: false, dicData: records } });
+        }
+        return true;
+      });
+      const cutoff = Date.now();
+      let rows!: V8DailyVitalSummary[];
+      await act(async () => { rows = await manager.buildTodayVitals('2026-09-11'); });
+      expect(mockHistoryRequests.requestHRV).toHaveBeenCalledTimes(1);
+      expect(manager.historyReadStatus).toMatchObject({ phase: 'complete', requestedEnd: cutoff, categories: { hrv: { stoppedAtDayStart: true, extractedSamples: 1 } } });
+      // 13:00 is past the cutoff, 09-10 is before midnight, August is neither.
+      expect(manager.historyByType.hrv.entries.map(entry => entry.heartRate)).toEqual([70]);
+      expect(rows[0].heartRateMax).toBe(70);
+      // Late packets already in flight must not reintroduce August data.
+      await emit('V8Data', { type: 'parsed', payload: { dataType: type, dataEnd: true, dicData: [{ date: '2026.08.04 19:00:00', ...hr(240) }] } });
+      await act(async () => { await jest.advanceTimersByTimeAsync(100); });
+      expect(manager.historyByType.hrv.entries).toHaveLength(1);
+      await becomeSenior();
+      await act(async () => { await manager.syncTodayVitalsToBackend('2026-09-11', rows); });
+      expect(mockAuth.syncV8VitalsByDevice.mock.calls[0][0].vitalSummaries[0].hrMax).toBe(70);
+    } finally {
+      Object.defineProperty(Platform, 'OS', { configurable: true, value: original });
+    }
+  });
+
+  it('never asks the backend for a resume cursor before reading the band', async () => {
+    jest.setSystemTime(new Date('2026-09-11T12:00:00+05:30'));
+    await prepareRead();
+    mockAuth.getAssignedDevicesForSenior.mockResolvedValue([{ deviceId: 'band-uuid', bluetoothMacAddress: 'C414D50E09F6' }]);
+    await act(async () => { await manager.buildTodayVitals('2026-09-11'); });
+    // The SDK ignores a start date that does not exactly match a stored record,
+    // so no saved-summary timestamp can steer the band. The window is ours.
+    expect(mockAuth.getV8VitalsSummary).not.toHaveBeenCalled();
+    expect(manager.historyReadStatus.requestedStart)
+      .toBe(new Date('2026-09-11T00:00:00+05:30').getTime());
+  });
+
+  it('takes hrLatest from history without asking the band to measure now', async () => {
+    jest.setSystemTime(new Date('2026-09-11T12:00:00+05:30'));
+    await prepareRead();
+    const native = mockNative as any;
+    native.startHeartRateMeasurement = jest.fn(async () => true);
+    native.stopHeartRateMeasurement = jest.fn(async () => true);
+    try {
+      let rows!: V8DailyVitalSummary[];
+      await act(async () => { rows = await manager.buildTodayVitals('2026-09-11'); });
+      // Each HRV record carries a heart rate measured at the same moment, so a
+      // read never spends the vendor minimum of 30 seconds measuring on demand.
+      expect(native.startHeartRateMeasurement).not.toHaveBeenCalled();
+      expect(native.stopHeartRateMeasurement).not.toHaveBeenCalled();
+      expect(rows[0].heartRateLatest).toBe(74);
+      expect(rows[0]).toMatchObject({ heartRateMin: 74, heartRateMax: 74 });
+    } finally {
+      delete native.startHeartRateMeasurement;
+      delete native.stopHeartRateMeasurement;
+    }
+  });
+
+  it('finishes an Android read with partial data when HRV never ends', async () => {
+    const original = Platform.OS;
+    try {
+      await prepareRead('android');
+      const hrPacket = { ...sdkHistoryPackets('android')[4], dataEnd: false };
+      mockHistoryRequests.requestHRV.mockImplementation(async () => true);
+      let result!: Promise<V8DailyVitalSummary[]>;
+      await act(async () => { result = manager.buildTodayVitals('2026-09-11'); });
+      for (let second = 4; second < 120; second += 4) {
+        await act(async () => { await jest.advanceTimersByTimeAsync(4000); });
+        await emit('V8Data', { type: 'parsed', payload: hrPacket });
+      }
+      expect(manager.historyReadStatus.currentType).toBe('hrv');
+      await act(async () => { await jest.advanceTimersByTimeAsync(4000); });
+      const rows = await result;
+      expect(manager.historyReadStatus).toMatchObject({
+        phase: 'partial', currentType: null, failedTypes: ['hrv'],
+        completedTypes: ['totalActivity', 'spo2'],
+      });
+      expect(manager.historyReadStatus.categories.hrv.error).toContain('Time limit (120 seconds)');
+      expect(rows[0]).toMatchObject({ steps: 8000, spo2Latest: 98 });
+      // The completed partial read releases the shared in-flight promise.
+      mockHistoryRequests.requestHRV.mockImplementation(async () => {
+        mockListeners.get('V8Data')?.({ type: 'parsed', payload: { ...hrPacket, dataEnd: true } });
+        return true;
+      });
+      await act(async () => { await manager.buildTodayVitals('2026-09-11'); });
+      expect(manager.historyReadStatus.phase).toBe('complete');
+    } finally {
+      Object.defineProperty(Platform, 'OS', { configurable: true, value: original });
+    }
+  });
 
   it.each(['resolve', 'reject'] as const)('reports upload progress in order when the API will %s', async outcome => {
     await prepareRead();
@@ -552,9 +724,14 @@ describe('hand band connection and ownership', () => {
       let rows!: V8DailyVitalSummary[];
       await act(async () => { rows = await manager.buildTodayVitals('2026-09-11'); });
       const expectedStart = platform === 'ios' ? new Date(2026, 8, 11).getTime() : '2026-09-11 00:00:00';
-      for (const request of Object.values(mockHistoryRequests)) expect(request).toHaveBeenCalledWith(0, expectedStart);
-      expect(manager.historyReadStatus.categories.dynamicHR).toMatchObject({
-        receivedRecords: 1, extractedSamples: 2, rejectedRecords: 0, outcome: 'downloaded',
+      const { requestDynamicHR, requestDetailActivity, requestStaticHR, requestTemperature, ...requested } = mockHistoryRequests;
+      for (const request of Object.values(requested)) expect(request).toHaveBeenCalledWith(0, expectedStart);
+      // A sync asks for three categories only: totals, HRV and blood oxygen.
+      for (const skipped of [requestDynamicHR, requestDetailActivity, requestStaticHR, requestTemperature]) {
+        expect(skipped).not.toHaveBeenCalled();
+      }
+      expect(manager.historyReadStatus.categories.hrv).toMatchObject({
+        receivedRecords: 1, extractedSamples: 1, rejectedRecords: 0, outcome: 'downloaded',
       });
       await becomeSenior();
       await act(async () => { await manager.syncTodayVitalsToBackend('2026-09-11', rows); });
@@ -562,12 +739,14 @@ describe('hand band connection and ownership', () => {
       expect(payload).toEqual({ deviceUUID: 'band-uuid', syncDays: 1, syncFrom: '2026-09-11', syncTo: '2026-09-11',
         vitalSummaries: [{ recordDate: '2026-09-11', steps: 8000, distanceKm: 5.8, caloriesKcal: 320,
           exerciseMinutes: 65, activeMinutes: platform === 'ios' ? 20 : null, goalPercent: 80,
-          hrMin: 60, hrMax: 80, hrAvg: 72, hrLatest: 76,
+          // The HRV record's own heart rate is the only source now.
+          hrMin: 74, hrMax: 74, hrAvg: 74, hrLatest: 74,
           spo2Min: 98, spo2Max: 98, spo2Avg: 98, spo2Latest: 98,
           hrvMin: 55, hrvMax: 55, hrvAvg: 55, hrvLatest: 55,
           systolicBpMin: 120, systolicBpMax: 120, systolicBpAvg: 120, systolicBpLatest: 120,
           diastolicBpMin: 80, diastolicBpMax: 80, diastolicBpAvg: 80, diastolicBpLatest: 80,
-          tempMin: 36.5, tempMax: 36.5, tempAvg: 36.5, tempLatest: 36.5,
+          // Temperature is never requested, so it always uploads as null.
+          tempMin: null, tempMax: null, tempAvg: null, tempLatest: null,
           stressMin: 0, stressMax: 0, stressAvg: 0, stressLatest: 0 }],
       });
       // Repeated uploads of the same read serialize identically, including nulls.
@@ -576,20 +755,41 @@ describe('hand band connection and ownership', () => {
     } finally { Object.defineProperty(Platform, 'OS', { configurable: true, value: original }); }
   });
 
-  it.each(['ios', 'android'] as const)('still uploads the other %s categories when continuous HR is silently rejected', async platform => {
+  // Device Management renders lastReadRows.summary. If it could drift from the
+  // uploaded row, a metric on screen would disagree with the backend - which is
+  // how a stale stress value outlived the read that produced it.
+  it('freezes the same row Live Vitals shows and the sync uploads', async () => {
+    const original = Platform.OS;
+    try {
+      await prepareRead('android');
+      let rows!: V8DailyVitalSummary[];
+      await act(async () => { rows = await manager.buildTodayVitals('2026-09-11'); });
+      await becomeSenior();
+      await act(async () => { await manager.syncTodayVitalsToBackend('2026-09-11', rows); });
+      const uploaded = mockAuth.syncV8VitalsByDevice.mock.calls[0][0].vitalSummaries[0];
+      expect(manager.lastReadRows).toMatchObject({ day: '2026-09-11', rows });
+      expect(manager.lastReadRows!.summary).toEqual(uploaded);
+      // The fixture's HRV record carries stress '0', the one metric that accepts
+      // a zero, so it must survive to both places rather than read as missing.
+      expect(uploaded.stressLatest).toBe(0);
+    } finally { Object.defineProperty(Platform, 'OS', { configurable: true, value: original }); }
+  });
+
+  it.each(['ios', 'android'] as const)('still uploads the other %s categories when HRV is silently rejected', async platform => {
     const original = Platform.OS;
     try {
       await prepareRead(platform, true);
       let rows!: V8DailyVitalSummary[];
       await act(async () => { rows = await manager.buildTodayVitals('2026-09-11'); });
-      expect(manager.historyReadStatus).toMatchObject({ phase: 'partial', failedTypes: ['dynamicHR'] });
-      expect(manager.historyReadStatus.categories.dynamicHR).toMatchObject({ outcome: 'failed', rejectedRecords: 1 });
+      expect(manager.historyReadStatus).toMatchObject({ phase: 'partial', failedTypes: ['hrv'] });
+      expect(manager.historyReadStatus.categories.hrv).toMatchObject({ outcome: 'failed', rejectedRecords: 1 });
       await becomeSenior();
       await act(async () => { await manager.syncTodayVitalsToBackend('2026-09-11', rows); });
       const summary = mockAuth.syncV8VitalsByDevice.mock.calls[0][0].vitalSummaries[0];
-      // Continuous HR contributed nothing; the resting HR record and the other
-      // categories still upload.
-      expect(summary).toMatchObject({ recordDate: '2026-09-11', steps: 8000, spo2Avg: 98, hrvAvg: 55, tempAvg: 36.5 });
+      // HRV is the only source of heart rate, stress and blood pressure, so all
+      // four go up as null while activity and blood oxygen still upload.
+      expect(summary).toMatchObject({ recordDate: '2026-09-11', steps: 8000, spo2Avg: 98,
+        hrAvg: null, hrvAvg: null, systolicBpAvg: null, stressAvg: null });
     } finally { Object.defineProperty(Platform, 'OS', { configurable: true, value: original }); }
   });
 
@@ -597,15 +797,15 @@ describe('hand band connection and ownership', () => {
     await emit('V8ScanResult', iosBand);
     await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'connected' });
     await act(async () => { await jest.advanceTimersByTimeAsync(2100); });
-    // Only resting HR answers, and it never sends its completion marker, so
-    // every one of the seven categories ends up failed.
+    // Only HRV answers, and it never sends its completion marker, so every
+    // requested category ends up failed.
     Object.values(mockHistoryRequests).forEach((request, index) => {
       request.mockImplementation(async () => {
-        if (index === 3) {
+        if (index === 4) {
           mockListeners.get('V8Data')?.({
             type: 'parsed',
             payload: {
-              dataType: '29',
+              dataType: '41',
               dataEnd: false,
               dicData: [{ date: '2026.09.11 10:00:00', heartRate: 72 }],
             },
@@ -624,7 +824,7 @@ describe('hand band connection and ownership', () => {
     expect(manager.historyReadStatus).toMatchObject({
       phase: 'partial',
       completedTypes: [],
-      failedTypes: ['totalActivity', 'detailActivity', 'dynamicHR', 'staticHR', 'hrv', 'spo2', 'temperature'],
+      failedTypes: ['totalActivity', 'hrv', 'spo2'],
     });
     await becomeSenior();
     let outcome!: { days: number; partial: boolean };
@@ -663,7 +863,13 @@ describe('hand band connection and ownership', () => {
         await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'connected' });
       }
       if (change === 'different band') await emit('V8ConnectionState', { deviceId: 'another-band', state: 'connected' });
-      if (change === 'new read') await act(async () => { await manager.buildTodayVitals('2026-09-10'); });
+      if (change === 'new read') {
+        mockHistoryRequests.requestTotalActivity.mockImplementationOnce(async () => {
+          mockListeners.get('V8Data')?.({ type: 'parsed', payload: { dataType: '25', dataEnd: true, dicData: [{ date: '2026.09.11', step: 9000 }] } });
+          return true;
+        });
+        await act(async () => { await manager.buildTodayVitals('2026-09-11'); });
+      }
       if (change === 'account changed') {
         mockAuth.user = { role: 'SENIOR', user_id: 'senior-2' };
         await act(async () => { renderer.update(tree()); });
@@ -716,18 +922,18 @@ describe('hand band connection and ownership', () => {
     const original = Platform.OS;
     try {
       const device = await prepareRead('android');
-      mockHistoryRequests.requestDynamicHR.mockImplementation(async () => true);
+      mockHistoryRequests.requestHRV.mockImplementation(async () => true);
       let result!: Promise<unknown>;
       await act(async () => { result = manager.buildTodayVitals('2026-09-11').catch(error => error); });
-      expect(manager.historyReadStatus.currentType).toBe('dynamicHR');
+      expect(manager.historyReadStatus.currentType).toBe('hrv');
       await emit('V8ConnectionState', { deviceId: device.id, state: 'disconnected', gattStatus: 133 });
       const error = await result as Error;
       expect(error.message).toBe('Hand band history is incomplete. The hand band disconnected during the read (Bluetooth status 133). Nothing was uploaded. Reconnect the band and retry.');
       expect(manager.historyReadStatus).toMatchObject({
-        phase: 'partial', failedTypes: [], completedTypes: ['totalActivity', 'detailActivity'],
-        categories: { dynamicHR: { outcome: 'cancelled' }, staticHR: { outcome: 'notRead' }, hrv: { outcome: 'notRead' } },
+        phase: 'partial', failedTypes: [], completedTypes: ['totalActivity'],
+        categories: { hrv: { outcome: 'cancelled' }, spo2: { outcome: 'notRead' } },
       });
-      expect(mockHistoryRequests.requestStaticHR).not.toHaveBeenCalled();
+      expect(mockHistoryRequests.requestSpo2).not.toHaveBeenCalled();
       expect(mockAuth.syncV8VitalsByDevice).not.toHaveBeenCalled();
     } finally { Object.defineProperty(Platform, 'OS', { configurable: true, value: original }); }
   });

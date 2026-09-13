@@ -29,7 +29,6 @@ const COLUMNS: Array<{
         ? `${row.systolicBpAvg}/${row.diastolicBpAvg}`
         : '—',
   },
-  { key: 'temp', label: 'Temp Avg', value: row => fmtNum(row.temperatureAvgC, 1) },
   { key: 'stress', label: 'Stress Avg', value: row => fmtNum(row.stressAvg, 0) },
 ];
 

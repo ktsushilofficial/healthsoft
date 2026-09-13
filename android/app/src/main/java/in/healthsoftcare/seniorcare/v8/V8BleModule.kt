@@ -376,6 +376,25 @@ class V8BleModule(private val reactContext: ReactApplicationContext) :
     )
   }
 
+  // On-demand heart-rate measurement (0x28 0x02). The SDK writes this duration
+  // into bytes 4-5 of the packet unchanged, and the vendor header documents it
+  // in seconds with a 30-second minimum, so JS passes seconds on both platforms.
+  @ReactMethod
+  fun startHeartRateMeasurement(seconds: Int, promise: Promise) {
+    enqueueVendorCommand(
+      BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHeartRate, seconds.toLong(), true),
+      promise,
+    )
+  }
+
+  @ReactMethod
+  fun stopHeartRateMeasurement(seconds: Int, promise: Promise) {
+    enqueueVendorCommand(
+      BleSDK.SetDeviceMeasurementWithType(AutoTestMode.AutoHeartRate, seconds.toLong(), false),
+      promise,
+    )
+  }
+
   @ReactMethod
   fun exitEcgMeasurement(promise: Promise) {
     // Android has no additional exit command for the contact ECG workflow.

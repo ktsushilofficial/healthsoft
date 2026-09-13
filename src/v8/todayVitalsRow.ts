@@ -1,7 +1,11 @@
 import { sampleDayKey, sampleMeasurementTime } from '../utils/sampleDay';
 import { validVital } from './vitals';
 import type { V8VitalMetric } from './models';
-import type { V8VitalSample, V8WebVitalSummary } from './models';
+import type {
+  V8DailyVitalSummary,
+  V8VitalSample,
+  V8WebVitalSummary,
+} from './models';
 
 // UI/upload freshness policy, not a physiological validity threshold.
 export const LIVE_VITAL_MAX_AGE_MS = 5 * 60_000;
@@ -103,6 +107,51 @@ export const fillTodayVitalSummaryGaps = (
     stressLatest: pick(summary.stressLatest, 'stress'),
   };
 };
+
+/**
+ * The one mapping from a day's aggregate to the web row. Both the upload and
+ * the Device Management card go through this, so a value on screen is the value
+ * that is sent.
+ */
+export const toWebVitalSummary = (
+  day: V8DailyVitalSummary,
+): V8WebVitalSummary => ({
+  recordDate: day.date,
+  steps: day.steps,
+  distanceKm: day.distanceKm,
+  caloriesKcal: day.caloriesKcal,
+  exerciseMinutes: day.exerciseMinutes,
+  activeMinutes: day.activeMinutes,
+  goalPercent: day.goalPercent,
+  hrMin: day.heartRateMin,
+  hrMax: day.heartRateMax,
+  hrAvg: day.heartRateAvg,
+  hrLatest: day.heartRateLatest,
+  spo2Min: day.spo2Min,
+  spo2Max: day.spo2Max ?? null,
+  spo2Avg: day.spo2Avg,
+  spo2Latest: day.spo2Latest,
+  hrvMin: day.hrvMin ?? null,
+  hrvMax: day.hrvMax ?? null,
+  hrvAvg: day.hrvAvg,
+  hrvLatest: day.hrvLatest,
+  systolicBpMin: day.systolicBpMin ?? null,
+  systolicBpMax: day.systolicBpMax ?? null,
+  systolicBpAvg: day.systolicBpAvg,
+  systolicBpLatest: day.systolicBpLatest,
+  diastolicBpMin: day.diastolicBpMin ?? null,
+  diastolicBpMax: day.diastolicBpMax ?? null,
+  diastolicBpAvg: day.diastolicBpAvg,
+  diastolicBpLatest: day.diastolicBpLatest,
+  tempMin: day.temperatureMinC ?? null,
+  tempMax: day.temperatureMaxC ?? null,
+  tempAvg: day.temperatureAvgC,
+  tempLatest: day.temperatureLatestC,
+  stressMin: day.stressMin ?? null,
+  stressMax: day.stressMax ?? null,
+  stressAvg: day.stressAvg,
+  stressLatest: day.stressLatest ?? null,
+});
 
 /** Select only the requested day, never relabel another day's readings. */
 export function selectTodayVitalSummary(

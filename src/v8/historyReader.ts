@@ -1,4 +1,4 @@
-import type { V8HistoryBucket, V8ParseDiagnostics } from './models';
+import type { V8HistoryBucket, V8HistoryWindow, V8ParseDiagnostics } from './models';
 
 export const historyTypeLabels: Record<string, string> = {
   totalActivity: 'activity totals',
@@ -14,14 +14,19 @@ export type V8HistoryReadStatus = {
   phase: 'idle' | 'reading' | 'complete' | 'partial';
   day: string | null;
   currentType: string | null;
+  /** Categories this read will attempt, known before the first one starts. */
+  totalCategories: number;
   completedTypes: string[];
   failedTypes: string[];
   cancellationReason: string | null;
+  requestedStart?: number;
+  requestedEnd?: number;
   categories: Record<string, V8HistoryCategoryStatus>;
 };
 export type V8HistoryCategoryStatus = V8ParseDiagnostics & {
   responsePackets: number;
   pagesRequested: number;
+  stoppedAtDayStart?: boolean;
   outcome:
     | 'reading'
     | 'downloaded'
@@ -42,6 +47,7 @@ export const idleHistoryReadStatus: V8HistoryReadStatus = {
   phase: 'idle',
   day: null,
   currentType: null,
+  totalCategories: 0,
   completedTypes: [],
   failedTypes: [],
   cancellationReason: null,
@@ -52,7 +58,26 @@ export type HistoryRequest = {
   request?: (mode: number) => Promise<unknown>;
 };
 
-/** One vendor response at a time. Continue after 50 callbacks, finish on dataEnd. */
+/**
+ * Progress for the read as a whole, not just the category in front of it.
+ * Per-category counters restart at zero on every category, and a category is
+ * published the moment it is requested - before any packet can have arrived -
+ * so reporting the current one alone showed "0 responses received, 0 samples
+ * read." at the start of every category and dropped the running total back to
+ * zero three times per sync.
+ */
+export function describeHistoryTransfer(status: V8HistoryReadStatus): string {
+  const categories = Object.values(status.categories);
+  const responses = categories.reduce((sum, c) => sum + c.responsePackets, 0);
+  const readings = categories.reduce((sum, c) => sum + c.extractedSamples, 0);
+  const plural = (count: number, word: string) =>
+    `${count} ${word}${count === 1 ? '' : 's'}`;
+  return responses === 0
+    ? 'Waiting for the band to answer…'
+    : `${plural(responses, 'response')} received, ${plural(readings, 'reading')} so far.`;
+}
+
+/** Continue after 50 callbacks; finish on dataEnd or a drained day boundary. */
 export class V8HistoryReader {
   private acceptPacket: ((bucket: V8HistoryBucket) => void) | null = null;
   private rejectPending: ((error: Error) => void) | null = null;
@@ -61,7 +86,14 @@ export class V8HistoryReader {
   private running = false;
   // Continuous HR can contain 15 samples per 75-second record: a full day
   // can require 24 pages at one record/callback. Keep a bound above one day.
-  constructor(private timeoutMs = 5_000, private maxPages = 64) {}
+  // The inactivity timeout alone is not a duration bound: a band that keeps
+  // replying without dataEnd can reset it for hours before reaching maxPages.
+  // Two minutes per category is an application limit, not an SDK guarantee.
+  constructor(
+    private timeoutMs = 5_000,
+    private maxPages = 64,
+    private maxDurationMs = 120_000,
+  ) {}
 
   accept(bucket: V8HistoryBucket) {
     this.acceptPacket?.(bucket);
@@ -77,6 +109,7 @@ export class V8HistoryReader {
     day: string,
     requests: HistoryRequest[],
     onProgress: (status: V8HistoryReadStatus) => void,
+    window?: V8HistoryWindow,
   ): Promise<V8HistoryReadStatus> {
     if (this.running)
       throw new Error('A hand band history read is already in progress.');
@@ -94,6 +127,7 @@ export class V8HistoryReader {
         phase,
         day,
         currentType,
+        totalCategories: requests.length,
         completedTypes: [...completedTypes],
         failedTypes: [...failedTypes],
         cancellationReason: this.cancellationReason,
@@ -128,6 +162,7 @@ export class V8HistoryReader {
         try {
           await this.readType(request, category, () =>
             publish('reading', request.type),
+            window,
           );
           if (category.rejectedRecords) {
             category.error = `Could not parse ${category.rejectedRecords} of ${
@@ -143,7 +178,7 @@ export class V8HistoryReader {
             category.outcome = 'failed';
           } else {
             completedTypes.push(request.type);
-            category.outcome = category.receivedRecords ? 'downloaded' : 'empty';
+            category.outcome = category.extractedSamples ? 'downloaded' : 'empty';
           }
         } catch (error) {
           if (!this.cancelled) failedTypes.push(request.type);
@@ -173,26 +208,44 @@ export class V8HistoryReader {
     { type, request }: HistoryRequest,
     diagnostics: V8HistoryCategoryStatus,
     onPacket: () => void,
+    window?: V8HistoryWindow,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout>;
+      let deadlineTimer: ReturnType<typeof setTimeout>;
+      const deadline = Date.now() + this.maxDurationMs;
       let packets = 0,
         page = 1,
         settled = false;
+      let crossedDayStart = false;
+      let previousRecordStart = Infinity;
+      let outOfOrder = false;
       const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        clearTimeout(deadlineTimer);
         this.acceptPacket = null;
         this.rejectPending = null;
         if (error) reject(error);
         else resolve();
       };
+      const finishWindow = () => {
+        diagnostics.stoppedAtDayStart = true;
+        finish(outOfOrder ? new Error('History records were out of order. Stopped at the day boundary; today’s readings may be incomplete.') : undefined);
+      };
+      const durationExceeded = () =>
+        finish(
+          new Error(
+            `Time limit (${this.maxDurationMs / 1000} seconds) reached reading ${
+              historyTypeLabels[type] ?? type
+            } before the completion marker (${diagnostics.responsePackets} responses, page ${page}). Available readings were kept.`,
+          ),
+        );
       const armTimeout = () => {
         clearTimeout(timer);
         timer = setTimeout(
-          () =>
-            finish(
+          () => crossedDayStart ? finishWindow() : finish(
               new Error(
                 `Timed out reading ${historyTypeLabels[type] ?? type}: ${
                   diagnostics.responsePackets === 0
@@ -209,6 +262,7 @@ export class V8HistoryReader {
         armTimeout();
         Promise.resolve()
           .then(() => {
+            if (!settled && Date.now() >= deadline) durationExceeded();
             if (!settled) return request!(mode);
           })
           .catch(error =>
@@ -219,7 +273,19 @@ export class V8HistoryReader {
       this.acceptPacket = bucket => {
         if (settled || bucket.source !== 'history' || bucket.dataType !== type)
           return;
+        // Also check wall time when callbacks resume after app suspension.
+        if (Date.now() >= deadline) {
+          durationExceeded();
+          return;
+        }
         diagnostics.responsePackets += 1;
+        if (window) {
+          for (const range of bucket.recordRanges ?? []) {
+            if (range.startMs > previousRecordStart) outOfOrder = true;
+            previousRecordStart = range.startMs;
+            if (range.endMs < window.startMs) crossedDayStart = true;
+          }
+        }
         armTimeout();
         const packet = bucket.diagnostics ?? {
           ...emptyDiagnostics,
@@ -240,6 +306,12 @@ export class V8HistoryReader {
         }
         packets += 1;
         if (packets === 50) {
+          // Drain the already-requested page before changing commands. The SDK
+          // has no range-end/cancel-history command; never request older pages.
+          if (crossedDayStart) {
+            finishWindow();
+            return;
+          }
           if (page >= this.maxPages) {
             finish(
               new Error(
@@ -255,6 +327,7 @@ export class V8HistoryReader {
           send(2);
         }
       };
+      deadlineTimer = setTimeout(durationExceeded, this.maxDurationMs);
       send(0);
     });
   }

@@ -6,7 +6,97 @@ The device screen and upload use the same daily aggregation. Valid daily activit
 
 Live readings are separate from history responses and keep per-metric timestamps. Upload fallback requires a same-day value measured within five minutes; this is an application freshness policy. Missing physiological values remain null, while valid zero activity remains zero. An entirely empty day is not uploaded. Older zero-filled backend rows are not rewritten by this change.
 
-History is read one category at a time. After 50 callbacks the reader sends continuation mode 2; only a matching history `dataEnd` completes that category. A live callback cannot complete a history read. Five seconds without a matching response or the 64-page cap fails that category. A failed, unsupported or unparsable category no longer stops the read: the reader continues to the next category, the day is aggregated from whatever arrived, and the metrics it could not collect are uploaded as null. Categories without a native request method are not requested; a timeout is not silently interpreted as an unsupported sensor.
+History is read one category at a time. After 50 callbacks the reader sends continuation mode 2 unless it has reached the day boundary. A matching history `dataEnd` or a drained day boundary completes that category; a live callback cannot complete a history read. Five seconds without a matching response before the boundary, two minutes total per category, or the 64-page cap fails that category. The total duration limit does not reset on packets or continuation requests; it is an application safety bound that still needs validation against full-day physical-band transfers. A failed, unsupported or unparsable category no longer stops the read: the reader continues to the next category, the day is aggregated from whatever arrived, and the metrics it could not collect are uploaded as null. Categories without a native request method are not requested; a timeout is not silently interpreted as an unsupported sensor.
+
+## Today-only history window
+
+The app now accepts history requests only for the phone's current local calendar day. Each read fixes a window from local midnight through the time that read starts, including both endpoints. SDK records outside that window are not expanded into stored samples, and series crossing either boundary are filtered per sample. Vendor record start/end times are retained separately for pagination, since a 15-value HR record expands into ascending five-second samples even when records arrive newest first. Late old notifications cannot reintroduce older samples. Live measurements use their actual receipt/measurement time and exclude earlier-day and future values.
+
+The supplied 13 September iOS log contains descending 4 August record timestamps. When history reaches a record whose last sample is before today's midnight, the reader drains the already-requested page (50 callbacks, `dataEnd`, or a five-second quiet period) and does not request another page. Draining prevents the next category's command from interrupting a current response. A record starting yesterday but extending into today does not trigger the cutoff. If record order reverses and the reader stops without `dataEnd`, the category is marked partial instead of claiming complete coverage. The SDK has no exposed end-timestamp or cancel-history command, so it may still transmit out-of-window records in a page already requested; the app ignores them. `requestedEnd` and per-category `stoppedAtDayStart` report the window and cutoff. Tests cover Android/iOS filtering, midnight-crossing series, exact upper bounds, late old packets, no older-page requests, short-page draining, out-of-order responses, and upload values.
+
+The Android QA screenshot at 22:37 on 12 September showed continuous HR still reading after two completed categories; QA reported trying since 22:05. The installed build and packet logs are unknown, so this does not establish the underlying Bluetooth/firmware cause. The prior inactivity timeout could be extended by matching packets without a completion marker. Regression tests now reproduce that stream, verify the firm two-minute bound across pages and resumed callbacks, and verify that the Android provider continues all later categories, retains available vitals, and releases the read for retry. The device screen and sync panel show response/sample counts; failed category reasons are visible in the device screen. Hardware reproduction on QA's band remains outstanding.
+
+Device details now use the same serial command channel as history. Connection priming and screen refresh share one refresh operation, wait for each requested field to arrive, retry an unanswered query once after 1.5 seconds, and report fields that still have no response. Native send acceptance alone is not treated as a successful detail read. Disconnects cancel active/queued queries; connecting resets previously reported details. Android `ResolveUtil.getDeviceTime` supplies `strDeviceTime`, which is now parsed only as a device-time response. Firmware continues to use the SDK's `deviceVersion` field. The screen adds a separate details refresh button, readable missing-value states, wrapping/copyable field values, and an advertised-model row. For `JCV8B 6DDC93` with MAC `D6:1B:DF:6D:DC:93`, that row displays `JCV8B`; it is derived from the Bluetooth name, not a verified hardware model number. iOS uses the advertised name because its bundled SDK has no name-read method. No monitoring settings or band clock are changed by refreshing details. Physical-band confirmation of firmware replies is still required.
+
+## No backend resume cursor (13 September)
+
+At the user's request the band read no longer depends on the saved vitals summary. The earlier resume design assumed the band accepts an arbitrary timestamp cursor; the vendor header states the opposite - `startDate` is ignored unless it exactly matches the date of a record already stored on the watch, and mode 0 reads from the latest position backwards. A server audit time, rounded to the second, will not match a stored record, so the cursor was silently discarded and the band dumped its flash regardless.
+
+`getV8VitalsSummary` is therefore no longer called before a read, and the session baseline that existed only to merge a shorter read has been removed along with `selectVitalsSyncCheckpoint` and its tests. Every read requests local midnight for all seven categories. The window is enforced on this side instead: records outside midnight-to-read-cutoff are dropped at parse time, and pagination stops rather than requesting pages older than the window. `historyReadStatus.requestedStart` and `requestedEnd` report that window, and a test asserts the summary API is not called during a read. The screens that display saved backend vitals still use that API; only the read path dropped it.
+
+## Heart rate comes from the HRV record (13 September)
+
+At the user's request the sync no longer asks for continuous heart rate. `GetContinuousHRData` / `GetDynamicHRWithMode` returns 15 samples under one record date, so per-sample times are derived at an assumed 5-second spacing, and the band replays its stored flash for it. `GetSingleHRData` / `GetStaticHRWithMode` returns one reading per record with its own real timestamp and no derived times. The parser and reader still handle continuous-HR packets if any arrive; only the request was removed, and a test asserts it is never sent.
+
+The consequence is fewer heart-rate samples per day, so the daily minimum and maximum are thinner: spot readings miss peaks between measurements. How thin depends on the band's automatic monitoring interval, which `GetAutomaticMonitoringWithDataType` would report and which has never been called. With the test fixtures the day's heart rate now comes from two single-HR records plus the heart rate carried inside the HRV record.
+
+One ordering note: when two sources report a heart rate for the same second, `hrLatest` is decided by arrival order because the sort is stable. Such a tie is arbitrary.
+
+Both ends of the band window are logged in development. `History request sent` reports the category, the mode, and the exact start date passed (null on continuation mode 2, which carries no date on either bridge).
+
+`Band readings received` fires for every parsed packet, history and live alike, and reports the category, the source, `dataEnd`, how many records the band offered against how many fell inside the window, the newest and oldest record dates, the full list of record dates, and every parsed vital value with its timestamp. Only metrics that are present appear on a sample, so an SpO2 packet logs `spo2`, an HRV packet logs heart rate, HRV, stress and both blood pressures, and an activity total logs all six activity fields. `recordsOffered` against `recordsInsideWindow` is the direct measure of whether the band honoured the start date; `dates` lists everything it sent, while `samples` lists only what survived parsing and the window.
+
+## No heart-rate category is requested (13 September)
+
+A device capture on 13 September showed each HRV record carrying `heartRate` measured at the same moment as the HRV value, on an hourly schedule at three and a half minutes past the hour. At the user's request neither heart-rate category is requested any more: continuous HR was dropped first, and single HR after it. HRV now supplies the day's heart rate alongside HRV, stress and blood pressure from one transfer.
+
+A sync requests four categories: activity totals, HRV, blood oxygen, temperature.
+
+The same capture confirmed two things that were previously assumed. Records arrive newest first, strictly descending, which is what the early-stop pagination relies on. And the band's automatic measurement interval is hourly, so roughly twenty-four records a day fit inside a single fifty-record page.
+
+The cost is concentration of risk: HRV is now the only source of heart rate, stress, systolic and diastolic blood pressure. A failed or unparsable HRV category sends all four to the backend as null, where previously a heart-rate category could still supply a pulse. A test covers that case explicitly. Heart rate is also sampled hourly rather than continuously, so the day's minimum and maximum are resting-range values and will not capture exertion peaks between measurements.
+
+That capture also showed `stress` and `vascularAging` carrying identical values in all four records. `vascularAging` is not parsed. Whether the SDK decodes one byte into both fields is unresolved, so the uploaded `stress` value should be treated as unverified.
+
+## Temperature removed from the sync and the app (13 September)
+
+A device capture on 13 September showed temperature as by far the most expensive category: 800 stored records offered to extract 73 of today's, fifty response packets, and the only category to reach the packet ceiling and stop at the day boundary. Activity totals took one packet, HRV twelve and blood oxygen sixteen, and both of those finished naturally.
+
+The same capture showed values of 33.4, 34.2 and 34.5 degrees. Those are wrist skin temperatures, which is what the sensor measures; the activity screen labelled that figure "Body Temperature" and the home screen showed it as a vital. A reader would have seen a family member's body temperature reported several degrees below normal.
+
+At the user's decision temperature is no longer requested and no longer displayed. Removed from the sync request list, from the home screen vital cards and vitals list, from the device screen, from the activity screen's summary card, range calculation, row type, backend field mapping and seven-day table column, and from the shared daily vitals table. The parser, the native bridges and the `requestTemperature` method are unchanged, so a temperature packet arriving from some other path is still handled.
+
+The backend contract is unchanged: `tempMin`, `tempMax`, `tempAvg` and `tempLatest` are still sent, always as null. A test asserts both that the category is never requested and that those four fields upload as null.
+
+A sync now requests three categories: activity totals, HRV and blood oxygen.
+
+## Activity totals replace detail activity (13 September)
+
+At the user's request the sync no longer asks for detail activity. `GetDetailActivityData` returns per-interval records across the whole day and was only ever a fallback: `motion()` takes steps, distance and calories from the newest `totalActivity` record and reaches for summed intervals only when neither totals nor realtime activity produced a value. Exercise minutes, active minutes and goal percent never had that fallback at all. Removing the request drops a multi-page transfer whose result was discarded on every successful read.
+
+Five categories are now requested: activity totals, single heart rate, HRV, blood oxygen, temperature. The fallback code remains, so detail-activity packets that arrive from some other path are still summed; only the request was removed, and a test asserts it is never sent.
+
+The consequence is that activity depends on the totals record alone. If that category fails or returns nothing for today, steps, distance and calories are now null rather than being rebuilt from intervals, because realtime activity only reports when the step count changes. That trade was accepted deliberately: the totals record is one cumulative snapshot per day and is the cheapest category the band offers.
+
+## On-demand heart rate for hrLatest: tried and removed (13 September)
+
+`hrLatest` was briefly made a reading taken at sync time rather than the newest stored value. Today's read asked the band to measure (iOS `manualMeasurementWithDataType:heartRateData_V8`, Android `SetDeviceMeasurementWithType(AutoHeartRate, seconds, true)`) for 30 seconds, the vendor header's documented minimum, and the reply was expected as `DeviceMeasurement_HR` (iOS 58, Android 74), which the parser maps to a live `staticHR` sample.
+
+On a connected band the measurement did not produce a usable value. The packet arrived and parsed to a single sample, but nothing in it passed the `heartRate > 0` check the resolver requires, so the promise ran out its window and resolved null. Field values were not captured: these logs reach the JS debugger only, not logcat, so the exact contents of that frame are unconfirmed and no progress-packet shape has been validated against hardware.
+
+At the user's request the step is removed rather than debugged. Heart rate comes from HRV, whose every record already carries a `heartRate` measured at the same moment, so the measurement was buying a number the read already had - at the cost of 30 seconds plus grace on every refresh, after the history categories had already finished, holding the band's single command channel throughout. The trade accepted is freshness: `hrLatest` is now as recent as the band's own HRV logging interval, hourly in the 13 September capture, rather than a reading taken at the moment of the tap.
+
+Removed from `V8BleProvider`: `runHeartRateMeasurement`, `measureHeartRateNow` and its context field, `heartRateMeasurementRef` and its dispatch on the live path, the `HR_MEASUREMENT_*` constants, and the call in `readVitalsHistory`. A test asserts a read never sends the measurement command and takes `hrLatest` from history. The bridged `startHeartRateMeasurement` / `stopHeartRateMeasurement` methods are left in place on both platforms, unused, so a deliberate user-triggered measurement can be built on them later without redoing the native work.
+
+One note survives the removal: the duration unit is seconds on both platforms - the Android SDK writes the value into bytes 4-5 of the 0x28 packet unchanged. The Android contact-ECG path passes `30_000` for the same argument and its comment claims milliseconds. That is unrelated to this change, is not corrected here, and needs physical-band confirmation.
+
+## Sync progress reported zeros (13 September)
+
+Tapping Sync now showed "0 responses received, 0 samples read." on the progress modal. Three separate faults, all in the display rather than the transfer:
+
+`describeHistoryTransfer` reported only the category currently in front. A category is published the instant it is requested, before any packet can have arrived, so the first frame of every category read as zero; and because the counters are per-category, the running total fell back to zero each time the read moved on. It now sums the whole read, so the number only grows, and reports "Waiting for the band to answer…" while nothing has come back yet rather than claiming zero.
+
+The modal's "N of 7 reading groups checked" took its denominator from `historyTypeLabels`, every category the parser can recognise. A sync asks for three, so it could never pass 3 of 7. Counting the categories published so far would instead have grown the denominator as the read advanced, so `V8HistoryReadStatus` now carries `totalCategories`, fixed from the request list before the first category starts; the line is hidden until a read has published one.
+
+Tests cover the read total never falling back between categories, no frame reporting zero responses, singular wording at one, and `totalCategories` surviving a two-category read. The per-second behaviour against a physical band was not observed; these are unit-level assertions on the status the reader publishes.
+
+## Stall bounds (13 September)
+
+Every step of a sync is bounded and failure moves to the next step rather than stopping the run. Each history category has a 5-second inactivity timeout, a 2-minute total limit and a 64-page cap; a category that times out, is unsupported or cannot be parsed is recorded as failed, its metrics stay null, and the remaining categories are still read, aggregated and uploaded. Device detail queries retry once after 1.5 seconds and then report the field as unanswered without blocking the others.
+
+Commands are serialised on the band's single command channel, so a queued task that never settles previously blocked every later command, including the history read and therefore all automatic syncs, until the app was restarted. Each queued task now has its own bound: 15 seconds for a device command and a 20-minute backstop for a history read, which the per-category limits keep unreachable. On expiry that caller fails and the queue advances. A disconnect also releases the queue immediately, so a reconnect is not held behind a command left waiting on the dead connection.
+
+The backend checkpoint lookup is bounded at 6 seconds, shorter than the HTTP client's own 15-second timeout and token-refresh retry. A slow, offline or failing lookup falls back to reading from local midnight instead of delaying the band read. Regression tests cover a native command that never settles, a disconnect during a stuck command, and a summary lookup that never responds.
 
 Ingestion uses incremental duplicate indexes and buffers; visible history/debug updates are batched at 100 ms. Connecting a band resets in-memory vitals. A versioned local cache prevents records parsed with the old timestamp rules from being restored into the corrected pipeline.
 

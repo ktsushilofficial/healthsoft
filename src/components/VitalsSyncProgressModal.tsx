@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import {
+  describeHistoryTransfer,
   historyTypeLabels,
   type V8HistoryReadStatus,
 } from '../v8/historyReader';
@@ -51,7 +52,7 @@ export function describeVitalsSyncProgress(
       return {
         title: 'Reading your hand band',
         detail: current
-          ? `Reading ${historyTypeLabels[current] ?? 'vitals'}…`
+          ? `Reading ${historyTypeLabels[current] ?? 'vitals'}… ${describeHistoryTransfer(history)}`.trim()
           : 'Preparing today’s readings…',
       };
     }
@@ -171,6 +172,10 @@ export default function VitalsSyncProgressModal({
     category =>
       category.outcome !== 'reading' && category.outcome !== 'notRead',
   ).length;
+  // The denominator is what this read will attempt. Counting every label the
+  // app can parse said "of 7" for a sync that only ever asks for three, and
+  // counting the categories published so far grew the denominator as it went.
+  const plannedCategories = history.totalCategories;
   const icon = success
     ? 'checkmark'
     : phase === 'error'
@@ -217,10 +222,12 @@ export default function VitalsSyncProgressModal({
               <Text style={styles.title}>{copy.title}</Text>
               <Text style={styles.detail}>{copy.detail}</Text>
             </View>
-            {phase === 'reading' && history.phase === 'reading' ? (
+            {phase === 'reading' &&
+            history.phase === 'reading' &&
+            plannedCategories > 0 ? (
               <Text style={styles.readCount}>
-                {completedCategories} of {Object.keys(historyTypeLabels).length}{' '}
-                reading groups checked
+                {completedCategories} of {plannedCategories} reading groups
+                checked
               </Text>
             ) : null}
             {busy || success ? (

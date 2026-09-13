@@ -16,8 +16,10 @@ import { useAuth } from '../context/AuthContext';
 import { useV8DeviceManager } from '../v8/useV8DeviceManager';
 import type { V8DailyVitalSummary } from '../v8/models';
 import { todayLocalDayKey } from '../utils/vitalsDay';
-import { historyTypeLabels } from '../v8/historyReader';
+import { describeHistoryTransfer, historyTypeLabels } from '../v8/historyReader';
 import { aggregateVitals } from '../v8/vitals';
+import { selectTodayVitalSummary, toWebVitalSummary } from '../v8/todayVitalsRow';
+import { advertisedBandModel } from '../v8/deviceInfoReader';
 import DailyVitalsTable from '../components/DailyVitalsTable';
 import VitalsSyncProgressModal, { type VitalsSyncProgress } from '../components/VitalsSyncProgressModal';
 
@@ -38,7 +40,7 @@ const fmtNum = (v: number | null | undefined, decimals = 0, suffix = '') =>
 const InfoRow = ({ label, value }: { label: string; value: string }) => (
   <View style={s.infoRow}>
     <Text style={s.infoLabel}>{label}</Text>
-    <Text style={s.infoValue} numberOfLines={1}>{value}</Text>
+    <Text style={s.infoValue} selectable>{value}</Text>
   </View>
 );
 
@@ -70,17 +72,21 @@ const V8DeviceManageScreen = () => {
 
   const {
     connectionStates, disconnect,
-    requestBattery, requestDeviceMac, requestPersonalInfo,
-    requestDeviceVersion, requestDeviceName,
+    devices, refreshDeviceInfo, deviceInfoReading, deviceInfoError,
     requestLiveSnapshot,
     buildTodayVitals, syncTodayVitalsToBackend,
-    latestLiveData, historyByType, deviceInfo, historyReadStatus, autoSyncStatus,
+    latestLiveData, historyByType, lastReadRows, deviceInfo, historyReadStatus, autoSyncStatus,
   } = useV8DeviceManager();
 
   const state = connectionStates[normalizeId(deviceId)] ?? 'disconnected';
   const connected = state === 'connected';
   const isSeniorUser = user?.role === 'SENIOR';
   const canUseEcg = isSeniorUser && selectedSeniorHandBandMacs.length > 0;
+  const advertisedDevice = devices.find(device => normalizeId(device.id) === normalizeId(deviceId));
+  const advertisedName = advertisedDevice?.localName ?? advertisedDevice?.name ?? deviceName;
+  const model = advertisedBandModel(advertisedName, deviceInfo.mac);
+  const missingInfo = !connected ? 'Not connected' : deviceInfoReading ? 'Reading…' : 'Not received';
+  const deviceDetail = (value: string | null | undefined) => value?.trim() || missingInfo;
 
   const [refreshingLive, setRefreshingLive] = useState(false);
   const [todayFetching, setTodayFetching] = useState(false);
@@ -91,27 +97,17 @@ const V8DeviceManageScreen = () => {
   const syncActionDisabled = !todaySyncing && (!isSeniorUser || !connected || todayFetching || refreshingLive || autoSyncStatus.phase === 'syncing');
   const [fetchedVitalsRows, setFetchedVitalsRows] = useState<V8DailyVitalSummary[]>([]);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
-  const deviceInfoRef = useRef(deviceInfo);
   const syncLatestPromptKeyRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    deviceInfoRef.current = deviceInfo;
-  }, [deviceInfo]);
 
   // Auto-fetch visible device info when this screen gains focus and band is connected.
   useFocusEffect(
     useCallback(() => {
       if (!connected) return;
       const task = InteractionManager.runAfterInteractions(() => {
-        requestPersonalInfo().catch(() => {});
-        requestBattery().catch(() => {});
-        requestDeviceMac().catch(() => {});
-        requestDeviceVersion().catch(() => {});
-        // Rejected on iOS, where the vendor SDK exposes no GetDeviceName.
-        requestDeviceName().catch(() => {});
+        refreshDeviceInfo().catch(() => {});
       });
       return () => task.cancel();
-    }, [connected, requestBattery, requestDeviceMac, requestDeviceName, requestDeviceVersion, requestPersonalInfo]),
+    }, [connected, refreshDeviceInfo]),
   );
 
   const handleRefreshLive = useCallback(async () => {
@@ -119,18 +115,12 @@ const V8DeviceManageScreen = () => {
     try {
       await requestLiveSnapshot();
       // Keep identity fields fresh while user is actively monitoring vitals.
-      await Promise.allSettled([
-        requestPersonalInfo(),
-        requestBattery(),
-        requestDeviceMac(),
-        requestDeviceVersion(),
-        requestDeviceName(),
-      ]);
+      await refreshDeviceInfo();
     } catch (error) {
       setActionStatus(error instanceof Error ? error.message : 'Unable to refresh vitals.');
     }
     setRefreshingLive(false);
-  }, [requestBattery, requestDeviceMac, requestDeviceName, requestDeviceVersion, requestLiveSnapshot, requestPersonalInfo]);
+  }, [refreshDeviceInfo, requestLiveSnapshot]);
 
   const handleFetchTodayVitals = useCallback(async () => {
     if (!isSeniorUser) {
@@ -222,7 +212,29 @@ const V8DeviceManageScreen = () => {
     );
   }, [deviceId, handleFetchAndSyncToday, isSeniorUser, route.params]);
 
-  const todayRows = useMemo(() => aggregateVitals(historyByType, todayLocalDayKey()), [historyByType]);
+  // The rows a sync uploads are frozen when the read completes. Prefer them, so
+  // a packet arriving after that snapshot cannot leave the card showing one
+  // value while the backend holds another; fall back to the running aggregate
+  // until a read for today has completed.
+  const todayRows = useMemo(() => {
+    const day = todayLocalDayKey();
+    return lastReadRows?.day === day
+      ? lastReadRows.rows
+      : aggregateVitals(historyByType, day);
+  }, [historyByType, lastReadRows]);
+  // Live Vitals runs the pipeline a sync runs: aggregate the read, map it to the
+  // upload row, fill its gaps from fresh live data. After a read that is the
+  // frozen row itself; before one it is the same pipeline over what has arrived.
+  const todaySummary = useMemo(() => {
+    const day = todayLocalDayKey();
+    return lastReadRows?.day === day
+      ? lastReadRows.summary
+      : selectTodayVitalSummary(
+          todayRows.map(toWebVitalSummary),
+          day,
+          latestLiveData,
+        );
+  }, [lastReadRows, latestLiveData, todayRows]);
   const vitalsRowsForTable = useMemo(
     () => historyReadStatus.day === todayLocalDayKey() ? todayRows : fetchedVitalsRows,
     [todayRows, historyReadStatus.day, fetchedVitalsRows],
@@ -243,22 +255,19 @@ const V8DeviceManageScreen = () => {
     return '#C62828';
   }, [deviceInfo.batteryPercent]);
 
-  const today = todayRows[0];
-  const displaySteps = today?.steps ?? null;
-  const displayDistanceKm = today?.distanceKm ?? null;
-  const displayCaloriesKcal = today?.caloriesKcal ?? null;
-  const displayHeartRate = today?.heartRateLatest ?? null;
-  const displaySpo2 = today?.spo2Latest ?? null;
-  const displaySystolicBp = today?.systolicBpLatest ?? null;
-  const displayDiastolicBp = today?.diastolicBpLatest ?? null;
-  const displayTemperatureC = today?.temperatureLatestC ?? null;
-  const displayHrv = today?.hrvLatest ?? null;
-  const displayStress = today?.stressLatest ?? null;
+  const displaySteps = todaySummary.steps;
+  const displayDistanceKm = todaySummary.distanceKm;
+  const displayCaloriesKcal = todaySummary.caloriesKcal;
+  const displayHeartRate = todaySummary.hrLatest;
+  const displaySpo2 = todaySummary.spo2Latest;
+  const displaySystolicBp = todaySummary.systolicBpLatest;
+  const displayDiastolicBp = todaySummary.diastolicBpLatest;
+  const displayHrv = todaySummary.hrvLatest;
+  const displayStress = todaySummary.stressLatest;
   const hasAnyLiveVital =
     displayHeartRate != null ||
     displaySpo2 != null ||
     (displaySystolicBp != null && displayDiastolicBp != null) ||
-    displayTemperatureC != null ||
     displaySteps != null ||
     displayDistanceKm != null ||
     displayHrv != null ||
@@ -279,6 +288,10 @@ const V8DeviceManageScreen = () => {
     .filter(([, category]) => category.outcome === 'unavailable')
     .map(([type]) => historyTypeLabels[type] ?? type);
   const failedHistory = historyReadStatus.failedTypes.map(type => historyTypeLabels[type] ?? type);
+  const failureReasons = historyReadStatus.failedTypes
+    .map(type => historyReadStatus.categories[type]?.error)
+    .filter(Boolean)
+    .join(' ');
   const missingHistory = Array.from(new Set([...failedHistory, ...unavailableHistory]));
   // A category that failed or could not be parsed leaves its metrics null; the
   // readings that did arrive are still shown and still uploaded.
@@ -287,7 +300,7 @@ const V8DeviceManageScreen = () => {
     : '';
   const readStatusText = historyReadStatus.phase === 'reading'
     ? historyReadStatus.currentType
-      ? `Reading ${historyTypeLabels[historyReadStatus.currentType] ?? 'vitals'}… ${historyReadStatus.completedTypes.length} categories complete. Values shown so far are partial.`
+      ? `Reading ${historyTypeLabels[historyReadStatus.currentType] ?? 'vitals'}… ${describeHistoryTransfer(historyReadStatus)} ${historyReadStatus.completedTypes.length} categories complete. Values shown so far are partial.`
       : 'Preparing to read hand band vitals…'
     : historyReadStatus.phase === 'partial'
     ? historyReadStatus.cancellationReason
@@ -307,6 +320,7 @@ const V8DeviceManageScreen = () => {
       />
       {readStatusText ? <Text accessibilityLiveRegion="polite" style={s.readStatus}>{readStatusText}</Text> : null}
       <ScrollView contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
+        {historyReadStatus.phase === 'partial' && failureReasons ? <Text style={s.readStatus}>{failureReasons}</Text> : null}
         {/* ── Header ── */}
         <View style={s.headerRow}>
           <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
@@ -337,13 +351,23 @@ const V8DeviceManageScreen = () => {
           {/* Device info rows */}
           <View style={s.divider} />
           <InfoRow label="Battery" value={fmtNum(deviceInfo.batteryPercent, 0, '%')} />
-          <InfoRow label="Firmware" value={fmt(deviceInfo.firmwareVersion)} />
-          <InfoRow label="Device ID" value={fmt(deviceInfo.imei)} />
+          <InfoRow label="Model (advertised)" value={model ?? 'Not advertised'} />
+          <InfoRow label="Firmware" value={deviceDetail(deviceInfo.firmwareVersion)} />
+          <InfoRow label="Device ID" value={deviceDetail(deviceInfo.imei)} />
           <InfoRow label="MAC Address" value={fmt(deviceInfo.mac)} />
           {/* The iOS vendor SDK cannot read the stored name, so fall back to
               the advertised BLE name rather than showing nothing. */}
-          <InfoRow label="Device Name" value={fmt(deviceInfo.deviceName ?? deviceName)} />
-          <InfoRow label="Device Time" value={fmt(deviceInfo.deviceTime)} />
+          <InfoRow label="Device Name" value={deviceDetail(deviceInfo.deviceName ?? advertisedName)} />
+          <InfoRow label="Device Time" value={deviceDetail(deviceInfo.deviceTime)} />
+          {deviceInfoError ? <Text style={s.emptyHint}>{deviceInfoError}</Text> : null}
+          <TouchableOpacity
+            style={[s.refreshLiveBtn, (!connected || deviceInfoReading || bandReadBusy) ? s.disabled : null]}
+            disabled={!connected || deviceInfoReading || bandReadBusy}
+            onPress={() => { refreshDeviceInfo().catch(error => setActionStatus(error instanceof Error ? error.message : 'Unable to read device details.')); }}
+          >
+            {deviceInfoReading ? <ActivityIndicator size="small" color="#F28C28" /> : <Icon name="refresh" size={16} color="#F28C28" />}
+            <Text style={s.refreshLiveBtnText}>{deviceInfoReading ? 'Reading Device Details' : 'Refresh Device Details'}</Text>
+          </TouchableOpacity>
 
           {deviceInfo.batteryPercent != null && (
             <View style={s.batteryBarWrap}>
@@ -381,7 +405,6 @@ const V8DeviceManageScreen = () => {
                 displaySystolicBp != null && displayDiastolicBp != null
                   ? `${displaySystolicBp}/${displayDiastolicBp}` : '—'
               } unit="mmHg" />
-              <VitalCard icon="thermometer" color="#FF7043" label="Temperature" value={fmtNum(displayTemperatureC, 1)} unit="°C" />
               <VitalCard icon="footsteps" color="#F28C28" label="Steps" value={fmtNum(displaySteps, 0)} />
               <VitalCard icon="map" color="#43A047" label="Distance" value={fmtNum(displayDistanceKm, 2)} unit="km" />
               <VitalCard icon="speedometer" color="#5C6BC0" label="HRV" value={fmtNum(displayHrv, 0)} unit="ms" />
@@ -552,10 +575,10 @@ const s = StyleSheet.create({
   divider: { height: 1, backgroundColor: '#F0EBE5', marginVertical: 12 },
   infoRow: {
     flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'center', paddingVertical: 6,
+    alignItems: 'center', paddingVertical: 6, columnGap: 12,
   },
-  infoLabel: { fontSize: 13, color: '#8A8078', fontWeight: '500' },
-  infoValue: { fontSize: 13, color: '#2E2A27', fontWeight: '600', maxWidth: '60%', textAlign: 'right' },
+  infoLabel: { flexShrink: 1, fontSize: 13, color: '#8A8078', fontWeight: '500' },
+  infoValue: { flexShrink: 1, fontSize: 13, color: '#2E2A27', fontWeight: '600', maxWidth: '60%', textAlign: 'right' },
 
   /* battery bar */
   batteryBarWrap: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },

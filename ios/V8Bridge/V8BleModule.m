@@ -359,6 +359,40 @@ RCT_REMAP_METHOD(setRealtimeStepEnabled,
 #endif
 }
 
+// On-demand heart-rate measurement. Unlike continuous-HR history, this asks the
+// band to take a reading now; the result arrives as DeviceMeasurement_HR_V8 (58)
+// and is parsed as a live staticHR sample. measurementTime is in seconds and the
+// vendor header sets a 30-second minimum.
+RCT_REMAP_METHOD(startHeartRateMeasurement,
+                 startHeartRateMeasurementWithSeconds:(nonnull NSNumber *)seconds
+                 resolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"startHeartRateMeasurement"];
+#else
+  NSData *cmd = [[BleSDK_V8 sharedManager]
+      manualMeasurementWithDataType:heartRateData_V8
+      measurementTime:[seconds intValue]
+      open:YES];
+  [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
+}
+
+RCT_REMAP_METHOD(stopHeartRateMeasurement,
+                 stopHeartRateMeasurementWithSeconds:(nonnull NSNumber *)seconds
+                 resolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_SIMULATOR
+  [self rejectSimulatorUnsupported:reject method:@"stopHeartRateMeasurement"];
+#else
+  NSData *cmd = [[BleSDK_V8 sharedManager]
+      manualMeasurementWithDataType:heartRateData_V8
+      measurementTime:[seconds intValue]
+      open:NO];
+  [self enqueueCommand:cmd resolver:resolve rejecter:reject];
+#endif
+}
+
 RCT_REMAP_METHOD(setEcgRealtimeEnabled,
                  setEcgRealtimeEnabledWithEnabled:(BOOL)enabled
                  resolver:(RCTPromiseResolveBlock)resolve
@@ -769,12 +803,30 @@ didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic
 #else
   DeviceData_V8 *parsed = [[BleSDK_V8 sharedManager] DataParsingWithData:value];
   if (parsed) {
+    // A bulk history packet holds ~17 records, so printing dicData in full made
+    // one transfer thousands of console lines. Short replies (device details,
+    // acks) still print whole; bulk packets print their shape, and JavaScript
+    // logs the parsed values under "Band readings received".
+    NSDictionary *dic = parsed.dicData ?: @{};
+    NSString *dicSummary;
+    if (value.length <= 64) {
+      dicSummary = [NSString stringWithFormat:@"dicData=%@", dic];
+    } else {
+      NSMutableArray<NSString *> *shape = [NSMutableArray array];
+      for (id key in dic) {
+        id item = dic[key];
+        [shape addObject:[item isKindOfClass:[NSArray class]]
+            ? [NSString stringWithFormat:@"%@[%lu]", key, (unsigned long)[(NSArray *)item count]]
+            : [NSString stringWithFormat:@"%@=%@", key, item]];
+      }
+      dicSummary = [shape componentsJoinedByString:@" "];
+    }
     NSLog(
-      @"[V8 Native] RX bytes=%lu dataType=%d dataEnd=%@ dicData=%@",
+      @"[V8 Native] RX bytes=%lu dataType=%d dataEnd=%@ %@",
       (unsigned long)value.length,
       (int)parsed.dataType,
       parsed.dataEnd ? @"YES" : @"NO",
-      parsed.dicData ?: @{}
+      dicSummary
     );
     if (parsed.dataType == DeviceMeasurement_V8 && self.awaitingContactEcgStartAck) {
       self.awaitingContactEcgStartAck = NO;
