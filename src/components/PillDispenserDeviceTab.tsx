@@ -40,11 +40,15 @@ const PillDispenserDeviceTab = () => {
     useState<PillDispenserConnectionStatus | null>(null);
   const [setupRequested, setSetupRequested] = useState(false);
   const [localSetupComplete, setLocalSetupComplete] = useState(false);
+  // True only while re-running setup on a dispenser that was already set up,
+  // so the flow can be abandoned and the previous card restored.
+  const [changingWifi, setChangingWifi] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
       setSetupRequested(false);
       setLocalSetupComplete(false);
+      setChangingWifi(false);
     }, []),
   );
 
@@ -97,7 +101,10 @@ const PillDispenserDeviceTab = () => {
       (setupRequested && (localSetupComplete || stage === 'connected')));
 
   useEffect(() => {
-    if (setupRequested && stage === 'connected') setLocalSetupComplete(true);
+    if (setupRequested && stage === 'connected') {
+      setLocalSetupComplete(true);
+      setChangingWifi(false);
+    }
   }, [setupRequested, stage]);
 
   useEffect(() => {
@@ -145,6 +152,17 @@ const PillDispenserDeviceTab = () => {
     : !setupRequested && currentStatus?.online === false
     ? 'Pill dispenser offline. Connect it to Wi-Fi to bring it online.'
     : statusMessage;
+
+  const cancelWifiChange = useCallback(async () => {
+    if (isScanning) stopScan();
+    if (selectedDeviceId) await disconnect();
+    setSelectedSsid('');
+    setPassword('');
+    setShowPassword(false);
+    setLocalSetupComplete(false);
+    setSetupRequested(false);
+    setChangingWifi(false);
+  }, [disconnect, isScanning, selectedDeviceId, stopScan]);
 
   const selectWifi = (ssid: string) => {
     setSelectedSsid(ssid);
@@ -312,6 +330,20 @@ const PillDispenserDeviceTab = () => {
               );
             })}
           </View>
+
+          {!checkingStatus && !isComplete && changingWifi ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Cancel Wi-Fi change and return to the dispenser"
+              style={styles.cancelSetupButton}
+              onPress={cancelWifiChange}
+            >
+              <Icon name="arrow-back" size={16} color="#8B5E34" />
+              <Text style={styles.cancelSetupText}>
+                Cancel and keep current Wi-Fi
+              </Text>
+            </TouchableOpacity>
+          ) : null}
 
           {!checkingStatus && !isComplete && alternateModeAvailable ? (
             <View style={styles.compatibilityBox}>
@@ -697,6 +729,7 @@ const PillDispenserDeviceTab = () => {
                   if (selectedDeviceId) await disconnect();
                   setLocalSetupComplete(false);
                   setSetupRequested(true);
+                  setChangingWifi(true);
                 }}
               >
                 <Text style={styles.secondaryButtonText}>Change Wi-Fi</Text>
@@ -1213,6 +1246,23 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
     marginVertical: 10,
+  },
+  cancelSetupButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    minHeight: 42,
+    borderRadius: 21,
+    borderWidth: 1,
+    borderColor: '#D7C3AB',
+    backgroundColor: '#F8EFE5',
+    marginBottom: 14,
+  },
+  cancelSetupText: {
+    color: '#8B5E34',
+    fontWeight: '700',
+    fontSize: 13,
   },
   secondaryButton: {
     minHeight: 42,

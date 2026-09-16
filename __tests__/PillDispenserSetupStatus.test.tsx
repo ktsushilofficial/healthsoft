@@ -41,6 +41,9 @@ const mockProvisioning = {
   selectedDeviceId: null as string | null,
   statusMessage: 'Put the pill dispenser in Wi-Fi setup mode, then scan.',
   startScan: jest.fn(),
+  stopScan: jest.fn(async () => {
+    mockProvisioning.stage = 'idle';
+  }),
   disconnect: jest.fn(async () => {
     mockProvisioning.stage = 'idle';
     mockProvisioning.selectedDeviceId = null;
@@ -184,6 +187,43 @@ it('handles the vendor offline error as offline', async () => {
   await mount();
   expect(step()).toBe(1);
   expect(texts()).toContain('Pill dispenser offline');
+});
+
+it('returns to the online dispenser after cancelling a Wi-Fi change', async () => {
+  await mount();
+  expect(step()).toBe(3);
+
+  await press('Change Wi-Fi');
+  expect(step()).toBe(1);
+  expect(texts()).toContain('Scan Pill Dispensers');
+  expect(texts()).toContain('Cancel and keep current Wi-Fi');
+
+  await press('Cancel and keep current Wi-Fi');
+  expect(step()).toBe(3);
+  expect(texts()).toContain('Pill dispenser online');
+  expect(texts()).toContain('Change Wi-Fi');
+  expect(texts()).not.toContain('Cancel and keep current Wi-Fi');
+});
+
+it('drops the Bluetooth link and stops scanning when the change is cancelled', async () => {
+  await mount();
+  await press('Change Wi-Fi');
+  mockProvisioning.stage = 'scanning';
+  mockProvisioning.selectedDeviceId = 'dispenser-ble';
+  await focus(true);
+
+  await press('Cancel and keep current Wi-Fi');
+  expect(mockProvisioning.stopScan).toHaveBeenCalled();
+  expect(mockProvisioning.disconnect).toHaveBeenCalled();
+  expect(step()).toBe(3);
+});
+
+it('offers no cancel during first-time setup, where there is nothing to return to', async () => {
+  storage.mockResolvedValue(null);
+  await mount();
+  expect(step()).toBe(1);
+  expect(texts()).toContain('Scan Pill Dispensers');
+  expect(texts()).not.toContain('Cancel and keep current Wi-Fi');
 });
 
 it('keeps first-time setup available when there is no saved dispenser', async () => {
