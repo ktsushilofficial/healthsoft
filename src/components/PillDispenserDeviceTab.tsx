@@ -3,7 +3,10 @@ import { useFocusEffect } from '@react-navigation/native';
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -45,11 +48,11 @@ const PillDispenserDeviceTab = () => {
     }, []),
   );
 
-  const currentStatus = connectionStatus?.ownerKey === user?.user_id
-    ? connectionStatus
-    : null;
+  const currentStatus =
+    connectionStatus?.ownerKey === user?.user_id ? connectionStatus : null;
   const checkingStatus = !currentStatus || currentStatus.checking;
-  const cloudOnline = !!currentStatus?.deviceSn && currentStatus.online === true;
+  const cloudOnline =
+    !!currentStatus?.deviceSn && currentStatus.online === true;
   const {
     isAvailable,
     devices,
@@ -88,10 +91,10 @@ const PillDispenserDeviceTab = () => {
   const isConnecting = stage === 'connecting' || stage === 'securing';
   const isReady = stage === 'ready';
   const isProvisioning = stage === 'provisioning';
-  const isComplete = !checkingStatus && (
-    (cloudOnline && !setupRequested) ||
-    (setupRequested && (localSetupComplete || stage === 'connected'))
-  );
+  const isComplete =
+    !checkingStatus &&
+    ((cloudOnline && !setupRequested) ||
+      (setupRequested && (localSetupComplete || stage === 'connected')));
 
   useEffect(() => {
     if (setupRequested && stage === 'connected') setLocalSetupComplete(true);
@@ -127,9 +130,12 @@ const PillDispenserDeviceTab = () => {
     return 1;
   }, [checkingStatus, isComplete, isProvisioning, isReady, setupRequested]);
 
-  const setupError = !checkingStatus && !isComplete
-    ? (setupRequested ? error : currentStatus?.error)
-    : null;
+  const setupError =
+    !checkingStatus && !isComplete
+      ? setupRequested
+        ? error
+        : currentStatus?.error
+      : null;
   const setupMessage = checkingStatus
     ? 'Checking dispenser status…'
     : isComplete
@@ -150,9 +156,7 @@ const PillDispenserDeviceTab = () => {
     profile?: SavedPillDispenserWifi,
     isSavedProfile = true,
   ) => {
-    setEditingOriginalSsid(
-      profile && isSavedProfile ? profile.ssid : null,
-    );
+    setEditingOriginalSsid(profile && isSavedProfile ? profile.ssid : null);
     setEditorSsid(profile?.ssid ?? '');
     setEditorPassword(profile?.password ?? '');
     setShowEditorPassword(false);
@@ -207,7 +211,9 @@ const PillDispenserDeviceTab = () => {
               }
               setWifiEditorVisible(false);
             } catch {
-              setSavedWifiError('The saved Wi-Fi network could not be removed.');
+              setSavedWifiError(
+                'The saved Wi-Fi network could not be removed.',
+              );
             } finally {
               setSavingWifi(false);
             }
@@ -220,460 +226,484 @@ const PillDispenserDeviceTab = () => {
   return (
     <>
       {isSenior ? (
-      <View style={styles.card}>
-        <View style={styles.titleIcon}>
-          <Icon name="medical-outline" size={22} color="#F28C28" />
-        </View>
-        <Text style={styles.cardTitle}>Pill Dispenser Wi-Fi Setup</Text>
-        <View style={[styles.statusBox, setupError ? styles.errorBox : null]}>
-          {checkingStatus ? <ActivityIndicator color="#F28C28" /> : (
-            <Icon
-              name={isComplete ? 'checkmark-circle' : 'information-circle-outline'}
-              size={19}
-              color={isComplete ? '#128044' : '#73573C'}
-            />
-          )}
-          <Text accessibilityLiveRegion="polite" style={styles.statusText}>
-            {setupMessage}
+        <View style={styles.card}>
+          <View style={styles.titleIcon}>
+            <Icon name="medical-outline" size={22} color="#F28C28" />
+          </View>
+          <Text style={styles.cardTitle}>Pill Dispenser Wi-Fi Setup</Text>
+          <View style={[styles.statusBox, setupError ? styles.errorBox : null]}>
+            {checkingStatus ? (
+              <ActivityIndicator color="#F28C28" />
+            ) : (
+              <Icon
+                name={
+                  isComplete ? 'checkmark-circle' : 'information-circle-outline'
+                }
+                size={19}
+                color={isComplete ? '#128044' : '#73573C'}
+              />
+            )}
+            <Text accessibilityLiveRegion="polite" style={styles.statusText}>
+              {setupMessage}
+            </Text>
+          </View>
+          <Text style={styles.cardSubtitle}>
+            {isComplete
+              ? 'Your dispenser is connected. Wi-Fi setup is complete.'
+              : 'Connect to the dispenser over Bluetooth, then securely give it your Wi-Fi details. The scan shows devices advertising the ESP-BluFi setup service, even if their Bluetooth name changes.'}
           </Text>
-        </View>
-        <Text style={styles.cardSubtitle}>
-          {isComplete
-            ? 'Your dispenser is connected. Wi-Fi setup is complete.'
-            : 'Connect to the dispenser over Bluetooth, then securely give it your Wi-Fi details. The scan shows devices advertising the ESP-BluFi setup service, even if their Bluetooth name changes.'}
-        </Text>
 
-        <View
-          style={styles.steps}
-          accessibilityRole="progressbar"
-          accessibilityLabel="Wi-Fi setup progress"
-          accessibilityValue={{
-            min: 0,
-            max: 3,
-            now: step,
-            text: checkingStatus ? 'Checking dispenser status' : `Step ${step} of 3`,
-          }}
-        >
-          {['Dispenser', 'Wi-Fi', 'Complete'].map((label, index) => {
-            const number = index + 1;
-            const active = number <= step;
-            return (
-              <React.Fragment key={label}>
-                {index > 0 ? (
-                  <View
-                    style={[
-                      styles.stepLine,
-                      active ? styles.stepLineActive : null,
-                    ]}
-                  />
-                ) : null}
-                <View style={styles.stepItem}>
-                  <View
-                    style={[
-                      styles.stepCircle,
-                      active ? styles.stepCircleActive : null,
-                    ]}
-                  >
-                    {number < step ? (
-                      <Icon name="checkmark" size={14} color="#FFFFFF" />
-                    ) : (
-                      <Text
-                        style={[
-                          styles.stepNumber,
-                          active ? styles.stepNumberActive : null,
-                        ]}
-                      >
-                        {number}
-                      </Text>
-                    )}
+          <View
+            style={styles.steps}
+            accessibilityRole="progressbar"
+            accessibilityLabel="Wi-Fi setup progress"
+            accessibilityValue={{
+              min: 0,
+              max: 3,
+              now: step,
+              text: checkingStatus
+                ? 'Checking dispenser status'
+                : `Step ${step} of 3`,
+            }}
+          >
+            {['Dispenser', 'Wi-Fi', 'Complete'].map((label, index) => {
+              const number = index + 1;
+              const active = number <= step;
+              return (
+                <React.Fragment key={label}>
+                  {index > 0 ? (
+                    <View
+                      style={[
+                        styles.stepLine,
+                        active ? styles.stepLineActive : null,
+                      ]}
+                    />
+                  ) : null}
+                  <View style={styles.stepItem}>
+                    <View
+                      style={[
+                        styles.stepCircle,
+                        active ? styles.stepCircleActive : null,
+                      ]}
+                    >
+                      {number < step ? (
+                        <Icon name="checkmark" size={14} color="#FFFFFF" />
+                      ) : (
+                        <Text
+                          style={[
+                            styles.stepNumber,
+                            active ? styles.stepNumberActive : null,
+                          ]}
+                        >
+                          {number}
+                        </Text>
+                      )}
+                    </View>
+                    <Text
+                      style={[
+                        styles.stepLabel,
+                        active ? styles.stepLabelActive : null,
+                      ]}
+                    >
+                      {label}
+                    </Text>
                   </View>
-                  <Text
-                    style={[
-                      styles.stepLabel,
-                      active ? styles.stepLabelActive : null,
-                    ]}
-                  >
-                    {label}
+                </React.Fragment>
+              );
+            })}
+          </View>
+
+          {!checkingStatus && !isComplete && alternateModeAvailable ? (
+            <View style={styles.compatibilityBox}>
+              <Text style={styles.compatibilityTitle}>
+                Compatibility setup was not accepted
+              </Text>
+              <Text style={styles.compatibilityText}>
+                This dispenser did not respond in its default compatibility
+                mode. You can retry using the standard encrypted BluFi
+                handshake.
+              </Text>
+              <TouchableOpacity
+                style={styles.compatibilityButton}
+                onPress={connectAlternateMode}
+              >
+                <Icon name="lock-closed-outline" size={17} color="#FFFFFF" />
+                <Text style={styles.compatibilityButtonText}>
+                  Try encrypted mode
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
+          {!checkingStatus && !isComplete ? (
+            <View style={styles.savedWifiSection}>
+              <View style={styles.savedWifiHeader}>
+                <View style={styles.savedWifiHeaderText}>
+                  <Text style={styles.sectionTitle}>Saved Wi-Fi networks</Text>
+                  <Text style={styles.savedWifiHelp}>
+                    Stored securely on this phone for future dispenser setup.
                   </Text>
                 </View>
-              </React.Fragment>
-            );
-          })}
-        </View>
-
-        {!checkingStatus && !isComplete && alternateModeAvailable ? (
-          <View style={styles.compatibilityBox}>
-            <Text style={styles.compatibilityTitle}>
-              Compatibility setup was not accepted
-            </Text>
-            <Text style={styles.compatibilityText}>
-              This dispenser did not respond in its default compatibility mode.
-              You can retry using the standard encrypted BluFi handshake.
-            </Text>
-            <TouchableOpacity
-              style={styles.compatibilityButton}
-              onPress={connectAlternateMode}
-            >
-              <Icon name="lock-closed-outline" size={17} color="#FFFFFF" />
-              <Text style={styles.compatibilityButtonText}>
-                Try encrypted mode
-              </Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
-
-        {!checkingStatus && !isComplete ? <View style={styles.savedWifiSection}>
-          <View style={styles.savedWifiHeader}>
-            <View style={styles.savedWifiHeaderText}>
-              <Text style={styles.sectionTitle}>Saved Wi-Fi networks</Text>
-              <Text style={styles.savedWifiHelp}>
-                Stored securely on this phone for future dispenser setup.
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={styles.addWifiButton}
-              onPress={() => openWifiEditor()}
-            >
-              <Icon name="add" size={17} color="#FFFFFF" />
-              <Text style={styles.addWifiButtonText}>Add</Text>
-            </TouchableOpacity>
-          </View>
-          {savedWifi.length === 0 ? (
-            <Text style={styles.savedWifiEmpty}>
-              No Wi-Fi networks saved yet.
-            </Text>
-          ) : (
-            savedWifi.map(profile => {
-              const selected = selectedSsid === profile.ssid;
-              return (
-                <View
-                  key={profile.ssid}
-                  style={[
-                    styles.savedWifiRow,
-                    selected ? styles.wifiRowSelected : null,
-                  ]}
+                <TouchableOpacity
+                  style={styles.addWifiButton}
+                  onPress={() => openWifiEditor()}
                 >
+                  <Icon name="add" size={17} color="#FFFFFF" />
+                  <Text style={styles.addWifiButtonText}>Add</Text>
+                </TouchableOpacity>
+              </View>
+              {savedWifi.length === 0 ? (
+                <Text style={styles.savedWifiEmpty}>
+                  No Wi-Fi networks saved yet.
+                </Text>
+              ) : (
+                savedWifi.map(profile => {
+                  const selected = selectedSsid === profile.ssid;
+                  return (
+                    <View
+                      key={profile.ssid}
+                      style={[
+                        styles.savedWifiRow,
+                        selected ? styles.wifiRowSelected : null,
+                      ]}
+                    >
+                      <TouchableOpacity
+                        style={styles.savedWifiSelect}
+                        disabled={isProvisioning}
+                        onPress={() => selectWifi(profile.ssid)}
+                      >
+                        <Icon
+                          name="wifi"
+                          size={18}
+                          color={selected ? '#F28C28' : '#7A726A'}
+                        />
+                        <View style={styles.savedWifiText}>
+                          <Text style={styles.savedWifiName} numberOfLines={1}>
+                            {profile.ssid}
+                          </Text>
+                          <Text style={styles.savedWifiPassword}>
+                            Password saved
+                          </Text>
+                        </View>
+                        {selected ? (
+                          <Icon
+                            name="checkmark-circle"
+                            size={19}
+                            color="#F28C28"
+                          />
+                        ) : null}
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        accessibilityRole="button"
+                        accessibilityLabel={`Edit saved Wi-Fi ${profile.ssid}`}
+                        style={styles.editWifiButton}
+                        onPress={() => openWifiEditor(profile)}
+                      >
+                        <Icon name="create-outline" size={18} color="#8B5E34" />
+                      </TouchableOpacity>
+                    </View>
+                  );
+                })
+              )}
+              {savedWifi.length > 0 && !isReady && !isProvisioning ? (
+                <Text style={styles.savedWifiHint}>
+                  Select a saved network now; its name and password will be
+                  ready when the dispenser reaches the Wi-Fi step.
+                </Text>
+              ) : null}
+              {savedWifiError ? (
+                <Text style={styles.savedWifiError}>{savedWifiError}</Text>
+              ) : null}
+            </View>
+          ) : null}
+
+          {step === 1 ? (
+            <>
+              {isSenior ? (
+                <TouchableOpacity
+                  style={[
+                    styles.primaryButton,
+                    !isAvailable ? styles.disabled : null,
+                  ]}
+                  disabled={!isAvailable || isConnecting}
+                  onPress={() => {
+                    setSetupRequested(true);
+                    return isScanning ? stopScan() : startScan();
+                  }}
+                >
+                  {isScanning || isConnecting ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <Icon name="bluetooth" size={18} color="#FFFFFF" />
+                  )}
+                  <Text style={styles.primaryButtonText}>
+                    {isScanning
+                      ? 'Stop Scanning'
+                      : isConnecting
+                      ? 'Connecting…'
+                      : 'Scan Pill Dispensers'}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+
+              {isSenior && devices.length === 0 && isScanning ? (
+                <Text style={styles.helperText}>
+                  Keep the dispenser close, make sure its setup light is
+                  blinking, and look for the BLE name printed in its manual or
+                  label.
+                </Text>
+              ) : null}
+
+              {isSenior
+                ? devices.map(device => {
+                    const selected = device.id === selectedDeviceId;
+                    return (
+                      <View key={device.id} style={styles.deviceRow}>
+                        <View style={styles.deviceIcon}>
+                          <Icon name="medical" size={20} color="#D97706" />
+                        </View>
+                        <View style={styles.rowText}>
+                          <Text style={styles.rowTitle}>{device.name}</Text>
+                          <Text style={styles.rowMeta}>
+                            {signalLabel(device.rssi)}
+                            {device.rssi == null ? '' : ` · ${device.rssi} dBm`}
+                            {' · BluFi setup device'}
+                            {device.isConnectable === false
+                              ? ' · Not connectable'
+                              : ''}
+                          </Text>
+                        </View>
+                        <TouchableOpacity
+                          style={[
+                            styles.smallButton,
+                            selected && isConnecting ? styles.disabled : null,
+                          ]}
+                          disabled={isConnecting}
+                          onPress={() => {
+                            if (device.isConnectable === false) {
+                              Alert.alert(
+                                'Dispenser is not accepting connections',
+                                'The device is advertising over Bluetooth, but it is not connectable. Put the dispenser into Wi-Fi/BluFi setup mode until its setup light blinks, then scan again.',
+                              );
+                              return;
+                            }
+                            connect(device.id);
+                          }}
+                        >
+                          <Text style={styles.smallButtonText}>
+                            {selected && isConnecting
+                              ? 'Connecting'
+                              : device.isConnectable === false
+                              ? 'Unavailable'
+                              : 'Connect'}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  })
+                : null}
+            </>
+          ) : null}
+
+          {step === 2 ? (
+            <>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>
+                  Choose a 2.4 GHz Wi-Fi network
+                </Text>
+                <TouchableOpacity
+                  onPress={refreshWifi}
+                  disabled={isProvisioning}
+                  hitSlop={10}
+                >
+                  <Icon name="refresh" size={19} color="#F28C28" />
+                </TouchableOpacity>
+              </View>
+
+              {wifiNetworks.slice(0, 8).map(network => {
+                const selected = selectedSsid === network.ssid;
+                return (
                   <TouchableOpacity
-                    style={styles.savedWifiSelect}
+                    key={network.ssid}
+                    style={[
+                      styles.wifiRow,
+                      selected ? styles.wifiRowSelected : null,
+                    ]}
+                    onPress={() => selectWifi(network.ssid)}
                     disabled={isProvisioning}
-                    onPress={() => selectWifi(profile.ssid)}
                   >
                     <Icon
                       name="wifi"
                       size={18}
                       color={selected ? '#F28C28' : '#7A726A'}
                     />
-                    <View style={styles.savedWifiText}>
-                      <Text style={styles.savedWifiName} numberOfLines={1}>
-                        {profile.ssid}
-                      </Text>
-                      <Text style={styles.savedWifiPassword}>Password saved</Text>
-                    </View>
+                    <Text style={styles.wifiName} numberOfLines={1}>
+                      {network.ssid}
+                    </Text>
+                    <Text style={styles.wifiSignal}>{network.rssi} dBm</Text>
                     {selected ? (
                       <Icon name="checkmark-circle" size={19} color="#F28C28" />
                     ) : null}
                   </TouchableOpacity>
-                  <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityLabel={`Edit saved Wi-Fi ${profile.ssid}`}
-                    style={styles.editWifiButton}
-                    onPress={() => openWifiEditor(profile)}
-                  >
-                    <Icon name="create-outline" size={18} color="#8B5E34" />
-                  </TouchableOpacity>
-                </View>
-              );
-            })
-          )}
-          {savedWifi.length > 0 && !isReady && !isProvisioning ? (
-            <Text style={styles.savedWifiHint}>
-              Select a saved network now; its name and password will be ready
-              when the dispenser reaches the Wi-Fi step.
-            </Text>
-          ) : null}
-          {savedWifiError ? (
-            <Text style={styles.savedWifiError}>{savedWifiError}</Text>
-          ) : null}
-        </View> : null}
-
-        {step === 1 ? (
-          <>
-            {isSenior ? (
-              <TouchableOpacity
-                style={[
-                  styles.primaryButton,
-                  !isAvailable ? styles.disabled : null,
-                ]}
-                disabled={!isAvailable || isConnecting}
-                onPress={() => {
-                  setSetupRequested(true);
-                  return isScanning ? stopScan() : startScan();
-                }}
-              >
-                {isScanning || isConnecting ? (
-                  <ActivityIndicator color="#FFFFFF" />
-                ) : (
-                  <Icon name="bluetooth" size={18} color="#FFFFFF" />
-                )}
-                <Text style={styles.primaryButtonText}>
-                  {isScanning
-                    ? 'Stop Scanning'
-                    : isConnecting
-                    ? 'Connecting…'
-                    : 'Scan Pill Dispensers'}
-                </Text>
-              </TouchableOpacity>
-            ) : null}
-
-            {isSenior && devices.length === 0 && isScanning ? (
-              <Text style={styles.helperText}>
-                Keep the dispenser close, make sure its setup light is blinking,
-                and look for the BLE name printed in its manual or label.
-              </Text>
-            ) : null}
-
-            {isSenior
-              ? devices.map(device => {
-              const selected = device.id === selectedDeviceId;
-              return (
-                <View key={device.id} style={styles.deviceRow}>
-                  <View style={styles.deviceIcon}>
-                    <Icon name="medical" size={20} color="#D97706" />
-                  </View>
-                  <View style={styles.rowText}>
-                    <Text style={styles.rowTitle}>{device.name}</Text>
-                    <Text style={styles.rowMeta}>
-                      {signalLabel(device.rssi)}
-                      {device.rssi == null ? '' : ` · ${device.rssi} dBm`}
-                      {' · BluFi setup device'}
-                      {device.isConnectable === false
-                        ? ' · Not connectable'
-                        : ''}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    style={[
-                      styles.smallButton,
-                      selected && isConnecting ? styles.disabled : null,
-                    ]}
-                    disabled={isConnecting}
-                    onPress={() => {
-                      if (device.isConnectable === false) {
-                        Alert.alert(
-                          'Dispenser is not accepting connections',
-                          'The device is advertising over Bluetooth, but it is not connectable. Put the dispenser into Wi-Fi/BluFi setup mode until its setup light blinks, then scan again.',
-                        );
-                        return;
-                      }
-                      connect(device.id);
-                    }}
-                  >
-                    <Text style={styles.smallButtonText}>
-                      {selected && isConnecting
-                        ? 'Connecting'
-                        : device.isConnectable === false
-                        ? 'Unavailable'
-                        : 'Connect'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              );
-            }) : null}
-          </>
-        ) : null}
-
-        {step === 2 ? (
-          <>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>
-                Choose a 2.4 GHz Wi-Fi network
-              </Text>
-              <TouchableOpacity
-                onPress={refreshWifi}
-                disabled={isProvisioning}
-                hitSlop={10}
-              >
-                <Icon name="refresh" size={19} color="#F28C28" />
-              </TouchableOpacity>
-            </View>
-
-            {wifiNetworks.slice(0, 8).map(network => {
-              const selected = selectedSsid === network.ssid;
-              return (
-                <TouchableOpacity
-                  key={network.ssid}
-                  style={[
-                    styles.wifiRow,
-                    selected ? styles.wifiRowSelected : null,
-                  ]}
-                  onPress={() => selectWifi(network.ssid)}
-                  disabled={isProvisioning}
-                >
-                  <Icon
-                    name="wifi"
-                    size={18}
-                    color={selected ? '#F28C28' : '#7A726A'}
-                  />
-                  <Text style={styles.wifiName} numberOfLines={1}>
-                    {network.ssid}
-                  </Text>
-                  <Text style={styles.wifiSignal}>{network.rssi} dBm</Text>
-                  {selected ? (
-                    <Icon name="checkmark-circle" size={19} color="#F28C28" />
-                  ) : null}
-                </TouchableOpacity>
-              );
-            })}
-
-            <Text style={styles.inputLabel}>Wi-Fi name</Text>
-            <TextInput
-              value={selectedSsid}
-              onChangeText={value => {
-                setSelectedSsid(value);
-                const saved = savedWifi.find(
-                  profile => profile.ssid === value.trim(),
                 );
-                setPassword(saved?.password ?? '');
-              }}
-              editable={!isProvisioning}
-              autoCapitalize="none"
-              autoCorrect={false}
-              placeholder="Enter SSID manually"
-              placeholderTextColor="#A69B91"
-              style={styles.input}
-            />
+              })}
 
-            <Text style={styles.inputLabel}>Wi-Fi password</Text>
-            <View style={styles.passwordWrap}>
+              <Text style={styles.inputLabel}>Wi-Fi name</Text>
               <TextInput
-                value={password}
-                onChangeText={setPassword}
+                value={selectedSsid}
+                onChangeText={value => {
+                  setSelectedSsid(value);
+                  const saved = savedWifi.find(
+                    profile => profile.ssid === value.trim(),
+                  );
+                  setPassword(saved?.password ?? '');
+                }}
                 editable={!isProvisioning}
                 autoCapitalize="none"
                 autoCorrect={false}
-                secureTextEntry={!showPassword}
-                placeholder="Enter Wi-Fi password"
+                placeholder="Enter SSID manually"
                 placeholderTextColor="#A69B91"
-                style={styles.passwordInput}
+                style={styles.input}
               />
-              <TouchableOpacity
-                onPress={() => setShowPassword(value => !value)}
-                hitSlop={10}
-              >
-                <Icon
-                  name={showPassword ? 'eye-off-outline' : 'eye-outline'}
-                  size={20}
-                  color="#7A726A"
+
+              <Text style={styles.inputLabel}>Wi-Fi password</Text>
+              <View style={styles.passwordWrap}>
+                <TextInput
+                  value={password}
+                  onChangeText={setPassword}
+                  editable={!isProvisioning}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  secureTextEntry={!showPassword}
+                  placeholder="Enter Wi-Fi password"
+                  placeholderTextColor="#A69B91"
+                  style={styles.passwordInput}
                 />
-              </TouchableOpacity>
-            </View>
+                <TouchableOpacity
+                  onPress={() => setShowPassword(value => !value)}
+                  hitSlop={10}
+                >
+                  <Icon
+                    name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                    size={20}
+                    color="#7A726A"
+                  />
+                </TouchableOpacity>
+              </View>
 
-            <TouchableOpacity
-              style={[
-                styles.saveCurrentWifiButton,
-                !selectedSsid.trim() || isProvisioning
-                  ? styles.disabled
-                  : null,
-              ]}
-              disabled={!selectedSsid.trim() || isProvisioning}
-              onPress={() =>
-                openWifiEditor({
-                  ssid: selectedSsid.trim(),
-                  password,
-                  updatedAt: Date.now(),
-                }, savedWifi.some(
-                  profile => profile.ssid === selectedSsid.trim(),
-                ))
-              }
-            >
-              <Icon name="bookmark-outline" size={17} color="#8B5E34" />
-              <Text style={styles.saveCurrentWifiButtonText}>
-                {savedWifi.some(
-                  profile => profile.ssid === selectedSsid.trim(),
-                )
-                  ? 'Update saved Wi-Fi'
-                  : 'Save Wi-Fi for next time'}
-              </Text>
-            </TouchableOpacity>
-
-            <Text style={styles.securityNote}>
-              <Icon
-                name={connectionEncrypted ? 'lock-closed' : 'warning'}
-                size={12}
-                color={connectionEncrypted ? '#287052' : '#B54708'}
-              />{' '}
-              {connectionEncrypted
-                ? 'Credentials are sent directly to the dispenser through the encrypted BluFi session.'
-                : 'Compatibility mode is active. Credentials are sent directly over the local Bluetooth connection without BluFi payload encryption.'}
-            </Text>
-
-            <TouchableOpacity
-              style={[
-                styles.primaryButton,
-                !selectedSsid.trim() || isProvisioning ? styles.disabled : null,
-              ]}
-              disabled={!selectedSsid.trim() || isProvisioning}
-              onPress={() => provision(selectedSsid, password)}
-            >
-              {isProvisioning ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : (
-                <Icon name="wifi" size={18} color="#FFFFFF" />
-              )}
-              <Text style={styles.primaryButtonText}>
-                {isProvisioning
-                  ? 'Connecting to Wi-Fi…'
-                  : 'Connect Dispenser to Wi-Fi'}
-              </Text>
-            </TouchableOpacity>
-
-            {isProvisioning ? (
               <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={checkWifiStatus}
+                style={[
+                  styles.saveCurrentWifiButton,
+                  !selectedSsid.trim() || isProvisioning
+                    ? styles.disabled
+                    : null,
+                ]}
+                disabled={!selectedSsid.trim() || isProvisioning}
+                onPress={() =>
+                  openWifiEditor(
+                    {
+                      ssid: selectedSsid.trim(),
+                      password,
+                      updatedAt: Date.now(),
+                    },
+                    savedWifi.some(
+                      profile => profile.ssid === selectedSsid.trim(),
+                    ),
+                  )
+                }
               >
-                <Text style={styles.secondaryButtonText}>
-                  Check connection status
+                <Icon name="bookmark-outline" size={17} color="#8B5E34" />
+                <Text style={styles.saveCurrentWifiButtonText}>
+                  {savedWifi.some(
+                    profile => profile.ssid === selectedSsid.trim(),
+                  )
+                    ? 'Update saved Wi-Fi'
+                    : 'Save Wi-Fi for next time'}
                 </Text>
               </TouchableOpacity>
-            ) : null}
-          </>
-        ) : null}
 
-        {isComplete ? (
-          <View style={styles.successContent}>
-            <View style={styles.successIcon}>
-              <Icon name="checkmark" size={34} color="#FFFFFF" />
-            </View>
-            <Text style={styles.successTitle}>Pill dispenser is online</Text>
-            <Text style={styles.successBody}>
-              {cloudOnline && !setupRequested
-                ? `Device ${currentStatus?.deviceSn} is online. No scan is needed.`
-                : connectedWifiSsid
-                ? `Connected to ${connectedWifiSsid}.`
-                : 'The dispenser successfully joined Wi-Fi.'}
-            </Text>
-            {selectedDeviceId ? <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={disconnect}
-            >
-              <Text style={styles.secondaryButtonText}>
-                Finish Bluetooth setup
+              <Text style={styles.securityNote}>
+                <Icon
+                  name={connectionEncrypted ? 'lock-closed' : 'warning'}
+                  size={12}
+                  color={connectionEncrypted ? '#287052' : '#B54708'}
+                />{' '}
+                {connectionEncrypted
+                  ? 'Credentials are sent directly to the dispenser through the encrypted BluFi session.'
+                  : 'Compatibility mode is active. Credentials are sent directly over the local Bluetooth connection without BluFi payload encryption.'}
               </Text>
-            </TouchableOpacity> : null}
-            <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={async () => {
-                if (selectedDeviceId) await disconnect();
-                setLocalSetupComplete(false);
-                setSetupRequested(true);
-              }}
-            >
-              <Text style={styles.secondaryButtonText}>Change Wi-Fi</Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
-      </View>
+
+              <TouchableOpacity
+                style={[
+                  styles.primaryButton,
+                  !selectedSsid.trim() || isProvisioning
+                    ? styles.disabled
+                    : null,
+                ]}
+                disabled={!selectedSsid.trim() || isProvisioning}
+                onPress={() => provision(selectedSsid, password)}
+              >
+                {isProvisioning ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Icon name="wifi" size={18} color="#FFFFFF" />
+                )}
+                <Text style={styles.primaryButtonText}>
+                  {isProvisioning
+                    ? 'Connecting to Wi-Fi…'
+                    : 'Connect Dispenser to Wi-Fi'}
+                </Text>
+              </TouchableOpacity>
+
+              {isProvisioning ? (
+                <TouchableOpacity
+                  style={styles.secondaryButton}
+                  onPress={checkWifiStatus}
+                >
+                  <Text style={styles.secondaryButtonText}>
+                    Check connection status
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+            </>
+          ) : null}
+
+          {isComplete ? (
+            <View style={styles.successContent}>
+              <View style={styles.successIcon}>
+                <Icon name="checkmark" size={34} color="#FFFFFF" />
+              </View>
+              <Text style={styles.successTitle}>Pill dispenser is online</Text>
+              <Text style={styles.successBody}>
+                {cloudOnline && !setupRequested
+                  ? `Device ${currentStatus?.deviceSn} is online. No scan is needed.`
+                  : connectedWifiSsid
+                  ? `Connected to ${connectedWifiSsid}.`
+                  : 'The dispenser successfully joined Wi-Fi.'}
+              </Text>
+              {selectedDeviceId ? (
+                <TouchableOpacity
+                  style={styles.secondaryButton}
+                  onPress={disconnect}
+                >
+                  <Text style={styles.secondaryButtonText}>
+                    Finish Bluetooth setup
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+              <TouchableOpacity
+                style={styles.secondaryButton}
+                onPress={async () => {
+                  if (selectedDeviceId) await disconnect();
+                  setLocalSetupComplete(false);
+                  setSetupRequested(true);
+                }}
+              >
+                <Text style={styles.secondaryButtonText}>Change Wi-Fi</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+        </View>
       ) : null}
       <Modal
         visible={wifiEditorVisible}
@@ -681,97 +711,112 @@ const PillDispenserDeviceTab = () => {
         animationType="fade"
         onRequestClose={() => setWifiEditorVisible(false)}
       >
-        <View style={styles.editorOverlay}>
-          <View style={styles.editorCard}>
-            <View style={styles.editorHeader}>
-              <View>
-                <Text style={styles.editorTitle}>
-                  {editingOriginalSsid ? 'Edit saved Wi-Fi' : 'Add Wi-Fi'}
-                </Text>
-                <Text style={styles.editorSubtitle}>
-                  Saved in this phone&apos;s secure credential storage.
-                </Text>
+        <KeyboardAvoidingView
+          style={styles.editorOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
+          <ScrollView
+            contentContainerStyle={styles.editorScroll}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.editorCard}>
+              <View style={styles.editorHeader}>
+                <View>
+                  <Text style={styles.editorTitle}>
+                    {editingOriginalSsid ? 'Edit saved Wi-Fi' : 'Add Wi-Fi'}
+                  </Text>
+                  <Text style={styles.editorSubtitle}>
+                    Saved in this phone&apos;s secure credential storage.
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="Close saved Wi-Fi editor"
+                  disabled={savingWifi}
+                  onPress={() => setWifiEditorVisible(false)}
+                >
+                  <Icon name="close" size={23} color="#7A726A" />
+                </TouchableOpacity>
               </View>
-              <TouchableOpacity
-                accessibilityRole="button"
-                accessibilityLabel="Close saved Wi-Fi editor"
-                disabled={savingWifi}
-                onPress={() => setWifiEditorVisible(false)}
-              >
-                <Icon name="close" size={23} color="#7A726A" />
-              </TouchableOpacity>
-            </View>
 
-            <Text style={styles.inputLabel}>Wi-Fi name (SSID)</Text>
-            <TextInput
-              value={editorSsid}
-              onChangeText={setEditorSsid}
-              editable={!savingWifi}
-              autoCapitalize="none"
-              autoCorrect={false}
-              placeholder="Enter Wi-Fi name"
-              placeholderTextColor="#A69B91"
-              style={styles.input}
-            />
-
-            <Text style={styles.inputLabel}>Wi-Fi password</Text>
-            <View style={styles.passwordWrap}>
+              <Text style={styles.inputLabel}>Wi-Fi name (SSID)</Text>
               <TextInput
-                value={editorPassword}
-                onChangeText={setEditorPassword}
+                value={editorSsid}
+                onChangeText={setEditorSsid}
                 editable={!savingWifi}
                 autoCapitalize="none"
                 autoCorrect={false}
-                secureTextEntry={!showEditorPassword}
-                placeholder="Enter Wi-Fi password"
+                placeholder="Enter Wi-Fi name"
                 placeholderTextColor="#A69B91"
-                style={styles.passwordInput}
+                style={styles.input}
               />
-              <TouchableOpacity
-                disabled={savingWifi}
-                onPress={() => setShowEditorPassword(value => !value)}
-                hitSlop={10}
-              >
-                <Icon
-                  name={
-                    showEditorPassword ? 'eye-off-outline' : 'eye-outline'
-                  }
-                  size={20}
-                  color="#7A726A"
+
+              <Text style={styles.inputLabel}>Wi-Fi password</Text>
+              <View style={styles.passwordWrap}>
+                <TextInput
+                  value={editorPassword}
+                  onChangeText={setEditorPassword}
+                  editable={!savingWifi}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  secureTextEntry={!showEditorPassword}
+                  placeholder="Enter Wi-Fi password"
+                  placeholderTextColor="#A69B91"
+                  style={styles.passwordInput}
                 />
-              </TouchableOpacity>
-            </View>
+                <TouchableOpacity
+                  disabled={savingWifi}
+                  onPress={() => setShowEditorPassword(value => !value)}
+                  hitSlop={10}
+                >
+                  <Icon
+                    name={
+                      showEditorPassword ? 'eye-off-outline' : 'eye-outline'
+                    }
+                    size={20}
+                    color="#7A726A"
+                  />
+                </TouchableOpacity>
+              </View>
 
-            <TouchableOpacity
-              style={[
-                styles.primaryButton,
-                !editorSsid.trim() || savingWifi ? styles.disabled : null,
-              ]}
-              disabled={!editorSsid.trim() || savingWifi}
-              onPress={saveWifiProfile}
-            >
-              {savingWifi ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : (
-                <Icon name="shield-checkmark-outline" size={18} color="#FFFFFF" />
-              )}
-              <Text style={styles.primaryButtonText}>
-                {editingOriginalSsid ? 'Update Wi-Fi' : 'Save Wi-Fi'}
-              </Text>
-            </TouchableOpacity>
-
-            {editingOriginalSsid ? (
               <TouchableOpacity
-                style={styles.removeWifiButton}
-                disabled={savingWifi}
-                onPress={confirmRemoveWifi}
+                style={[
+                  styles.primaryButton,
+                  !editorSsid.trim() || savingWifi ? styles.disabled : null,
+                ]}
+                disabled={!editorSsid.trim() || savingWifi}
+                onPress={saveWifiProfile}
               >
-                <Icon name="trash-outline" size={17} color="#B42318" />
-                <Text style={styles.removeWifiButtonText}>Remove saved Wi-Fi</Text>
+                {savingWifi ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Icon
+                    name="shield-checkmark-outline"
+                    size={18}
+                    color="#FFFFFF"
+                  />
+                )}
+                <Text style={styles.primaryButtonText}>
+                  {editingOriginalSsid ? 'Update Wi-Fi' : 'Save Wi-Fi'}
+                </Text>
               </TouchableOpacity>
-            ) : null}
-          </View>
-        </View>
+
+              {editingOriginalSsid ? (
+                <TouchableOpacity
+                  style={styles.removeWifiButton}
+                  disabled={savingWifi}
+                  onPress={confirmRemoveWifi}
+                >
+                  <Icon name="trash-outline" size={17} color="#B42318" />
+                  <Text style={styles.removeWifiButtonText}>
+                    Remove saved Wi-Fi
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
       <PillDispenserManagementSection
         onConnectionStatusChange={setConnectionStatus}
@@ -1210,8 +1255,11 @@ const styles = StyleSheet.create({
   },
   editorOverlay: {
     flex: 1,
-    justifyContent: 'center',
     backgroundColor: 'rgba(30, 24, 20, 0.45)',
+  },
+  editorScroll: {
+    flexGrow: 1,
+    justifyContent: 'center',
     padding: 20,
   },
   editorCard: {

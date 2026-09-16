@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -31,7 +32,15 @@ const PillDispenserScreen = () => {
         <View style={styles.headerSpacer} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
+      {/* Keeps the focused field above the keyboard: iOS adjusts the scroll
+          insets, Android relies on adjustResize from the manifest. Persisting
+          taps lets Save respond on the first tap while the keyboard is open. */}
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+      >
         <PillDispenserDeviceTab />
       </ScrollView>
     </SafeAreaView>
@@ -68,6 +77,6 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingTop: 16,
-    paddingBottom: 24,
+    paddingBottom: 48,
   },
 });

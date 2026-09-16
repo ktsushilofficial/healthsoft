@@ -5,6 +5,11 @@ import { PILL_DISPENSER_VENDOR_CONFIG } from './vendorConfig';
 import { PillDispenserVendorError, pillDispenserVendorApi } from './vendorApi';
 import { findPillDispenserSettingsMismatches } from './settingsVerification';
 import {
+  buildPillDispenserSettingsUpdates,
+  type PillDispenserSettingsUpdateKey,
+} from './settingsUpdates';
+import { rebootPillDispenser, type PillDispenserRebootState } from './reboot';
+import {
   clearPillDispenserBinding,
   loadPillDispenserRecord,
   savePillDispenserRecord,
@@ -47,11 +52,17 @@ export function usePillDispenserManagement(
   profile: PillDispenserOwnerProfile | null,
 ) {
   const recordRef = useRef<PillDispenserLocalRecord | null>(null);
+  const informationRef = useRef<PillDispenserDeviceInformation | null>(null);
   const mountedRef = useRef(true);
   const refreshRequestRef = useRef(0);
+  const actionControllerRef = useRef<AbortController | null>(null);
+  const [rebootState, setRebootState] = useState<PillDispenserRebootState | null>(null);
   const [record, setRecord] = useState<PillDispenserLocalRecord | null>(null);
   const [information, setInformation] =
     useState<PillDispenserDeviceInformation | null>(null);
+  const [informationUpdatedAt, setInformationUpdatedAt] = useState<number | null>(
+    null,
+  );
   const [plan, setPlan] = useState<PillDispenserPlan | null>(null);
   const [online, setOnline] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
@@ -63,6 +74,17 @@ export function usePillDispenserManagement(
     recordRef.current = next;
     setRecord(next);
   }, []);
+
+  // Keeps the reported settings available for diffing saves, and records when
+  // the app last read them so the UI never implies a live measurement.
+  const applyInformation = useCallback(
+    (next: PillDispenserDeviceInformation | null) => {
+      informationRef.current = next;
+      setInformation(next);
+      setInformationUpdatedAt(next ? Date.now() : null);
+    },
+    [],
+  );
 
   const refreshForRecord = useCallback(
     async (target: PillDispenserLocalRecord, showBusy = true) => {
@@ -85,7 +107,7 @@ export function usePillDispenserManagement(
         setOnline(isOnline);
 
         if (!isOnline) {
-          setInformation(null);
+          applyInformation(null);
           setMessage('The dispenser is bound but currently offline.');
           return;
         }
@@ -100,7 +122,7 @@ export function usePillDispenserManagement(
         if (!isCurrent()) return;
 
         if (informationResult.status === 'fulfilled') {
-          setInformation(informationResult.value);
+          applyInformation(informationResult.value);
         } else {
           throw informationResult.reason;
         }
@@ -123,7 +145,7 @@ export function usePillDispenserManagement(
           requestError.code === 611
         ) {
           setOnline(false);
-          setInformation(null);
+          applyInformation(null);
           setMessage('The dispenser is bound but currently offline.');
         } else {
           setError(readableError(requestError));
@@ -132,7 +154,7 @@ export function usePillDispenserManagement(
         if (isCurrent() && showBusy) setWorking(null);
       }
     },
-    [],
+    [applyInformation],
   );
 
   useFocusEffect(
@@ -142,11 +164,12 @@ export function usePillDispenserManagement(
 
       const initialize = async () => {
         setLoading(true);
-        setInformation(null);
+        applyInformation(null);
         setPlan(null);
         setOnline(null);
         setError(null);
         setMessage(null);
+        setRebootState(null);
         setWorking(null);
         applyRecord(null);
 
@@ -176,8 +199,10 @@ export function usePillDispenserManagement(
         cancelled = true;
         mountedRef.current = false;
         refreshRequestRef.current += 1;
+        actionControllerRef.current?.abort();
+        actionControllerRef.current = null;
       };
-    }, [applyRecord, profile?.ownerKey, refreshForRecord]),
+    }, [applyInformation, applyRecord, profile?.ownerKey, refreshForRecord]),
   );
 
   const bind = useCallback(
@@ -339,16 +364,17 @@ export function usePillDispenserManagement(
       const updated = await clearPillDispenserBinding(current.ownerKey);
       if (!mountedRef.current) return;
       applyRecord(updated);
-      setInformation(null);
+      applyInformation(null);
       setPlan(null);
       setOnline(null);
+      setRebootState(null);
       setMessage('The pill dispenser was unbound successfully.');
     } catch (unbindError) {
       if (mountedRef.current) setError(readableError(unbindError));
     } finally {
       if (mountedRef.current) setWorking(null);
     }
-  }, [applyRecord]);
+  }, [applyInformation, applyRecord]);
 
   const refresh = useCallback(async () => {
     const current = recordRef.current;
@@ -364,72 +390,138 @@ export function usePillDispenserManagement(
       setError(null);
       setMessage(null);
       try {
-        if (!/^[+-]\d{4}$/.test(settings.timeZoneDistrict)) {
-          throw new Error('Timezone must look like +0530 or -0600.');
-        }
-        validateTime(settings.unfazedStart, 'Do-not-disturb start');
-        validateTime(settings.unfazedEnd, 'Do-not-disturb end');
-        if (
-          settings.omitting < 10 ||
-          settings.omitting > 240 ||
-          settings.omitting % 10 !== 0
-        ) {
-          throw new Error(
-            'Missed-dose reminder must be 10–240 minutes in steps of 10.',
-          );
-        }
-        if (
-          settings.timeOut < 5 ||
-          settings.timeOut > 120 ||
-          settings.timeOut % 5 !== 0
-        ) {
-          throw new Error(
-            'Overtime reminder must be 5–120 minutes in steps of 5.',
-          );
-        }
+        // Validate per command, not up front: an unreported or invalid value in
+        // a setting this save is not sending must not block or alter the rest.
+        const validators: Partial<
+          Record<PillDispenserSettingsUpdateKey, () => void>
+        > = {
+          timezone: () => {
+            if (!/^[+-]\d{4}$/.test(settings.timeZoneDistrict)) {
+              throw new Error('Timezone must look like +0530 or -0600.');
+            }
+          },
+          disturb: () => {
+            validateTime(settings.unfazedStart, 'Do-not-disturb start');
+            validateTime(settings.unfazedEnd, 'Do-not-disturb end');
+          },
+          omitting: () => {
+            if (
+              settings.omitting < 10 ||
+              settings.omitting > 240 ||
+              settings.omitting % 10 !== 0
+            ) {
+              throw new Error(
+                'Missed-dose reminder must be 10–240 minutes in steps of 10.',
+              );
+            }
+          },
+          timeOut: () => {
+            if (
+              settings.timeOut < 5 ||
+              settings.timeOut > 120 ||
+              settings.timeOut % 5 !== 0
+            ) {
+              throw new Error(
+                'Overtime reminder must be 5–120 minutes in steps of 5.',
+              );
+            }
+          },
+        };
 
         const args = [current.vendorUserId, current.deviceSn] as const;
-        await pillDispenserVendorApi.setTimezone(
-          ...args,
-          settings.timeZoneDistrict,
-        );
-        await pillDispenserVendorApi.setTimeFormat(
-          ...args,
-          settings.timeFormat,
-        );
-        await pillDispenserVendorApi.setDateFormat(
-          ...args,
-          settings.dateFormat,
-        );
-        await pillDispenserVendorApi.setVolume(...args, settings.volume);
-        await pillDispenserVendorApi.setDisturb(
-          ...args,
-          settings.unfazedSwitch,
-          settings.unfazedStart,
-          settings.unfazedEnd,
-        );
-        await pillDispenserVendorApi.setMissDoseReminder(
-          ...args,
-          settings.omitting,
-        );
-        await pillDispenserVendorApi.setOvertimeReminder(
-          ...args,
-          settings.timeOut,
-        );
-        const verifiedInformation =
-          await pillDispenserVendorApi.getInformation(...args);
-        if (!mountedRef.current) return;
-        setInformation(verifiedInformation);
-        const mismatches = findPillDispenserSettingsMismatches(
+        const senders: Record<
+          PillDispenserSettingsUpdateKey,
+          () => Promise<unknown>
+        > = {
+          timezone: () =>
+            pillDispenserVendorApi.setTimezone(
+              ...args,
+              settings.timeZoneDistrict,
+            ),
+          timeFormat: () =>
+            pillDispenserVendorApi.setTimeFormat(...args, settings.timeFormat),
+          dateFormat: () =>
+            pillDispenserVendorApi.setDateFormat(...args, settings.dateFormat),
+          volume: () => pillDispenserVendorApi.setVolume(...args, settings.volume),
+          disturb: () =>
+            pillDispenserVendorApi.setDisturb(
+              ...args,
+              settings.unfazedSwitch,
+              settings.unfazedStart,
+              settings.unfazedEnd,
+            ),
+          omitting: () =>
+            pillDispenserVendorApi.setMissDoseReminder(
+              ...args,
+              settings.omitting,
+            ),
+          timeOut: () =>
+            pillDispenserVendorApi.setOvertimeReminder(...args, settings.timeOut),
+        };
+
+        // The dispenser speaks a confirmation for every setting command it
+        // accepts, so only the settings that actually changed are sent.
+        const updates = buildPillDispenserSettingsUpdates(
           settings,
-          verifiedInformation,
+          informationRef.current,
         );
-        if (mismatches.length > 0) {
+        if (updates.length === 0) {
+          setMessage('Every setting already matches the dispenser. Nothing was sent.');
+          return;
+        }
+
+        for (const update of updates) validators[update.key]?.();
+
+        const applied: string[] = [];
+        const failed: string[] = [];
+        for (const update of updates) {
+          try {
+            await senders[update.key]();
+            applied.push(update.label);
+          } catch (updateError) {
+            failed.push(`${update.label} (${readableError(updateError)})`);
+          }
+        }
+
+        const changedCount = applied.length;
+        const changedSummary = `${changedCount} setting${
+          changedCount === 1 ? '' : 's'
+        } updated: ${applied.join(', ')}.`;
+
+        // Read the device back separately: a failed read must not hide the
+        // commands the dispenser already accepted.
+        let mismatches: string[] | null = null;
+        let verificationError: string | null = null;
+        try {
+          const verifiedInformation =
+            await pillDispenserVendorApi.getInformation(...args);
+          if (!mountedRef.current) return;
+          applyInformation(verifiedInformation);
+          mismatches = findPillDispenserSettingsMismatches(
+            settings,
+            verifiedInformation,
+          );
+        } catch (verifyError) {
+          if (!mountedRef.current) return;
+          verificationError = readableError(verifyError);
+        }
+
+        if (failed.length > 0) {
+          setError(
+            `${
+              changedCount > 0 ? `${changedSummary} ` : ''
+            }These were not accepted: ${failed.join('; ')}.`,
+          );
+        } else if (verificationError) {
+          setError(
+            `${changedSummary} The saved values could not be read back to confirm them: ${verificationError}`,
+          );
+        } else if (mismatches && mismatches.length > 0) {
           setError(
             `Zoomcare accepted the save, but the dispenser did not confirm: ${mismatches.join(', ')}.`,
           );
         } else {
-          setMessage('All device settings were saved and verified.');
+          setMessage(`${changedSummary} The dispenser confirmed the new values.`);
         }
       } catch (settingsError) {
         if (mountedRef.current) setError(readableError(settingsError));
@@ -437,7 +529,7 @@ export function usePillDispenserManagement(
         if (mountedRef.current) setWorking(null);
       }
     },
-    [],
+    [applyInformation],
   );
 
   const savePlan = useCallback(
@@ -508,29 +600,72 @@ export function usePillDispenserManagement(
 
   const runAction = useCallback(async (action: PillDispenserAction) => {
     const current = recordRef.current;
-    if (!current?.deviceSn) return;
+    if (!current?.deviceSn || actionControllerRef.current) return;
+
+    const controller = new AbortController();
+    actionControllerRef.current = controller;
+    refreshRequestRef.current += 1;
+    const isCurrent = () => mountedRef.current &&
+      actionControllerRef.current === controller && !controller.signal.aborted &&
+      recordRef.current?.ownerKey === current.ownerKey &&
+      recordRef.current?.deviceSn === current.deviceSn;
 
     setWorking(action);
     setError(null);
     setMessage(null);
+    setRebootState(null);
     try {
+      if (action === 'reboot') {
+        await rebootPillDispenser({
+          userId: current.vendorUserId,
+          deviceSn: current.deviceSn,
+          signal: controller.signal,
+          onProgress: state => { if (isCurrent()) setRebootState(state); },
+          onOnlineChange: value => {
+            if (!isCurrent()) return;
+            setOnline(value);
+            if (!value) applyInformation(null);
+          },
+        });
+        return;
+      }
       await pillDispenserVendorApi[action](
         current.vendorUserId,
         current.deviceSn,
       );
-      if (!mountedRef.current) return;
-      const messages: Record<PillDispenserAction, string> = {
+      if (!isCurrent()) return;
+      const messages = {
         takeMedicine: 'The dispenser was asked to present medicine now.',
         muteAlarm: 'The current alarm was muted.',
-        reboot: 'The dispenser is rebooting.',
         resetMedicinePlate: 'The medicine plate was reset.',
       };
       setMessage(messages[action]);
     } catch (actionError) {
-      if (mountedRef.current) setError(readableError(actionError));
+      if (isCurrent()) setError(readableError(actionError));
     } finally {
-      if (mountedRef.current) setWorking(null);
+      if (isCurrent()) setWorking(null);
+      if (actionControllerRef.current === controller) actionControllerRef.current = null;
     }
+  }, [applyInformation]);
+
+  // The reboot watch runs for up to 90 seconds. Let the user end it instead of
+  // waiting out the timeout with every other action disabled.
+  const cancelAction = useCallback(() => {
+    const controller = actionControllerRef.current;
+    if (!controller) return;
+    controller.abort();
+    actionControllerRef.current = null;
+    setWorking(null);
+    setRebootState(previous =>
+      previous
+        ? {
+            phase: 'unconfirmed',
+            message:
+              'Restart checking was stopped. The reboot request was not cancelled; ' +
+              'refresh the status to see the dispenser connection.',
+          }
+        : previous,
+    );
   }, []);
 
   const selectAlarm = useCallback(
@@ -542,12 +677,14 @@ export function usePillDispenserManagement(
   return {
     record,
     information,
+    informationUpdatedAt,
     plan,
     online,
     loading,
     working,
     error,
     message,
+    rebootState,
     bind,
     unbind,
     refresh,
@@ -555,6 +692,7 @@ export function usePillDispenserManagement(
     savePlan,
     saveAlarm,
     runAction,
+    cancelAction,
     selectAlarm,
   };
 }

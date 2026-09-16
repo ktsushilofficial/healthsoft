@@ -26,6 +26,14 @@ import {
   type PillDispenserAction,
   usePillDispenserManagement,
 } from '../pillDispenser/usePillDispenserManagement';
+import {
+  describePillDispenserBattery,
+  describePillDispenserPlan,
+  describePillDispenserSignal,
+  formatPillDispenserCheckedAt,
+  pillDispenserAlarmLabel,
+  pillDispenserAlarmStatusLabel,
+} from '../pillDispenser/deviceHealth';
 import type {
   PillDispenserAlarmInput,
   PillDispenserOwnerProfile,
@@ -55,6 +63,7 @@ const TIMEZONE_VALUES = [
 ] as const;
 
 function formatTimezoneOffset(value: string): string {
+  if (!value.trim()) return 'Not reported by the dispenser';
   if (!/^[+-]\d{4}$/.test(value)) return value;
   return `UTC${value.slice(0, 3)}:${value.slice(3)}`;
 }
@@ -202,6 +211,7 @@ function TimezonePicker({
   const [visible, setVisible] = useState(false);
   const values = useMemo(
     () =>
+      !value.trim() ||
       TIMEZONE_VALUES.includes(value as (typeof TIMEZONE_VALUES)[number])
         ? TIMEZONE_VALUES
         : [value, ...TIMEZONE_VALUES],
@@ -343,6 +353,29 @@ function ChoiceRow({
   );
 }
 
+function SignalBars({
+  bars,
+  known,
+}: {
+  bars: number;
+  known: boolean;
+}) {
+  return (
+    <View style={styles.signalBars}>
+      {[0, 1, 2, 3].map(index => (
+        <View
+          key={index}
+          style={[
+            styles.signalBar,
+            { height: 7 + index * 4 },
+            known && index < bars ? styles.signalBarFilled : null,
+          ]}
+        />
+      ))}
+    </View>
+  );
+}
+
 function SectionButton({
   icon,
   label,
@@ -437,12 +470,14 @@ const PillDispenserManagementSection = ({
   const {
     record,
     information,
+    informationUpdatedAt,
     plan,
     online,
     loading,
     working,
     error,
     message,
+    rebootState,
     bind,
     unbind,
     refresh,
@@ -450,6 +485,7 @@ const PillDispenserManagementSection = ({
     savePlan,
     saveAlarm,
     runAction,
+    cancelAction,
   } = usePillDispenserManagement(ownerProfile);
 
   useEffect(() => {
@@ -548,6 +584,8 @@ const PillDispenserManagementSection = ({
     }
     setSettingsDraft({
       timeZoneDistrict: information.timeZoneDistrict,
+      // Fixed app-wide, not device-driven. The save diff means these are only
+      // sent when the dispenser reports something else.
       dateFormat: 2,
       timeFormat: 0,
       timeOut: information.timeOut,
@@ -587,6 +625,39 @@ const PillDispenserManagementSection = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plan]);
 
+  // The "checked" label is relative, so re-render it while the screen stays open.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!informationUpdatedAt) return;
+    setNowTick(Date.now());
+    const timer = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [informationUpdatedAt]);
+
+  const battery = useMemo(
+    () => describePillDispenserBattery(information),
+    [information],
+  );
+  const wifiSignal = useMemo(
+    () => describePillDispenserSignal(information?.wifi),
+    [information?.wifi],
+  );
+  const checkedAtLabel = useMemo(
+    () => formatPillDispenserCheckedAt(informationUpdatedAt, nowTick),
+    [informationUpdatedAt, nowTick],
+  );
+  const planSummary = useMemo(
+    () => (plan ? describePillDispenserPlan(plan) : null),
+    [plan],
+  );
+  const selectedAlarmIndex = useMemo(
+    () =>
+      plan && alarmDraft
+        ? plan.alarms.findIndex(alarm => alarm.alarmId === alarmDraft.alarmId)
+        : -1,
+    [alarmDraft, plan],
+  );
+
   const bound = !!record?.deviceSn;
   const busy = !!working;
   const controlsDisabled = busy || online !== true;
@@ -594,6 +665,8 @@ const PillDispenserManagementSection = ({
   // actions to reach the vendor API so it can make the authoritative online
   // decision instead of leaving rows silently untappable.
   const actionsDisabled = busy;
+  const rebootPending = rebootState &&
+    ['checking', 'sending', 'waiting', 'offline'].includes(rebootState.phase);
 
   const confirmUnbind = () => {
     Alert.alert(
@@ -659,6 +732,42 @@ const PillDispenserManagementSection = ({
         </View>
       ) : (
         <>
+          {bound && rebootState ? (
+            <View
+              testID="pill-dispenser-reboot-status"
+              style={[
+                styles.noticeBox,
+                rebootState.phase === 'failed' ? styles.errorBox : null,
+                rebootState.phase === 'reconnected' ? styles.successBox : null,
+              ]}
+            >
+              {rebootPending ? (
+                <ActivityIndicator size="small" color="#B54708" />
+              ) : (
+                <Icon
+                  name={rebootState.phase === 'reconnected'
+                    ? 'checkmark-circle-outline' : 'alert-circle-outline'}
+                  size={18}
+                  color={rebootState.phase === 'reconnected' ? '#287052' : '#B54708'}
+                />
+              )}
+              <View style={styles.rebootStatusText}>
+                <Text accessibilityLiveRegion="polite" style={styles.noticeText}>
+                  {rebootState.message}
+                </Text>
+                {rebootPending ? (
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel="Stop checking the dispenser restart"
+                    style={styles.rebootStopButton}
+                    onPress={cancelAction}
+                  >
+                    <Text style={styles.rebootStopText}>Stop checking</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            </View>
+          ) : null}
           {error || message ? (
             <View
               style={[
@@ -855,30 +964,50 @@ const PillDispenserManagementSection = ({
               </View>
 
               {information ? (
-                <View style={styles.healthGrid}>
-                  <View style={styles.healthItem}>
-                    <Text style={styles.healthValue}>
-                      {information.batteryVolume}%
+                <>
+                  <View style={styles.healthGrid}>
+                    <View style={styles.healthItem}>
+                      <Text
+                        style={[
+                          styles.healthValue,
+                          !battery.known ? styles.healthValueUnknown : null,
+                          battery.low ? styles.healthValueWarning : null,
+                        ]}
+                      >
+                        {battery.percentLabel}
+                      </Text>
+                      <Text style={styles.healthLabel}>Battery</Text>
+                      {battery.stateLabel ? (
+                        <Text style={styles.healthDetail}>
+                          {battery.stateLabel}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <View style={styles.healthItem}>
+                      <SignalBars bars={wifiSignal.bars} known={wifiSignal.known} />
+                      <Text style={styles.healthLabel}>Wi-Fi</Text>
+                      <Text style={styles.healthDetail}>{wifiSignal.label}</Text>
+                    </View>
+                    <View style={styles.healthItem}>
+                      <Text style={styles.healthValue}>
+                        {information.ceilRemaining}
+                      </Text>
+                      <Text style={styles.healthLabel}>Doses left</Text>
+                    </View>
+                    <View style={styles.healthItem}>
+                      <Text style={styles.healthValue}>
+                        {information.uncap === 1 ? 'Open' : 'Closed'}
+                      </Text>
+                      <Text style={styles.healthLabel}>Lid</Text>
+                    </View>
+                  </View>
+                  {checkedAtLabel ? (
+                    <Text style={styles.healthFootnote}>
+                      {checkedAtLabel}. Readings come from the dispenser&apos;s last
+                      report, not a live measurement.
                     </Text>
-                    <Text style={styles.healthLabel}>Battery</Text>
-                  </View>
-                  <View style={styles.healthItem}>
-                    <Text style={styles.healthValue}>{information.wifi}/4</Text>
-                    <Text style={styles.healthLabel}>Wi-Fi</Text>
-                  </View>
-                  <View style={styles.healthItem}>
-                    <Text style={styles.healthValue}>
-                      {information.ceilRemaining}
-                    </Text>
-                    <Text style={styles.healthLabel}>Remaining</Text>
-                  </View>
-                  <View style={styles.healthItem}>
-                    <Text style={styles.healthValue}>
-                      {information.uncap === 1 ? 'Open' : 'Closed'}
-                    </Text>
-                    <Text style={styles.healthLabel}>Lid</Text>
-                  </View>
-                </View>
+                  ) : null}
+                </>
               ) : null}
 
               <View style={styles.sectionNav}>
@@ -919,9 +1048,7 @@ const PillDispenserManagementSection = ({
                       disabled={controlsDisabled}
                       onChange={() =>
                         setSettingsDraft(current =>
-                          current
-                            ? { ...current, timeFormat: 0 }
-                            : current,
+                          current ? { ...current, timeFormat: 0 } : current,
                         )
                       }
                     />
@@ -932,12 +1059,7 @@ const PillDispenserManagementSection = ({
                       disabled={controlsDisabled}
                       onChange={() =>
                         setSettingsDraft(current =>
-                          current
-                            ? {
-                                ...current,
-                                dateFormat: 2,
-                              }
-                            : current,
+                          current ? { ...current, dateFormat: 2 } : current,
                         )
                       }
                     />
@@ -1105,6 +1227,10 @@ const PillDispenserManagementSection = ({
                         Save settings
                       </Text>
                     </TouchableOpacity>
+                    <Text style={styles.referenceText}>
+                      Only the settings you changed are sent. The dispenser
+                      announces each change out loud as it applies it.
+                    </Text>
                   </View>
                 ) : (
                   <Text style={styles.emptyText}>
@@ -1119,7 +1245,10 @@ const PillDispenserManagementSection = ({
                   <View>
                     <Text style={styles.sectionTitle}>Medication plan</Text>
                     <Text style={styles.helperText}>
-                      Plan {plan.planId} · {plan.deviceCeilAmount} compartments
+                      {planSummary?.compartments}
+                    </Text>
+                    <Text style={styles.helperText}>
+                      {planSummary?.schedule}
                     </Text>
                     <Text style={styles.inputLabel}>Filled compartments</Text>
                     <TextInput
@@ -1199,6 +1328,9 @@ const PillDispenserManagementSection = ({
                         </View>
                       </View>
                     ) : null}
+                    <Text style={styles.referenceText}>
+                      For support only — vendor plan reference {plan.planId}.
+                    </Text>
                     <TouchableOpacity
                       style={[
                         styles.primaryButton,
@@ -1233,6 +1365,11 @@ const PillDispenserManagementSection = ({
                         return (
                           <TouchableOpacity
                             key={alarm.alarmId}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Select ${pillDispenserAlarmLabel(
+                              index,
+                              alarm,
+                            )}, ${pillDispenserAlarmStatusLabel(alarm.status)}`}
                             style={[
                               styles.alarmTab,
                               selected ? styles.alarmTabSelected : null,
@@ -1252,7 +1389,15 @@ const PillDispenserManagementSection = ({
                                 selected ? styles.alarmTabTextSelected : null,
                               ]}
                             >
-                              {index + 1}
+                              {alarm.alarmTime || `Alarm ${index + 1}`}
+                            </Text>
+                            <Text
+                              style={[
+                                styles.alarmTabStatus,
+                                selected ? styles.alarmTabTextSelected : null,
+                              ]}
+                            >
+                              {pillDispenserAlarmStatusLabel(alarm.status)}
                             </Text>
                           </TouchableOpacity>
                         );
@@ -1261,9 +1406,16 @@ const PillDispenserManagementSection = ({
 
                     <View style={styles.switchRow}>
                       <View style={styles.switchText}>
-                        <Text style={styles.inputLabel}>Alarm enabled</Text>
+                        <Text style={styles.inputLabel}>
+                          {pillDispenserAlarmLabel(
+                            selectedAlarmIndex,
+                            alarmDraft,
+                          )}
+                        </Text>
                         <Text style={styles.helperText}>
-                          Slot ID {alarmDraft.alarmId}
+                          {alarmDraft.status === 1
+                            ? 'This alarm is on. The dispenser will sound at this time.'
+                            : 'This alarm is off. Turn it on to sound at this time.'}
                         </Text>
                       </View>
                       <Switch
@@ -1379,6 +1531,10 @@ const PillDispenserManagementSection = ({
                       <Text style={styles.addDrugText}>Add medicine</Text>
                     </TouchableOpacity>
 
+                    <Text style={styles.referenceText}>
+                      For support only — vendor alarm reference{' '}
+                      {alarmDraft.alarmId}.
+                    </Text>
                     <TouchableOpacity
                       style={[
                         styles.primaryButton,
@@ -1473,7 +1629,7 @@ const PillDispenserManagementSection = ({
                       confirmAction(
                         'reboot',
                         'Reboot dispenser?',
-                        'The dispenser will temporarily go offline while it restarts.',
+                        'Send a restart request? The app will check for the dispenser to disconnect and reconnect for up to 90 seconds. Keep this screen open while checking.',
                       )
                     }
                   >
@@ -1481,7 +1637,9 @@ const PillDispenserManagementSection = ({
                     <View style={styles.actionText}>
                       <Text style={styles.actionTitle}>Reboot dispenser</Text>
                       <Text style={styles.actionDescription}>
-                        Restart the dispenser software.
+                        {working === 'reboot'
+                          ? 'Checking restart progress…'
+                          : 'Restart the dispenser and check its connection.'}
                       </Text>
                     </View>
                     {working === 'reboot' ? (
@@ -1922,6 +2080,63 @@ const styles = StyleSheet.create({
     color: '#857A70',
     marginTop: 2,
   },
+  healthValueUnknown: {
+    color: '#9A8F85',
+    fontWeight: '600',
+  },
+  healthValueWarning: {
+    color: '#B54708',
+  },
+  healthDetail: {
+    fontSize: 10,
+    color: '#5A514A',
+    marginTop: 1,
+    textAlign: 'center',
+    paddingHorizontal: 2,
+  },
+  healthFootnote: {
+    fontSize: 11,
+    lineHeight: 15,
+    color: '#8B8078',
+    marginTop: 6,
+  },
+  signalBars: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    height: 19,
+    gap: 2,
+  },
+  signalBar: {
+    width: 4,
+    borderRadius: 1.5,
+    backgroundColor: '#DDD4CC',
+  },
+  signalBarFilled: {
+    backgroundColor: '#3C342E',
+  },
+  referenceText: {
+    fontSize: 11,
+    lineHeight: 15,
+    color: '#9A8F85',
+    marginTop: 10,
+  },
+  rebootStatusText: {
+    flex: 1,
+  },
+  rebootStopButton: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#B54708',
+  },
+  rebootStopText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#B54708',
+  },
   sectionNav: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -2009,12 +2224,18 @@ const styles = StyleSheet.create({
     gap: 7,
   },
   alarmTab: {
-    width: 35,
-    height: 35,
-    borderRadius: 18,
+    minWidth: 62,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 12,
     backgroundColor: '#F0EAE4',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  alarmTabStatus: {
+    color: '#857A70',
+    fontSize: 10,
+    marginTop: 1,
   },
   alarmTabSelected: {
     backgroundColor: '#F28C28',

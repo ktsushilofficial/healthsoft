@@ -118,6 +118,7 @@ const ERROR_MESSAGES: Record<number, string> = {
 
 export class PillDispenserVendorError extends Error {
   readonly code: number;
+  readonly vendorMessage?: string;
 
   constructor(code: number, message?: string) {
     super(
@@ -125,6 +126,7 @@ export class PillDispenserVendorError extends Error {
     );
     this.name = 'PillDispenserVendorError';
     this.code = code;
+    this.vendorMessage = message;
   }
 }
 
@@ -150,6 +152,7 @@ function responseCode(response: VendorApiEnvelope<unknown>): number {
 async function rawPost<T>(
   endpoint: string,
   payload: Record<string, unknown>,
+  options?: { signal?: AbortSignal; timeout?: number },
 ): Promise<VendorApiEnvelope<T>> {
   const requestId = ++requestSequence;
   const url = endpointUrl(endpoint);
@@ -165,6 +168,7 @@ async function rawPost<T>(
     const response = await apiClient.post<VendorApiEnvelope<T>>(
       url,
       payload,
+      options,
     );
     logVendorApi('response', {
       requestId,
@@ -250,14 +254,15 @@ async function authorizedPostWithCodes<T>(
   payload: Record<string, unknown>,
   acceptedCodes: readonly number[],
   retryExpiredToken = true,
+  options?: { signal?: AbortSignal; timeout?: number },
 ): Promise<T> {
   const token = await getVendorToken();
-  const response = await rawPost<T>(endpoint, { token, ...payload });
+  const response = await rawPost<T>(endpoint, { token, ...payload }, options);
   const code = responseCode(response);
   if ((code === 701 || code === 713) && retryExpiredToken) {
     cachedToken = null;
     await getVendorToken(true);
-    return authorizedPostWithCodes(endpoint, payload, acceptedCodes, false);
+    return authorizedPostWithCodes(endpoint, payload, acceptedCodes, false, options);
   }
   if (!acceptedCodes.includes(code)) {
     throw new PillDispenserVendorError(code, response.message);
@@ -269,13 +274,27 @@ async function authorizedPost<T>(
   endpoint: string,
   payload: Record<string, unknown>,
   retryExpiredToken = true,
+  options?: { signal?: AbortSignal; timeout?: number },
 ): Promise<T> {
-  return authorizedPostWithCodes(endpoint, payload, [200], retryExpiredToken);
+  return authorizedPostWithCodes(endpoint, payload, [200], retryExpiredToken, options);
 }
 
 function numberValue(value: unknown, fallback = 0): number {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+// Health readings must stay unknown when the vendor omits them. Collapsing a
+// missing value to 0 would render as "0%" battery or "no signal".
+function rangedNumberValue(
+  value: unknown,
+  min: number,
+  max: number,
+): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return number < min || number > max ? null : number;
 }
 
 function stringValue(value: unknown, fallback = ''): string {
@@ -352,12 +371,21 @@ export const pillDispenserVendorApi = {
     await authorizedPost('unbind_device', baseDevicePayload(userId, deviceSn));
   },
 
-  async getStatus(userId: string, deviceSn: string): Promise<boolean> {
+  async getStatus(
+    userId: string,
+    deviceSn: string,
+    options?: { signal?: AbortSignal; timeout?: number },
+  ): Promise<boolean> {
     const data = await authorizedPost<Record<string, unknown>>(
       'get_status',
       baseDevicePayload(userId, deviceSn),
+      true,
+      options,
     );
-    return numberValue(data?.status) === 1;
+    if (![0, 1, '0', '1'].includes(data?.status as number | string)) {
+      throw new Error('The vendor returned an invalid device status.');
+    }
+    return Number(data.status) === 1;
   },
 
   async getInformation(
@@ -377,7 +405,9 @@ export const pillDispenserVendorApi = {
     const unfazedSwitch = numberValue(data.unfazed_switch, 1);
     return {
       language: language === 1 ? 1 : 2,
-      timeZoneDistrict: stringValue(data.time_zone_district, '+0000'),
+      // No fallback: guessing '+0000' would display UTC as the device's real
+      // setting and let a later save write that guess back to the dispenser.
+      timeZoneDistrict: stringValue(data.time_zone_district),
       dateFormat: dateFormat === 1 || dateFormat === 2 ? dateFormat : 0,
       timeFormat: timeFormat === 1 ? 1 : 0,
       timeOut: numberValue(data.time_out, 60),
@@ -387,11 +417,11 @@ export const pillDispenserVendorApi = {
       unfazedStart: stringValue(data.unfazed_start, '23:00'),
       unfazedEnd: stringValue(data.unfazed_end, '06:30'),
       battery: numberValue(data.battery),
-      batteryVolume: numberValue(data.battery_volume),
+      batteryVolume: rangedNumberValue(data.battery_volume, 0, 100),
       rotate: numberValue(data.rotate),
       uncap: numberValue(data.uncap),
-      wifi: numberValue(data.wifi),
-      gsm: numberValue(data.gsm),
+      wifi: rangedNumberValue(data.wifi, 0, 4),
+      gsm: rangedNumberValue(data.gsm, 0, 4),
       currentCeilId: stringValue(data.current_ceil_id),
       ceilRemaining: numberValue(data.ceil_remaining),
       firmwareVersion: stringValue(data.firmware_version),
@@ -510,8 +540,8 @@ export const pillDispenserVendorApi = {
   muteAlarm: (userId: string, deviceSn: string) =>
     authorizedPost('mute_alarm', baseDevicePayload(userId, deviceSn)),
 
-  reboot: (userId: string, deviceSn: string) =>
-    authorizedPost('reboot', baseDevicePayload(userId, deviceSn)),
+  reboot: (userId: string, deviceSn: string, options?: { signal?: AbortSignal }) =>
+    authorizedPost('reboot', baseDevicePayload(userId, deviceSn), true, options),
 
   resetMedicinePlate: (userId: string, deviceSn: string) =>
     authorizedPost('reset', baseDevicePayload(userId, deviceSn)),

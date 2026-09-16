@@ -43,11 +43,14 @@ export type PillDispenserDeviceInformation = {
   unfazedStart: string;
   unfazedEnd: string;
   battery: number;
-  batteryVolume: number;
+  /** Battery percentage (1 = 1%, 100 = 100%); null when the vendor omits it. */
+  batteryVolume: number | null;
   rotate: number;
   uncap: number;
-  wifi: number;
-  gsm: number;
+  /** Wi-Fi signal strength, 0-4; null when the vendor omits it. */
+  wifi: number | null;
+  /** GSM signal strength, 0-4; null when the vendor omits it. */
+  gsm: number | null;
   currentCeilId: string;
   ceilRemaining: number;
   firmwareVersion: string;

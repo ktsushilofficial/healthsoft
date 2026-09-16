@@ -4,6 +4,7 @@ import {
   View,
   Text,
   StyleSheet,
+  Platform,
   ScrollView,
   TouchableOpacity,
   Alert,
@@ -454,7 +455,15 @@ const DeviceScreen = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+      {/* Keeps the focused field above the keyboard: iOS adjusts the scroll
+          insets, Android relies on adjustResize from the manifest. Persisting
+          taps lets Save respond on the first tap while the keyboard is open. */}
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+      >
         <View style={styles.header}>
           <TouchableOpacity onPress={() => navigation.navigate('Home' as never)}>
             <Icon name="arrow-back" size={22} color="#F28C28" />
@@ -983,7 +992,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#F5F2EE',
   },
   content: {
-    paddingBottom: 24,
+    paddingBottom: 48,
   },
   header: {
     flexDirection: 'row',
