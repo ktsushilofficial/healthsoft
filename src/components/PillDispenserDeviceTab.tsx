@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   ActivityIndicator,
   Alert,
@@ -18,7 +19,9 @@ import {
   savePillDispenserWifi,
   type SavedPillDispenserWifi,
 } from '../pillDispenser/wifiCredentialStorage';
-import PillDispenserManagementSection from './PillDispenserManagementSection';
+import PillDispenserManagementSection, {
+  type PillDispenserConnectionStatus,
+} from './PillDispenserManagementSection';
 
 function signalLabel(rssi: number | null) {
   if (rssi == null) return 'Available';
@@ -30,6 +33,23 @@ function signalLabel(rssi: number | null) {
 const PillDispenserDeviceTab = () => {
   const { user } = useAuth();
   const isSenior = user?.role === 'SENIOR';
+  const [connectionStatus, setConnectionStatus] =
+    useState<PillDispenserConnectionStatus | null>(null);
+  const [setupRequested, setSetupRequested] = useState(false);
+  const [localSetupComplete, setLocalSetupComplete] = useState(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      setSetupRequested(false);
+      setLocalSetupComplete(false);
+    }, []),
+  );
+
+  const currentStatus = connectionStatus?.ownerKey === user?.user_id
+    ? connectionStatus
+    : null;
+  const checkingStatus = !currentStatus || currentStatus.checking;
+  const cloudOnline = !!currentStatus?.deviceSn && currentStatus.online === true;
   const {
     isAvailable,
     devices,
@@ -68,7 +88,14 @@ const PillDispenserDeviceTab = () => {
   const isConnecting = stage === 'connecting' || stage === 'securing';
   const isReady = stage === 'ready';
   const isProvisioning = stage === 'provisioning';
-  const isComplete = stage === 'connected';
+  const isComplete = !checkingStatus && (
+    (cloudOnline && !setupRequested) ||
+    (setupRequested && (localSetupComplete || stage === 'connected'))
+  );
+
+  useEffect(() => {
+    if (setupRequested && stage === 'connected') setLocalSetupComplete(true);
+  }, [setupRequested, stage]);
 
   useEffect(() => {
     if (isComplete) {
@@ -94,10 +121,24 @@ const PillDispenserDeviceTab = () => {
   }, []);
 
   const step = useMemo(() => {
+    if (checkingStatus) return 0;
     if (isComplete) return 3;
-    if (isReady || isProvisioning) return 2;
+    if (setupRequested && (isReady || isProvisioning)) return 2;
     return 1;
-  }, [isComplete, isProvisioning, isReady]);
+  }, [checkingStatus, isComplete, isProvisioning, isReady, setupRequested]);
+
+  const setupError = !checkingStatus && !isComplete
+    ? (setupRequested ? error : currentStatus?.error)
+    : null;
+  const setupMessage = checkingStatus
+    ? 'Checking dispenser status…'
+    : isComplete
+    ? 'Pill dispenser online'
+    : setupError
+    ? `Unable to check or configure the dispenser: ${setupError}`
+    : !setupRequested && currentStatus?.online === false
+    ? 'Pill dispenser offline. Connect it to Wi-Fi to bring it online.'
+    : statusMessage;
 
   const selectWifi = (ssid: string) => {
     setSelectedSsid(ssid);
@@ -184,11 +225,35 @@ const PillDispenserDeviceTab = () => {
           <Icon name="medical-outline" size={22} color="#F28C28" />
         </View>
         <Text style={styles.cardTitle}>Pill Dispenser Wi-Fi Setup</Text>
+        <View style={[styles.statusBox, setupError ? styles.errorBox : null]}>
+          {checkingStatus ? <ActivityIndicator color="#F28C28" /> : (
+            <Icon
+              name={isComplete ? 'checkmark-circle' : 'information-circle-outline'}
+              size={19}
+              color={isComplete ? '#128044' : '#73573C'}
+            />
+          )}
+          <Text accessibilityLiveRegion="polite" style={styles.statusText}>
+            {setupMessage}
+          </Text>
+        </View>
         <Text style={styles.cardSubtitle}>
-          Connect to the dispenser over Bluetooth, then securely give it your Wi-Fi details. The scan shows devices advertising the ESP-BluFi setup service, even if their Bluetooth name changes.
+          {isComplete
+            ? 'Your dispenser is connected. Wi-Fi setup is complete.'
+            : 'Connect to the dispenser over Bluetooth, then securely give it your Wi-Fi details. The scan shows devices advertising the ESP-BluFi setup service, even if their Bluetooth name changes.'}
         </Text>
 
-        <View style={styles.steps}>
+        <View
+          style={styles.steps}
+          accessibilityRole="progressbar"
+          accessibilityLabel="Wi-Fi setup progress"
+          accessibilityValue={{
+            min: 0,
+            max: 3,
+            now: step,
+            text: checkingStatus ? 'Checking dispenser status' : `Step ${step} of 3`,
+          }}
+        >
           {['Dispenser', 'Wi-Fi', 'Complete'].map((label, index) => {
             const number = index + 1;
             const active = number <= step;
@@ -236,24 +301,7 @@ const PillDispenserDeviceTab = () => {
           })}
         </View>
 
-        <View style={[styles.statusBox, error ? styles.errorBox : null]}>
-          <Icon
-            name={
-              error
-                ? 'alert-circle-outline'
-                : isComplete
-                ? 'checkmark-circle'
-                : 'information-circle-outline'
-            }
-            size={19}
-            color={error ? '#B42318' : isComplete ? '#128044' : '#73573C'}
-          />
-          <Text style={[styles.statusText, error ? styles.errorText : null]}>
-            {error || statusMessage}
-          </Text>
-        </View>
-
-        {alternateModeAvailable ? (
+        {!checkingStatus && !isComplete && alternateModeAvailable ? (
           <View style={styles.compatibilityBox}>
             <Text style={styles.compatibilityTitle}>
               Compatibility setup was not accepted
@@ -274,7 +322,7 @@ const PillDispenserDeviceTab = () => {
           </View>
         ) : null}
 
-        <View style={styles.savedWifiSection}>
+        {!checkingStatus && !isComplete ? <View style={styles.savedWifiSection}>
           <View style={styles.savedWifiHeader}>
             <View style={styles.savedWifiHeaderText}>
               <Text style={styles.sectionTitle}>Saved Wi-Fi networks</Text>
@@ -346,7 +394,7 @@ const PillDispenserDeviceTab = () => {
           {savedWifiError ? (
             <Text style={styles.savedWifiError}>{savedWifiError}</Text>
           ) : null}
-        </View>
+        </View> : null}
 
         {step === 1 ? (
           <>
@@ -357,7 +405,10 @@ const PillDispenserDeviceTab = () => {
                   !isAvailable ? styles.disabled : null,
                 ]}
                 disabled={!isAvailable || isConnecting}
-                onPress={() => (isScanning ? stopScan() : startScan())}
+                onPress={() => {
+                  setSetupRequested(true);
+                  return isScanning ? stopScan() : startScan();
+                }}
               >
                 {isScanning || isConnecting ? (
                   <ActivityIndicator color="#FFFFFF" />
@@ -596,17 +647,29 @@ const PillDispenserDeviceTab = () => {
             </View>
             <Text style={styles.successTitle}>Pill dispenser is online</Text>
             <Text style={styles.successBody}>
-              {connectedWifiSsid
+              {cloudOnline && !setupRequested
+                ? `Device ${currentStatus?.deviceSn} is online. No scan is needed.`
+                : connectedWifiSsid
                 ? `Connected to ${connectedWifiSsid}.`
                 : 'The dispenser successfully joined Wi-Fi.'}
             </Text>
-            <TouchableOpacity
+            {selectedDeviceId ? <TouchableOpacity
               style={styles.secondaryButton}
               onPress={disconnect}
             >
               <Text style={styles.secondaryButtonText}>
                 Finish Bluetooth setup
               </Text>
+            </TouchableOpacity> : null}
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={async () => {
+                if (selectedDeviceId) await disconnect();
+                setLocalSetupComplete(false);
+                setSetupRequested(true);
+              }}
+            >
+              <Text style={styles.secondaryButtonText}>Change Wi-Fi</Text>
             </TouchableOpacity>
           </View>
         ) : null}
@@ -710,7 +773,9 @@ const PillDispenserDeviceTab = () => {
           </View>
         </View>
       </Modal>
-      <PillDispenserManagementSection />
+      <PillDispenserManagementSection
+        onConnectionStatusChange={setConnectionStatus}
+      />
     </>
   );
 };

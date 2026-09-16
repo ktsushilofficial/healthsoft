@@ -372,7 +372,19 @@ function SectionButton({
   );
 }
 
-const PillDispenserManagementSection = () => {
+export type PillDispenserConnectionStatus = {
+  ownerKey: string | null;
+  deviceSn: string | null;
+  online: boolean | null;
+  checking: boolean;
+  error: string | null;
+};
+
+const PillDispenserManagementSection = ({
+  onConnectionStatusChange,
+}: {
+  onConnectionStatusChange?: (status: PillDispenserConnectionStatus) => void;
+}) => {
   const {
     user,
     isCaretaker,
@@ -439,6 +451,24 @@ const PillDispenserManagementSection = () => {
     saveAlarm,
     runAction,
   } = usePillDispenserManagement(ownerProfile);
+
+  useEffect(() => {
+    onConnectionStatusChange?.({
+      ownerKey: record?.ownerKey ?? ownerProfile?.ownerKey ?? null,
+      deviceSn: record?.deviceSn ?? null,
+      online,
+      checking: loading || (!!record?.deviceSn && online === null && !error),
+      error: online === null ? error : null,
+    });
+  }, [
+    error,
+    loading,
+    onConnectionStatusChange,
+    online,
+    ownerProfile?.ownerKey,
+    record?.deviceSn,
+    record?.ownerKey,
+  ]);
 
   useEffect(() => {
     setDeviceCode('');

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import { parsePillDispenserCode } from './deviceSn';
 import { PILL_DISPENSER_VENDOR_CONFIG } from './vendorConfig';
 import { PillDispenserVendorError, pillDispenserVendorApi } from './vendorApi';
@@ -47,6 +48,7 @@ export function usePillDispenserManagement(
 ) {
   const recordRef = useRef<PillDispenserLocalRecord | null>(null);
   const mountedRef = useRef(true);
+  const refreshRequestRef = useRef(0);
   const [record, setRecord] = useState<PillDispenserLocalRecord | null>(null);
   const [information, setInformation] =
     useState<PillDispenserDeviceInformation | null>(null);
@@ -65,15 +67,21 @@ export function usePillDispenserManagement(
   const refreshForRecord = useCallback(
     async (target: PillDispenserLocalRecord, showBusy = true) => {
       if (!target.deviceSn) return;
+      const requestId = ++refreshRequestRef.current;
+      const isCurrent = () =>
+        mountedRef.current && requestId === refreshRequestRef.current &&
+        recordRef.current?.ownerKey === target.ownerKey &&
+        recordRef.current?.deviceSn === target.deviceSn;
       if (showBusy) setWorking('refresh');
       setError(null);
+      setOnline(null);
 
       try {
         const isOnline = await pillDispenserVendorApi.getStatus(
           target.vendorUserId,
           target.deviceSn,
         );
-        if (!mountedRef.current) return;
+        if (!isCurrent()) return;
         setOnline(isOnline);
 
         if (!isOnline) {
@@ -89,7 +97,7 @@ export function usePillDispenserManagement(
           ),
           pillDispenserVendorApi.getPlan(target.vendorUserId, target.deviceSn),
         ]);
-        if (!mountedRef.current) return;
+        if (!isCurrent()) return;
 
         if (informationResult.status === 'fulfilled') {
           setInformation(informationResult.value);
@@ -109,7 +117,7 @@ export function usePillDispenserManagement(
         }
         setMessage('Device status and settings are up to date.');
       } catch (requestError) {
-        if (!mountedRef.current) return;
+        if (!isCurrent()) return;
         if (
           requestError instanceof PillDispenserVendorError &&
           requestError.code === 611
@@ -121,51 +129,56 @@ export function usePillDispenserManagement(
           setError(readableError(requestError));
         }
       } finally {
-        if (mountedRef.current && showBusy) setWorking(null);
+        if (isCurrent() && showBusy) setWorking(null);
       }
     },
     [],
   );
 
-  useEffect(() => {
-    mountedRef.current = true;
-    let cancelled = false;
+  useFocusEffect(
+    useCallback(() => {
+      mountedRef.current = true;
+      let cancelled = false;
 
-    const initialize = async () => {
-      setLoading(true);
-      setInformation(null);
-      setPlan(null);
-      setOnline(null);
-      setError(null);
-      setMessage(null);
-
-      if (!profile?.ownerKey) {
+      const initialize = async () => {
+        setLoading(true);
+        setInformation(null);
+        setPlan(null);
+        setOnline(null);
+        setError(null);
+        setMessage(null);
+        setWorking(null);
         applyRecord(null);
-        setLoading(false);
-        return;
-      }
 
-      try {
-        const saved = await loadPillDispenserRecord(profile.ownerKey);
-        if (cancelled) return;
-        applyRecord(saved);
-        setLoading(false);
-        if (saved?.deviceSn) {
-          await refreshForRecord(saved, false);
+        if (!profile?.ownerKey) {
+          applyRecord(null);
+          setLoading(false);
+          return;
         }
-      } catch (storageError) {
-        if (cancelled) return;
-        setLoading(false);
-        setError(readableError(storageError));
-      }
-    };
 
-    initialize();
-    return () => {
-      cancelled = true;
-      mountedRef.current = false;
-    };
-  }, [applyRecord, profile?.ownerKey, refreshForRecord]);
+        try {
+          const saved = await loadPillDispenserRecord(profile.ownerKey);
+          if (cancelled) return;
+          applyRecord(saved);
+          setLoading(false);
+          if (saved?.deviceSn) {
+            await refreshForRecord(saved, false);
+          }
+        } catch (storageError) {
+          if (cancelled) return;
+          setLoading(false);
+          setError(readableError(storageError));
+        }
+      };
+
+      initialize();
+      return () => {
+        cancelled = true;
+        mountedRef.current = false;
+        refreshRequestRef.current += 1;
+      };
+    }, [applyRecord, profile?.ownerKey, refreshForRecord]),
+  );
 
   const bind = useCallback(
     async (codeOrUrl: string) => {
