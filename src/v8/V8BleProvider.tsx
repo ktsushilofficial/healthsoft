@@ -93,6 +93,8 @@ type V8BleContextValue = {
   deviceInfo: V8DeviceInfo;
   deviceInfoReading: boolean;
   deviceInfoError: string | null;
+  deviceTimeSyncing: boolean;
+  deviceTimeSyncError: string | null;
   refreshDeviceInfo: () => Promise<void>;
   liveModeEnabled: boolean;
   ecgSession: V8EcgSession | null;
@@ -278,6 +280,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   const connectedDeviceRef = useRef<string | null>(null);
   const deviceInfoReaderRef = useRef(new V8DeviceInfoReader());
   const deviceInfoRefreshRef = useRef<Promise<void> | null>(null);
+  const deviceTimeSyncRef = useRef<Promise<void> | null>(null);
+  const [deviceTimeSyncing, setDeviceTimeSyncing] = useState(false);
+  const [deviceTimeSyncError, setDeviceTimeSyncError] = useState<string | null>(null);
   const [deviceInfoReading, setDeviceInfoReading] = useState(false);
   const [deviceInfoError, setDeviceInfoError] = useState<string | null>(null);
   const latestLiveDataRef = useRef<V8VitalSample | null>(null);
@@ -618,6 +623,46 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     };
   }, []);
 
+  const syncDeviceTime = useCallback((): Promise<void> => {
+    if (deviceTimeSyncRef.current) return deviceTimeSyncRef.current;
+    const native = v8Native;
+    if (!native || !connectedDeviceRef.current) {
+      return Promise.reject(new Error('Connect the hand band before syncing its time.'));
+    }
+    const generation = connectionGenerationRef.current;
+    setDeviceTimeSyncing(true);
+    setDeviceTimeSyncError(null);
+    // Reserve write and readback together, ahead of device details and history.
+    // Native write acceptance alone does not mean the band answered.
+    const write = deviceInfoReaderRef.current.run(async () => {
+      const accepted = await native.syncDeviceTime();
+      if (!accepted) throw new Error('The hand band did not accept the time sync command.');
+    });
+    const readback = deviceInfoReaderRef.current.request('deviceTime', async () => {
+      await write;
+      if (connectionGenerationRef.current !== generation) {
+        throw new Error('The hand band disconnected during time sync.');
+      }
+      return native.requestDeviceTime();
+    });
+    const promise = Promise.all([write, readback]).then(() => {
+      if (connectionGenerationRef.current !== generation) {
+        throw new Error('The hand band disconnected during time sync.');
+      }
+    }).catch(error => {
+      if (connectionGenerationRef.current === generation) {
+        setDeviceTimeSyncError(error instanceof Error ? error.message : 'Unable to sync the hand band time.');
+      }
+      throw error;
+    }).finally(() => {
+      if (deviceTimeSyncRef.current !== promise) return;
+      deviceTimeSyncRef.current = null;
+      setDeviceTimeSyncing(false);
+    });
+    deviceTimeSyncRef.current = promise;
+    return promise;
+  }, []);
+
   const refreshDeviceInfo = useCallback((): Promise<void> => {
     if (deviceInfoRefreshRef.current) return deviceInfoRefreshRef.current;
     const native = v8Native;
@@ -688,12 +733,16 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       const state =
         (evt?.state as V8ConnectionState | undefined) ?? 'disconnected';
       setConnectionStates(prev => ({ ...prev, [normalizedDeviceId]: state }));
+      const isNewConnection = state === 'connected' && connectedDeviceRef.current !== normalizedDeviceId;
       if (state === 'connected') {
         if (connectedDeviceRef.current !== normalizedDeviceId) {
           connectionGenerationRef.current += 1;
           setCompletedRead(null);
           historyReaderRef.current.cancel('The connected hand band changed during the read.');
           deviceInfoReader.cancel();
+          deviceTimeSyncRef.current = null;
+          setDeviceTimeSyncing(false);
+          setDeviceTimeSyncError(null);
           deviceInfoRefreshRef.current = null;
           setDeviceInfo({ imei: null, deviceName: null, mac: null, batteryPercent: null, firmwareVersion: null, deviceTime: null, updatedAt: null });
           historyIndexRef.current = {};
@@ -712,6 +761,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         setCompletedRead(null);
         connectedDeviceRef.current = null;
         deviceInfoReader.cancel();
+        deviceTimeSyncRef.current = null;
+        setDeviceTimeSyncing(false);
+        setDeviceTimeSyncError(null);
         deviceInfoRefreshRef.current = null;
         setDeviceInfoReading(false);
         setDeviceInfoError(null);
@@ -742,6 +794,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
         });
       }
       if (state === 'connected' && rawDeviceId && rawDeviceId !== 'default') {
+        if (isNewConnection) syncDeviceTime().catch(() => {});
         refreshDeviceInfo().catch(() => {});
       }
     });
@@ -1062,7 +1115,7 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
       deviceInfoRefreshRef.current = null;
       deviceInfoReader.cancel();
     };
-  }, [refreshDeviceInfo, setCompletedRead]);
+  }, [refreshDeviceInfo, setCompletedRead, syncDeviceTime]);
 
   const startScan = useCallback(async () => {
     const native = v8Native;
@@ -1469,10 +1522,6 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
   const requestDeviceTime = useCallback(async () => {
     if (!v8Native || !connectedDeviceRef.current) return;
     await deviceInfoReaderRef.current.request('deviceTime', () => v8Native!.requestDeviceTime());
-  }, []);
-  const syncDeviceTime = useCallback(async () => {
-    if (!v8Native || !connectedDeviceRef.current) return;
-    await deviceInfoReaderRef.current.run(() => v8Native!.syncDeviceTime());
   }, []);
   const requestPersonalInfo = useCallback(async () => {
     if (!v8Native || !connectedDeviceRef.current) return;
@@ -2039,6 +2088,9 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     setHistoryReadStatus(idleHistoryReadStatus);
     historyReaderRef.current.cancel('Saved band data was cleared during the read.');
     deviceInfoReaderRef.current.cancel();
+    deviceTimeSyncRef.current = null;
+    setDeviceTimeSyncing(false);
+    setDeviceTimeSyncError(null);
     deviceInfoRefreshRef.current = null;
     setDeviceInfoReading(false);
     setDeviceInfoError(null);
@@ -2340,6 +2392,8 @@ const useV8BleManagerInternal = (): V8BleContextValue => {
     deviceInfo,
     deviceInfoReading,
     deviceInfoError,
+    deviceTimeSyncing,
+    deviceTimeSyncError,
     refreshDeviceInfo,
     liveModeEnabled,
     ecgSession,

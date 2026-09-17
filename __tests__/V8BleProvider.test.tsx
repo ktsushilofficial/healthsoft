@@ -39,6 +39,7 @@ const mockNative = {
   requestDeviceVersion: jest.fn(async () => true),
   requestDeviceName: jest.fn(async () => true),
   requestDeviceTime: jest.fn(async () => true),
+  syncDeviceTime: jest.fn(async () => true),
   requestPersonalInfo: jest.fn(async () => true),
 };
 let mockAssigned = ['C414D50E09F6'];
@@ -99,6 +100,7 @@ describe('hand band connection and ownership', () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-09-11T12:00:00+05:30'));
     jest.clearAllMocks();
+    mockNative.syncDeviceTime.mockReset().mockResolvedValue(true);
     mockAuth.user = { role: 'GUARDIAN', user_id: 'guardian' };
     mockAuth.getV8VitalsSummary.mockReset().mockResolvedValue([]);
     for (const request of Object.values(mockHistoryRequests))
@@ -132,6 +134,97 @@ describe('hand band connection and ownership', () => {
     jest.useRealTimers();
   });
 
+  it.each(['ios', 'android'])('syncs the clock once per connection before reading details on %s', async platform => {
+    const original = Platform.OS;
+    Object.defineProperty(Platform, 'OS', { configurable: true, value: platform });
+    try {
+      await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'connected' });
+      expect(mockNative.syncDeviceTime).toHaveBeenCalledTimes(1);
+      expect(mockNative.syncDeviceTime.mock.invocationCallOrder[0]).toBeLessThan(mockNative.requestDeviceTime.mock.invocationCallOrder[0]);
+      expect(mockNative.requestDeviceTime.mock.invocationCallOrder[0]).toBeLessThan(mockNative.requestDeviceMac.mock.invocationCallOrder[0]);
+      expect(manager.deviceTimeSyncing).toBe(false);
+      expect(manager.deviceTimeSyncError).toBeNull();
+      await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'connected' });
+      expect(mockNative.syncDeviceTime).toHaveBeenCalledTimes(1);
+      await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'disconnected' });
+      await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'connected' });
+      expect(mockNative.syncDeviceTime).toHaveBeenCalledTimes(2);
+    } finally {
+      Object.defineProperty(Platform, 'OS', { configurable: true, value: original });
+    }
+  });
+
+  it('accepts the iOS empty set-time acknowledgement and subsequent deviceTime readback', async () => {
+    await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'connected' });
+    mockNative.requestDeviceTime.mockImplementationOnce(async () => true);
+    let completed = false;
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = manager.syncDeviceTime().then(() => { completed = true; });
+    });
+    await emit('V8Data', { type: 'parsed', payload: { dataType: 1, dataEnd: true, dicData: {} } });
+    expect(completed).toBe(false);
+    expect(manager.deviceTimeSyncing).toBe(true);
+    await emit('V8Data', {
+      type: 'parsed',
+      payload: { dataType: 0, dataEnd: true, dicData: { deviceTime: '2026-09-16 18:28:20' } },
+    });
+    await pending;
+    expect(completed).toBe(true);
+    expect(manager.deviceInfo.deviceTime).toBe('2026-09-16 18:28:20');
+    expect(manager.deviceTimeSyncing).toBe(false);
+    expect(manager.deviceTimeSyncError).toBeNull();
+  });
+
+  it('rejects time sync while disconnected', async () => {
+    await expect(manager.syncDeviceTime()).rejects.toThrow('Connect the hand band');
+    expect(mockNative.syncDeviceTime).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed automatic time write and allows a manual retry', async () => {
+    mockNative.syncDeviceTime.mockRejectedValueOnce(new Error('Bluetooth write failed'));
+    await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'connected' });
+    expect(manager.deviceTimeSyncError).toBe('Bluetooth write failed');
+    expect(manager.deviceInfo.firmwareVersion).toBe('1.0.2.5');
+    await act(async () => { await manager.syncDeviceTime(); });
+    expect(mockNative.syncDeviceTime).toHaveBeenCalledTimes(2);
+    expect(manager.deviceTimeSyncError).toBeNull();
+  });
+
+  it('waits for clock readback, coalesces sync presses and reports missing responses', async () => {
+    await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'connected' });
+    mockNative.requestDeviceTime.mockImplementation(async () => true);
+    let pending!: Promise<void>;
+    let same!: Promise<void>;
+    let failure: unknown;
+    await act(async () => {
+      pending = manager.syncDeviceTime();
+      same = manager.syncDeviceTime();
+      pending.catch(error => { failure = error; });
+    });
+    expect(pending).toBe(same);
+    expect(manager.deviceTimeSyncing).toBe(true);
+    expect(mockNative.syncDeviceTime).toHaveBeenCalledTimes(2);
+    await act(async () => { await jest.advanceTimersByTimeAsync(3000); });
+    expect(failure).toEqual(new Error('No response from the band after two attempts.'));
+    expect(manager.deviceTimeSyncing).toBe(false);
+    expect(manager.deviceTimeSyncError).toContain('No response');
+  });
+
+  it('cancels clock readback on disconnect and syncs again after reconnecting', async () => {
+    await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'connected' });
+    mockNative.requestDeviceTime.mockImplementationOnce(async () => true);
+    let failure: unknown;
+    await act(async () => { manager.syncDeviceTime().catch(error => { failure = error; }); });
+    expect(manager.deviceTimeSyncing).toBe(true);
+    await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'disconnected' });
+    expect(failure).toBeInstanceOf(Error);
+    expect(manager.deviceTimeSyncing).toBe(false);
+    await emit('V8ConnectionState', { deviceId: iosBand.id, state: 'connected' });
+    expect(mockNative.syncDeviceTime).toHaveBeenCalledTimes(3);
+    expect(manager.deviceTimeSyncError).toBeNull();
+  });
+
   it('requests permissions before scanning and surfaces denial without starting the scan', async () => {
     jest
       .mocked(requestHandBandPermissions)
@@ -156,7 +249,8 @@ describe('hand band connection and ownership', () => {
       await emit('V8ConnectionState', { deviceId: 'C4:14:D5:0E:09:F6', state: 'connected' });
       expect(manager.deviceInfoReading).toBe(true);
       expect(mockNative.requestDeviceVersion).toHaveBeenCalledTimes(1);
-      expect(mockNative.requestDeviceTime).not.toHaveBeenCalled();
+      // Connection time sync reads the clock before the detail queries.
+      expect(mockNative.requestDeviceTime).toHaveBeenCalledTimes(1);
       let refresh!: Promise<void>;
       await act(async () => { refresh = manager.refreshDeviceInfo(); });
       const packets = sdkHistoryPackets('android');

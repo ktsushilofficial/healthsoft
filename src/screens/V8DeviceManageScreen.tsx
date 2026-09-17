@@ -73,7 +73,7 @@ const V8DeviceManageScreen = () => {
   const {
     connectionStates, disconnect,
     devices, refreshDeviceInfo, deviceInfoReading, deviceInfoError,
-    requestLiveSnapshot,
+    requestLiveSnapshot, syncDeviceTime, deviceTimeSyncing, deviceTimeSyncError,
     buildTodayVitals, syncTodayVitalsToBackend,
     latestLiveData, historyByType, lastReadRows, deviceInfo, historyReadStatus, autoSyncStatus,
   } = useV8DeviceManager();
@@ -93,10 +93,11 @@ const V8DeviceManageScreen = () => {
   const [todaySyncing, setTodaySyncing] = useState(false);
   const [manualSyncProgress, setManualSyncProgress] = useState<VitalsSyncProgress | null>(null);
   const [syncProgressVisible, setSyncProgressVisible] = useState(false);
-  const bandReadBusy = refreshingLive || todayFetching || todaySyncing || autoSyncStatus.phase === 'syncing';
+  const bandReadBusy = deviceTimeSyncing || refreshingLive || todayFetching || todaySyncing || autoSyncStatus.phase === 'syncing';
   const syncActionDisabled = !todaySyncing && (!isSeniorUser || !connected || todayFetching || refreshingLive || autoSyncStatus.phase === 'syncing');
   const [fetchedVitalsRows, setFetchedVitalsRows] = useState<V8DailyVitalSummary[]>([]);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
+  const [timeSyncStatus, setTimeSyncStatus] = useState<string | null>(null);
   const syncLatestPromptKeyRef = useRef<string | null>(null);
 
   // Auto-fetch visible device info when this screen gains focus and band is connected.
@@ -109,6 +110,20 @@ const V8DeviceManageScreen = () => {
       return () => task.cancel();
     }, [connected, refreshDeviceInfo]),
   );
+
+  useEffect(() => {
+    setTimeSyncStatus(null);
+  }, [deviceId, connected]);
+
+  const handleSyncDeviceTime = useCallback(async () => {
+    setTimeSyncStatus(null);
+    try {
+      await syncDeviceTime();
+      setTimeSyncStatus('Time sync complete. The band returned the device time shown above.');
+    } catch (error) {
+      setTimeSyncStatus(error instanceof Error ? error.message : 'Unable to sync the hand band time.');
+    }
+  }, [syncDeviceTime]);
 
   const handleRefreshLive = useCallback(async () => {
     setRefreshingLive(true);
@@ -359,6 +374,23 @@ const V8DeviceManageScreen = () => {
               the advertised BLE name rather than showing nothing. */}
           <InfoRow label="Device Name" value={deviceDetail(deviceInfo.deviceName ?? advertisedName)} />
           <InfoRow label="Device Time" value={deviceDetail(deviceInfo.deviceTime)} />
+          <Text style={s.emptyHint}>The band syncs with your phone’s local time when it connects.</Text>
+          <TouchableOpacity
+            accessibilityRole="button"
+            style={[s.refreshLiveBtn, (!connected || deviceInfoReading || bandReadBusy) ? s.disabled : null]}
+            disabled={!connected || deviceInfoReading || bandReadBusy}
+            onPress={handleSyncDeviceTime}
+          >
+            {deviceTimeSyncing ? <ActivityIndicator size="small" color="#F28C28" /> : <Icon name="time-outline" size={16} color="#F28C28" />}
+            <Text style={s.refreshLiveBtnText}>{deviceTimeSyncing ? 'Syncing Time…' : 'Sync Time with Phone'}</Text>
+          </TouchableOpacity>
+          {!deviceTimeSyncing && (deviceTimeSyncError || timeSyncStatus) ? (
+            <View style={s.statusBanner}>
+              <Text accessibilityLiveRegion="polite" style={s.statusBannerText}>
+                {deviceTimeSyncError ? `Time sync failed: ${deviceTimeSyncError}` : timeSyncStatus}
+              </Text>
+            </View>
+          ) : null}
           {deviceInfoError ? <Text style={s.emptyHint}>{deviceInfoError}</Text> : null}
           <TouchableOpacity
             style={[s.refreshLiveBtn, (!connected || deviceInfoReading || bandReadBusy) ? s.disabled : null]}
