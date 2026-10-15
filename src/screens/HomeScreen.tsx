@@ -21,6 +21,7 @@ import Icon from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
 import { useAuth } from '../context/AuthContext';
 import { todayLocalDayKey } from '../utils/vitalsDay';
+import { countMissedDosesOnDay } from '../utils/missedDoses';
 import DailyVitalsTable from '../components/DailyVitalsTable';
 import VitalsSyncProgressModal, { type VitalsSyncProgress } from '../components/VitalsSyncProgressModal';
 import HomeAssignedDeviceList from '../components/HomeAssignedDeviceList';
@@ -660,6 +661,7 @@ const HomeScreen = () => {
     isCaretaker,
     getSeniorDashboard,
     getGuardianDashboard,
+    getSeniorMissedDoses,
     selectedSeniorHandBandMacs,
     getAssignedDevicesForSenior,
     getV8VitalsSummary,
@@ -1319,6 +1321,28 @@ const HomeScreen = () => {
     }, [getMySeniors, isCaretaker])
   );
 
+  const missedDosesSeniorId = isCaretaker ? selectedSenior?.userId?.trim() ?? '' : '';
+  const [todayMissedDoses, setTodayMissedDoses] = useState(0);
+  useFocusEffect(
+    useCallback(() => {
+      setTodayMissedDoses(0);
+      if (!missedDosesSeniorId) return;
+      let cancelled = false;
+      getSeniorMissedDoses(missedDosesSeniorId)
+        .then(doses => {
+          if (!cancelled) {
+            setTodayMissedDoses(countMissedDosesOnDay(doses, todayLocalDayKey()));
+          }
+        })
+        .catch(() => {
+          // The badge is a hint; the Notifications screen surfaces errors.
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, [getSeniorMissedDoses, missedDosesSeniorId])
+  );
+
   useEffect(() => {
     if (!isCaretaker) {
       setModalVisible(false);
@@ -1821,6 +1845,28 @@ const HomeScreen = () => {
             <Text style={styles.logoSubText}>CARE PORTAL</Text>
           </View>
           <View style={styles.headerRight}>
+            {isCaretaker && (
+              <TouchableOpacity
+                style={styles.notificationBtn}
+                onPress={() => navigation.navigate('Notifications')}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  todayMissedDoses > 0
+                    ? `Notifications, ${todayMissedDoses} missed doses today`
+                    : 'Notifications'
+                }
+              >
+                <Icon name="notifications-outline" size={22} color="#1B2A4A" />
+                {todayMissedDoses > 0 && (
+                  <View style={styles.notificationBadge}>
+                    <Text style={styles.notificationBadgeText}>
+                      {todayMissedDoses > 9 ? '9+' : todayMissedDoses}
+                    </Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            )}
             {isCaretaker && (
               <TouchableOpacity
                 style={styles.avatarBtn}
@@ -2426,6 +2472,39 @@ const styles = StyleSheet.create({
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  notificationBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  notificationBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    backgroundColor: '#E5484D',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+  },
+  notificationBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '700',
   },
   avatarBtn: {
     width: 44,

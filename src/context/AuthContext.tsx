@@ -11,6 +11,8 @@ import {
 import { clearAllCachedAssignedDeviceMatches } from '../utils/assignedDeviceMatchCache';
 import type { SeniorDashboardApiResponse } from '../types/seniorDashboard';
 import type { GuardianDashboardApiResponse } from '../types/guardianDashboard';
+import type { MissedDoseEvent } from '../types/missedDoses';
+import { parseMissedDoses } from '../utils/missedDoses';
 import type {
   DevicePositionStreamErrorListener,
   DevicePositionStreamListener,
@@ -103,6 +105,7 @@ interface AuthContextType {
   getAssignedDevicesForSenior: (seniorId: string) => Promise<SeniorAssignedDevice[]>;
   getSeniorDashboard: (seniorId: string) => Promise<SeniorDashboardApiResponse>;
   getGuardianDashboard: (guardianUserId: string) => Promise<GuardianDashboardApiResponse>;
+  getSeniorMissedDoses: (seniorId: string) => Promise<MissedDoseEvent[]>;
   subscribeToDevicePosition: (
     deviceUUID: string,
     onPosition: DevicePositionStreamListener,
@@ -216,6 +219,9 @@ const fallbackAuthContext: AuthContextType = {
     throw missingProviderError();
   },
   getGuardianDashboard: async () => {
+    throw missingProviderError();
+  },
+  getSeniorMissedDoses: async () => {
     throw missingProviderError();
   },
   subscribeToDevicePosition: () => {
@@ -1310,6 +1316,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const getSeniorMissedDoses = useCallback(async (seniorId: string): Promise<MissedDoseEvent[]> => {
+    const trimmed = seniorId.trim();
+    if (!trimmed) {
+      throw new Error('Senior ID is required for missed doses.');
+    }
+    try {
+      const data = await authorizedRequest<unknown>(
+        `/api/v1/guardian-dashboard/seniors/${encodeURIComponent(trimmed)}/missed-doses`,
+        'GET',
+      );
+      return parseMissedDoses(data);
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const subscribeToDevicePosition = useCallback((
     deviceUUID: string,
     onPosition: DevicePositionStreamListener,
@@ -1573,6 +1596,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       getAssignedDevicesForSenior,
       getSeniorDashboard,
       getGuardianDashboard,
+      getSeniorMissedDoses,
       subscribeToDevicePosition,
       syncV8DailyVitals,
       syncV8VitalsByDevice,
@@ -1582,7 +1606,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     [
       user, isAuthenticated, isInitializing, isCaretaker, authMethod,
       seniors, selectedSenior, selectedSeniorHandBandMacs, refreshHandBandAssignments, refreshUserProfile, getMySeniors, getAssignedDevicesForSenior,
-      getSeniorDashboard, getGuardianDashboard, subscribeToDevicePosition, syncV8DailyVitals, syncV8VitalsByDevice, getV8VitalsSummary,
+      getSeniorDashboard, getGuardianDashboard, getSeniorMissedDoses, subscribeToDevicePosition, syncV8DailyVitals, syncV8VitalsByDevice, getV8VitalsSummary,
     ],
   );
 

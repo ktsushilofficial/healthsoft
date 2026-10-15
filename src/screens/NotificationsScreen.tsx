@@ -1,71 +1,190 @@
 // ============================================
 // src/screens/NotificationsScreen.tsx
 // ============================================
-import React from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  RefreshControl,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Ionicons';
+import { useAuth } from '../context/AuthContext';
+import type { MissedDoseEvent } from '../types/missedDoses';
+import {
+  countMissedDosesOnDay,
+  formatAlarmTime,
+  formatMissedDoseDrug,
+  groupMissedDosesByDay,
+} from '../utils/missedDoses';
+import { toLocalDayKey, todayLocalDayKey } from '../utils/vitalsDay';
 
-type Criticality = 'critical' | 'warning' | 'normal';
+const MISSED_DOSE_COLOR = '#FFD2A3';
+const MISSED_DOSE_TODAY_COLOR = '#FFC0C0';
 
-const CRITICALITY_COLORS: Record<Criticality, string> = {
-  critical: '#FFC0C0',
-  warning: '#FFD2A3',
-  normal: '#BFE8D0',
-};
-
-const notifications = [
-  {
-    id: '1',
-    title: 'Medication Reminder',
-    message: 'Lipitor 20 mg is due at 8:00 AM. Please confirm intake.',
-    time: 'Just now',
-    type: 'pill',
-    unread: true,
-    criticality: 'warning' as Criticality,
-  },
-  {
-    id: '2',
-    title: 'Device Alert',
-    message: 'Fall Detection Pendant battery is at 15%.',
-    time: '15 min ago',
-    type: 'device',
-    unread: true,
-    criticality: 'critical' as Criticality,
-  },
-  {
-    id: '3',
-    title: 'Vital Check',
-    message: 'Blood pressure reading is slightly high today (132/84).',
-    time: 'Today, 9:10 AM',
-    type: 'heart',
-    unread: false,
-    criticality: 'normal' as Criticality,
-  },
-  {
-    id: '4',
-    title: 'Caregiver Note',
-    message: 'Dr. Rao recommended a light walk after lunch.',
-    time: 'Yesterday',
-    type: 'note',
-    unread: false,
-    criticality: 'normal' as Criticality,
-  },
-];
+function formatReportedAt(reportedAt: number): string | null {
+  if (!reportedAt) return null;
+  const date = new Date(reportedAt);
+  if (Number.isNaN(date.getTime())) return null;
+  const time = formatAlarmTime(
+    `${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}`,
+  );
+  return toLocalDayKey(date) === todayLocalDayKey()
+    ? `Reported ${time}`
+    : `Reported ${date.getDate()}/${date.getMonth() + 1}, ${time}`;
+}
 
 const NotificationsScreen = () => {
   const navigation = useNavigation();
+  const { isCaretaker, selectedSenior, getSeniorMissedDoses } = useAuth();
+  const seniorId = selectedSenior?.userId?.trim() ?? '';
+
+  const [doses, setDoses] = useState<MissedDoseEvent[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Ignores responses for a senior the user has since switched away from.
+  const requestIdRef = useRef(0);
+
+  const loadMissedDoses = useCallback(
+    async (mode: 'initial' | 'refresh') => {
+      const requestId = ++requestIdRef.current;
+      if (!isCaretaker || !seniorId) {
+        setDoses([]);
+        setError(null);
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+      if (mode === 'refresh') setRefreshing(true);
+      else setLoading(true);
+      try {
+        const next = await getSeniorMissedDoses(seniorId);
+        if (requestId !== requestIdRef.current) return;
+        setDoses(next);
+        setError(null);
+      } catch (e) {
+        if (requestId !== requestIdRef.current) return;
+        setError(e instanceof Error ? e.message : 'Could not load missed doses.');
+      } finally {
+        if (requestId === requestIdRef.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      }
+    },
+    [getSeniorMissedDoses, isCaretaker, seniorId],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadMissedDoses('initial');
+    }, [loadMissedDoses]),
+  );
+
+  const groups = useMemo(() => groupMissedDosesByDay(doses), [doses]);
+  const todayKey = todayLocalDayKey();
+  const todayCount = useMemo(
+    () => countMissedDosesOnDay(doses, todayKey),
+    [doses, todayKey],
+  );
+  const seniorFirstName = (selectedSenior?.firstName || '').trim();
+
+  const renderBody = () => {
+    if (!isCaretaker) {
+      return <EmptyState icon="notifications-off-outline" text="No notifications yet." />;
+    }
+    if (!seniorId) {
+      return (
+        <EmptyState
+          icon="person-outline"
+          text="Select a senior on the Home screen to see their missed doses."
+        />
+      );
+    }
+    if (loading && doses.length === 0) {
+      return (
+        <View style={styles.stateWrap}>
+          <ActivityIndicator size="large" color="#F28C28" />
+        </View>
+      );
+    }
+    if (error && doses.length === 0) {
+      return (
+        <View style={styles.stateWrap}>
+          <Icon name="cloud-offline-outline" size={36} color="#C18A5B" />
+          <Text style={styles.stateText}>{error}</Text>
+          <TouchableOpacity
+            style={styles.retryButton}
+            onPress={() => void loadMissedDoses('initial')}>
+            <Text style={styles.retryText}>Try again</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+    if (groups.length === 0) {
+      return (
+        <EmptyState
+          icon="checkmark-circle-outline"
+          text={`No missed doses${seniorFirstName ? ` for ${seniorFirstName}` : ''}.`}
+        />
+      );
+    }
+    return groups.map(group => (
+      <View key={group.dayKey}>
+        <View style={styles.sectionLabel}>
+          <Text style={styles.sectionText}>{group.label}</Text>
+        </View>
+        {group.doses.map(dose => {
+          const isToday = dose.date === todayKey;
+          const reported = formatReportedAt(dose.reportedAt);
+          return (
+            <View
+              key={`${dose.deviceSn}-${dose.date}-${dose.alarmTime}-${dose.reportedAt}`}
+              style={[
+                styles.notificationCard,
+                { backgroundColor: isToday ? MISSED_DOSE_TODAY_COLOR : MISSED_DOSE_COLOR },
+              ]}>
+              <View style={styles.iconWrap}>
+                <Icon name="medkit" size={20} color="#F28C28" />
+              </View>
+              <View style={styles.notificationInfo}>
+                <Text style={styles.notificationTitle}>
+                  Missed dose · {formatAlarmTime(dose.alarmTime)}
+                </Text>
+                <Text style={styles.notificationMessage}>
+                  {dose.drugs.length > 0
+                    ? dose.drugs.map(formatMissedDoseDrug).join(', ')
+                    : 'No medicine details recorded for this alarm.'}
+                </Text>
+                {reported ? (
+                  <Text style={styles.notificationTime}>{reported}</Text>
+                ) : null}
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    ));
+  };
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void loadMissedDoses('refresh')}
+            colors={['#F28C28']}
+            tintColor="#F28C28"
+          />
+        }>
         <View style={styles.header}>
           <TouchableOpacity onPress={() => navigation.goBack()}>
             <Icon name="arrow-back" size={22} color="#4C4A48" />
@@ -74,94 +193,33 @@ const NotificationsScreen = () => {
           <View style={styles.headerSpacer} />
         </View>
 
-        <View style={styles.summaryCard}>
-          <View>
-            <Text style={styles.summaryTitle}>Today’s Highlights</Text>
-            <Text style={styles.summarySubtitle}>2 new alerts • 4 total</Text>
+        {isCaretaker && seniorId ? (
+          <View style={styles.summaryCard}>
+            <Text style={styles.summaryTitle}>
+              {seniorFirstName ? `${seniorFirstName}’s missed doses` : 'Missed doses'}
+            </Text>
+            <Text style={styles.summarySubtitle}>
+              {todayCount} today • {doses.length} total
+            </Text>
           </View>
-          <TouchableOpacity style={styles.clearButton}>
-            <Text style={styles.clearText}>Clear All</Text>
-          </TouchableOpacity>
-        </View>
+        ) : null}
 
-        <View style={styles.sectionLabel}>
-          <Text style={styles.sectionText}>New</Text>
-        </View>
+        {error && doses.length > 0 ? (
+          <Text style={styles.inlineError}>{error}</Text>
+        ) : null}
 
-        {notifications
-          .filter(item => item.unread)
-          .map(item => (
-            <View
-              key={item.id}
-              style={[
-                styles.notificationCard,
-                { backgroundColor: CRITICALITY_COLORS[item.criticality] },
-              ]}>
-              <View style={styles.iconWrap}>
-                <Icon
-                  name={
-                    item.type === 'pill'
-                      ? 'medkit'
-                      : item.type === 'device'
-                        ? 'bluetooth'
-                        : item.type === 'heart'
-                          ? 'heart'
-                          : 'chatbox-ellipses'
-                  }
-                  size={20}
-                  color="#F28C28"
-                />
-              </View>
-              <View style={styles.notificationInfo}>
-                <View style={styles.notificationHeader}>
-                  <Text style={styles.notificationTitle}>{item.title}</Text>
-                  <View style={styles.unreadDot} />
-                </View>
-                <Text style={styles.notificationMessage}>{item.message}</Text>
-                <Text style={styles.notificationTime}>{item.time}</Text>
-              </View>
-            </View>
-          ))}
-
-        <View style={styles.sectionLabel}>
-          <Text style={styles.sectionText}>Earlier</Text>
-        </View>
-
-        {notifications
-          .filter(item => !item.unread)
-          .map(item => (
-            <View
-              key={item.id}
-              style={[
-                styles.notificationCardMuted,
-                { backgroundColor: CRITICALITY_COLORS[item.criticality] },
-              ]}>
-              <View style={styles.iconWrapMuted}>
-                <Icon
-                  name={
-                    item.type === 'pill'
-                      ? 'medkit'
-                      : item.type === 'device'
-                        ? 'bluetooth'
-                        : item.type === 'heart'
-                          ? 'heart'
-                          : 'chatbox-ellipses'
-                  }
-                  size={20}
-                  color="#C18A5B"
-                />
-              </View>
-              <View style={styles.notificationInfo}>
-                <Text style={styles.notificationTitle}>{item.title}</Text>
-                <Text style={styles.notificationMessage}>{item.message}</Text>
-                <Text style={styles.notificationTime}>{item.time}</Text>
-              </View>
-            </View>
-          ))}
+        {renderBody()}
       </ScrollView>
     </SafeAreaView>
   );
 };
+
+const EmptyState = ({ icon, text }: { icon: string; text: string }) => (
+  <View style={styles.stateWrap}>
+    <Icon name={icon} size={36} color="#C18A5B" />
+    <Text style={styles.stateText}>{text}</Text>
+  </View>
+);
 
 export default NotificationsScreen;
 
@@ -172,6 +230,7 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingBottom: 24,
+    flexGrow: 1,
   },
   header: {
     flexDirection: 'row',
@@ -194,9 +253,6 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     borderRadius: 16,
     padding: 16,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     shadowColor: '#000',
     shadowOpacity: 0.04,
     shadowRadius: 10,
@@ -212,17 +268,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#7A726A',
     marginTop: 4,
-  },
-  clearButton: {
-    backgroundColor: '#F28C28',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 12,
-  },
-  clearText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '600',
   },
   sectionLabel: {
     marginHorizontal: 16,
@@ -243,16 +288,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#F1E8DE',
   },
-  notificationCardMuted: {
-    marginHorizontal: 16,
-    marginBottom: 12,
-    borderRadius: 16,
-    padding: 12,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    borderWidth: 1,
-    borderColor: '#EFE4D7',
-  },
   iconWrap: {
     width: 40,
     height: 40,
@@ -262,33 +297,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginRight: 12,
   },
-  iconWrapMuted: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: '#F3E6D8',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
   notificationInfo: {
     flex: 1,
-  },
-  notificationHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
   },
   notificationTitle: {
     fontSize: 14,
     fontWeight: '700',
     color: '#2E2A27',
-  },
-  unreadDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#F28C28',
   },
   notificationMessage: {
     fontSize: 12,
@@ -298,7 +313,39 @@ const styles = StyleSheet.create({
   },
   notificationTime: {
     fontSize: 11,
-    color: '#A09A94',
+    color: '#8A6F5A',
     marginTop: 6,
+  },
+  stateWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+    paddingVertical: 48,
+  },
+  stateText: {
+    fontSize: 14,
+    color: '#6E655D',
+    textAlign: 'center',
+    marginTop: 12,
+    lineHeight: 20,
+  },
+  retryButton: {
+    backgroundColor: '#F28C28',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 12,
+    marginTop: 16,
+  },
+  retryText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  inlineError: {
+    fontSize: 12,
+    color: '#B3261E',
+    marginHorizontal: 16,
+    marginBottom: 12,
   },
 });
