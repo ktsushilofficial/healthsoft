@@ -535,6 +535,37 @@ const AccountScreen = () => {
           </TouchableOpacity>
         )}
 
+        {!isEditing && (
+          <View style={styles.accountOptions}>
+            <TouchableOpacity
+              style={styles.accountOption}
+              accessibilityRole="button"
+              accessibilityLabel="Privacy Policy"
+              onPress={() =>
+                navigation.navigate('WebView', {
+                  url: 'https://healthsoft.in/privacy-policy',
+                  title: 'Privacy Policy',
+                })
+              }>
+              <Icon name="shield-checkmark-outline" size={22} color="#666666" />
+              <Text style={styles.accountOptionText}>Privacy Policy</Text>
+              <Icon name="chevron-forward" size={20} color="#666666" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.accountOption}
+              accessibilityRole="button"
+              accessibilityLabel="Delete Account"
+              disabled={isLoading || isSaving || isLoggingOut}
+              onPress={() => navigation.navigate('DeleteAccount')}>
+              <Icon name="trash-outline" size={22} color="#C62828" />
+              <Text style={[styles.accountOptionText, styles.deleteAccountText]}>
+                Delete Account
+              </Text>
+              <Icon name="chevron-forward" size={20} color="#C62828" />
+            </TouchableOpacity>
+          </View>
+        )}
+
         <TouchableOpacity
           style={[styles.logoutButton, isLoggingOut && styles.buttonDisabled]}
           onPress={handleLogout}
@@ -781,6 +812,27 @@ const styles = StyleSheet.create({
     color: '#FF9500',
     fontSize: 16,
     fontWeight: '700',
+  },
+  accountOptions: {
+    marginHorizontal: 16,
+    marginTop: 20,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 10,
+  },
+  accountOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+  },
+  accountOptionText: {
+    flex: 1,
+    marginHorizontal: 12,
+    fontSize: 16,
+    color: '#333333',
+    fontWeight: '600',
+  },
+  deleteAccountText: {
+    color: '#C62828',
   },
   logoutButton: {
     backgroundColor: '#D9534F',

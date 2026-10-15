@@ -13,6 +13,7 @@ import ResetPasswordScreen from './src/screens/ResetPasswordScreen';
 import NotificationsScreen from './src/screens/NotificationsScreen';
 import WebViewScreen from './src/screens/WebViewScreen';
 import ChangePasswordScreen from './src/screens/ChangePasswordScreen';
+import DeleteAccountScreen from './src/screens/DeleteAccountScreen';
 import DeviceDetailScreen from './src/screens/DeviceDetailScreen';
 import AssignedDevicesScreen from './src/screens/AssignedDevicesScreen';
 import PendantDetailScreen from './src/screens/PendantDetailScreen';
@@ -64,6 +65,7 @@ const AppNavigator = () => {
           <Stack.Screen name="Notifications" component={NotificationsScreen} />
           <Stack.Screen name="WebView" component={WebViewScreen} />
           <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
+          <Stack.Screen name="DeleteAccount" component={DeleteAccountScreen} />
           <Stack.Screen name="DeviceDetail" component={DeviceDetailScreen} />
           <Stack.Screen name="AssignedDevices" component={AssignedDevicesScreen} />
           <Stack.Screen name="HomeDevices" component={HomeDevicesScreen} />

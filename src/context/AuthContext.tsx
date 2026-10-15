@@ -88,6 +88,7 @@ interface AuthContextType {
   verifyEmail: (userId?: string) => Promise<UserData>;
   refreshUserProfile: () => Promise<UserData>;
   updateProfile: (data: UpdateProfileData) => Promise<UserData>;
+  requestAccountDeletion: (reason: string, consentToDelete: boolean) => Promise<string>;
   logout: () => Promise<void>;
   changePassword: (oldPassword: string, newPassword: string) => Promise<void>;
   refreshToken: () => Promise<UserData>;
@@ -178,6 +179,9 @@ const fallbackAuthContext: AuthContextType = {
     throw missingProviderError();
   },
   updateProfile: async () => {
+    throw missingProviderError();
+  },
+  requestAccountDeletion: async () => {
     throw missingProviderError();
   },
   logout: async () => {
@@ -1074,6 +1078,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
+  const requestAccountDeletion = async (
+    reason: string,
+    consentToDelete: boolean,
+  ): Promise<string> => {
+    const userId = user?.user_id?.trim();
+    if (!userId) {
+      throw new Error('No active account found. Please sign in again.');
+    }
+    const trimmedReason = reason.trim();
+    if (!trimmedReason) {
+      throw new Error('Please enter a reason for deleting your account.');
+    }
+    if (consentToDelete !== true) {
+      throw new Error('Please consent to account deletion before submitting.');
+    }
+
+    // The server validates the reason; do not reject partially valid text locally.
+    const response = await authorizedRequest<{
+      success?: boolean;
+      message?: string;
+    } | null>(
+      '/api/v1/profile/delete-account',
+      'POST',
+      { userId, reason: trimmedReason, consentToDelete: true },
+      { Accept: 'application/json', 'Content-Type': 'application/json' },
+    );
+    if (response?.success === false) {
+      throw new Error(
+        response.message ||
+          'Your deletion request was not accepted. Please revise your reason and try again.',
+      );
+    }
+    return response?.message || 'Your account deletion request has been submitted.';
+  };
+
   const changePassword = async (oldPassword: string, newPassword: string): Promise<void> => {
     const userId = user?.user_id;
     if (!userId) {
@@ -1519,6 +1558,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       verifyEmail,
       refreshUserProfile,
       updateProfile,
+      requestAccountDeletion,
       logout,
       changePassword,
       refreshToken,
